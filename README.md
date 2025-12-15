@@ -121,6 +121,7 @@ quit = "q"
 ### Library & Queue
 - `Enter` - Add selected/highlighted track(s) to queue
 - `Ctrl+f` - Toggle search box
+- `Ctrl+d` - Clear the queue
 - `Tab` - Switch focus (Browser ↔ Queue)
 
 ### Playback
