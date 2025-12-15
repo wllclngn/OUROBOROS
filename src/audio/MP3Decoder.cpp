@@ -9,6 +9,13 @@ MP3Decoder::MP3Decoder() {
     ouroboros::util::Logger::debug("MP3Decoder: Constructor called");
     mpg123_init();
     handle_ = mpg123_new(nullptr, nullptr);
+
+    // CRITICAL: Suppress libmpg123 console output (warnings/errors to stderr)
+    // Without this, malformed MP3s flood the terminal with warnings
+    if (handle_) {
+        mpg123_param(handle_, MPG123_ADD_FLAGS, MPG123_QUIET, 0);
+        ouroboros::util::Logger::debug("MP3Decoder: Enabled quiet mode to suppress console spam");
+    }
 }
 
 MP3Decoder::~MP3Decoder() {

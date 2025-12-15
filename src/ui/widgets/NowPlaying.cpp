@@ -69,9 +69,9 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     int y = content_rect.y + content_rect.height - metadata_lines;
 
     // Track info line: ARTIST ALBUM YEAR TRACK_NUMBER SONG (multi-color like Browser)
-    int x = content_rect.x + 2;
+    int x = content_rect.x + 1;
     int line_y = y++;
-    int remaining_w = content_rect.width - 2;
+    int remaining_w = content_rect.width - 1;
 
     // Helper to draw and advance
     auto draw_part = [&](const std::string& text, Style s) {
@@ -87,25 +87,31 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     draw_part(!track.artist.empty() ? track.artist : "Unknown Artist",
              Style{Color::Cyan, Color::Default, Attribute::None});
 
+    // Separator bullet
+    draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
+
     // Album (Default)
     if (!track.album.empty()) {
-        draw_part(" " + track.album, Style{Color::Default, Color::Default, Attribute::None});
+        draw_part(track.album, Style{Color::Default, Color::Default, Attribute::None});
+        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
     // Year (Default)
     if (!track.date.empty()) {
-        draw_part(" " + track.date, Style{Color::Default, Color::Default, Attribute::None});
+        draw_part(track.date, Style{Color::Default, Color::Default, Attribute::None});
+        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
     // Track number (Dim)
     if (track.track_number > 0) {
         std::ostringstream num_oss;
-        num_oss << " " << std::setfill('0') << std::setw(2) << track.track_number;
+        num_oss << std::setfill('0') << std::setw(2) << track.track_number;
         draw_part(num_oss.str(), Style{Color::Default, Color::Default, Attribute::Dim});
+        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
     // Title (BrightWhite)
-    draw_part(!track.title.empty() ? " " + track.title : " Untitled",
+    draw_part(!track.title.empty() ? track.title : "Untitled",
              Style{Color::BrightWhite, Color::Default, Attribute::None});
 
     // Format info
@@ -144,12 +150,23 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
     std::string format_str = format_line.str();
     if (!format_str.empty()) {
-        canvas.draw_text(content_rect.x + 2, y++, truncate_text(format_str, content_rect.width - 2),
+        canvas.draw_text(content_rect.x + 1, y++, truncate_text(format_str, content_rect.width - 1),
                         Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
     // STATUSLINE: Playback info + progress + volume + repeat
-    std::ostringstream statusline;
+    int statusline_x = content_rect.x + 1;
+    int statusline_y = y++;
+    int statusline_remaining = content_rect.width - 1;
+
+    auto draw_status_part = [&](const std::string& text, Style s) {
+        if (statusline_remaining <= 0) return;
+        std::string t = truncate_text(text, statusline_remaining);
+        canvas.draw_text(statusline_x, statusline_y, t, s);
+        int len = display_cols(t);
+        statusline_x += len;
+        statusline_remaining -= len;
+    };
 
     // Playback state icon
     const char* state_icon = "■";
@@ -158,36 +175,40 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     } else if (snap.player.state == model::PlaybackState::Paused) {
         state_icon = "⏸";
     }
-    statusline << state_icon << " ";
+    draw_status_part(std::string(state_icon) + " ", Style{});
 
     // Progress bar and time
     int position_pct = 0;
-    std::string time_str = "0:00 / 0:00";
     if (track.duration_ms > 0) {
         position_pct = (snap.player.playback_position_ms * 100) / track.duration_ms;
     }
     int pos_sec = snap.player.playback_position_ms / 1000;
     int dur_sec = track.duration_ms / 1000;
-    time_str = format_duration(pos_sec) + " / " + format_duration(dur_sec);
+    std::string time_str = format_duration(pos_sec) + " / " + format_duration(dur_sec);
 
     auto progress_bar = ui::blocks::bar_chart(position_pct, 12);
-    statusline << progress_bar << " " << time_str;
+    draw_status_part(progress_bar + " " + time_str, Style{});
+
+    // Separator bullet
+    draw_status_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
 
     // Volume
-    statusline << " | Vol. ";
+    draw_status_part("Vol. ", Style{});
     auto volume_bar = ui::blocks::bar_chart(snap.player.volume_percent, 8);
-    statusline << volume_bar;
+    draw_status_part(volume_bar, Style{});
+
+    // Separator bullet
+    draw_status_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
 
     // Repeat mode
-    statusline << " | REPEAT: ";
+    draw_status_part("REPEAT: ", Style{});
+    std::string repeat_str;
     switch (snap.player.repeat_mode) {
-        case model::RepeatMode::Off:  statusline << "OFF"; break;
-        case model::RepeatMode::One:  statusline << "ONE"; break;
-        case model::RepeatMode::All:  statusline << "ALL"; break;
+        case model::RepeatMode::Off:  repeat_str = "OFF"; break;
+        case model::RepeatMode::One:  repeat_str = "ONE"; break;
+        case model::RepeatMode::All:  repeat_str = "ALL"; break;
     }
-
-    // Draw statusline with padding on the left
-    canvas.draw_text(content_rect.x + 2, y++, statusline.str(), Style{});
+    draw_status_part(repeat_str, Style{});
 }
 
 void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool force_render) {
@@ -232,27 +253,21 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
     int metadata_lines = 3;
     int available_artwork_height = content_height - metadata_lines;
 
-    // Calculate artwork dimensions maintaining 1:1 aspect ratio
-    // Album artwork is square. Terminal cells are typically ~1:2 (width:height).
-    // To make it square visually: rows should be approx half of columns.
-    // Example: 8x16px cell. 20 cols = 160px width. 10 rows = 160px height.
-    int art_cols = content_width;
-    int art_rows = art_cols / 2;  
+    // Calculate artwork dimensions - balanced padding on both sides
+    int art_cols = content_width - 2;  // Reserve 1 cell padding each side
+    int art_rows = art_cols / 2;       // Maintain aspect
 
-    // Ensure artwork fits in available height
+    // Constrain by available height if needed
     if (art_rows > available_artwork_height) {
         art_rows = available_artwork_height;
-        art_cols = art_rows * 2;  // Recalculate width to maintain aspect
+        // Don't recalculate art_cols - keep balanced padding
     }
 
-    // Ensure even columns for proper image scaling (some protocols prefer it)
+    // Ensure even columns for proper image scaling
     if (art_cols % 2 != 0) art_cols--;
 
-    // Recalculate rows to maintain aspect after adjustment
-    art_rows = art_cols / 2;
-
-    // Position artwork in content area
-    int art_x = content_x + (content_width - art_cols) / 2; // Center horizontally
+    // Position artwork - 1 cell left/right padding, no top padding
+    int art_x = content_x + 1;
     int art_y = content_y;
 
     // Safety bounds (minimum viable display)

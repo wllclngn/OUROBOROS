@@ -66,36 +66,84 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         const auto& track = snap.library->tracks[track_idx];
         bool is_current = (static_cast<size_t>(i) == snap.queue->current_index);
 
-        // Build track line: Artist - Album - Title [duration]
-        std::string prefix = is_current ? "▶ " : "  ";
-        std::ostringstream oss;
-        oss << prefix;
-
-        if (!track.artist.empty()) {
-            oss << track.artist << " - ";
-        }
-
-        if (!track.album.empty()) {
-            oss << track.album << " - ";
-        }
-
-        oss << track.title;
-
-        if (track.duration_ms > 0) {
-            oss << " [" << format_duration(track.duration_ms / 1000) << "]";
-        }
-
-        std::string line = oss.str();
-
-        // Determine style
-        Style style;
+        // Match Browser formatting: Artist Album: TrackNum Title
         if (is_current) {
-            style = Style{Color::BrightYellow, Color::Default, Attribute::Bold};
-        } else {
-            style = Style{Color::Default, Color::Default, Attribute::None};
-        }
+            // Current track: single-color highlight (BrightYellow + Bold)
+            std::string prefix = "▶ ";
+            std::ostringstream oss;
+            oss << prefix;
 
-        canvas.draw_text(content_rect.x, y++, truncate_text(line, content_rect.width), style);
+            // Artist
+            if (!track.artist.empty()) {
+                oss << track.artist;
+            } else {
+                oss << "Unknown Artist";
+            }
+
+            // Album
+            if (!track.album.empty()) {
+                oss << " " << track.album;
+            }
+
+            oss << ": ";
+
+            // Track number
+            if (track.track_number > 0) {
+                oss << std::setfill('0') << std::setw(2) << track.track_number << " ";
+            }
+
+            // Title
+            if (!track.title.empty()) {
+                oss << track.title;
+            } else {
+                oss << "Untitled";
+            }
+
+            std::string line = oss.str();
+            Style style = Style{Color::BrightYellow, Color::Default, Attribute::Bold};
+            canvas.draw_text(content_rect.x, y++, truncate_text(line, content_rect.width), style);
+        } else {
+            // Normal track: multi-color rendering (matches Browser)
+            int x = content_rect.x;
+            int line_y = y++;
+            int remaining_w = content_rect.width;
+
+            // Helper to draw and advance
+            auto draw_part = [&](const std::string& text, Style s) {
+                if (remaining_w <= 0) return;
+                std::string t = truncate_text(text, remaining_w);
+                canvas.draw_text(x, line_y, t, s);
+                int len = display_cols(t);
+                x += len;
+                remaining_w -= len;
+            };
+
+            // Prefix
+            draw_part("  ", Style{});
+
+            // Artist (Cyan)
+            draw_part(!track.artist.empty() ? track.artist : "Unknown Artist",
+                     Style{Color::Cyan, Color::Default, Attribute::None});
+
+            // Album (Default)
+            if (!track.album.empty()) {
+                draw_part(" " + track.album, Style{Color::Default, Color::Default, Attribute::None});
+            }
+
+            // Separator
+            draw_part(": ", Style{});
+
+            // Track number (Dim)
+            if (track.track_number > 0) {
+                std::ostringstream num_oss;
+                num_oss << std::setfill('0') << std::setw(2) << track.track_number << " ";
+                draw_part(num_oss.str(), Style{Color::Default, Color::Default, Attribute::Dim});
+            }
+
+            // Title (BrightWhite)
+            draw_part(!track.title.empty() ? track.title : "Untitled",
+                     Style{Color::BrightWhite, Color::Default, Attribute::None});
+        }
 
         if (y >= content_rect.y + content_rect.height) break;
     }

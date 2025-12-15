@@ -42,6 +42,11 @@ static void signal_handler(int signum) {
 
 int main() {
     try {
+        // CRITICAL: Redirect stderr to log file to capture libmpg123 warnings
+        // libmpg123 writes directly to stderr, bypassing our logger
+        // This keeps the terminal clean while preserving debug info in the log
+        freopen("/tmp/ouroboros_debug.log", "a", stderr);
+
         // Initialize logger
         ouroboros::util::Logger::init();
         ouroboros::util::Logger::info("OUROBOROS starting...");
@@ -85,8 +90,8 @@ int main() {
         // Create snapshot publisher (lock-free, thread-safe, double-buffered)
         auto publisher = std::make_shared<ouroboros::backend::SnapshotPublisher>();
 
-        // Create collectors in separate threads
-        ouroboros::collectors::LibraryCollector lib_collector(publisher);
+        // Create collectors in separate threads (pass config to LibraryCollector)
+        ouroboros::collectors::LibraryCollector lib_collector(publisher, config);
         ouroboros::collectors::PlaybackCollector pb_collector(publisher);
 
         // Launch threads with BOTH stop_token AND global flag check

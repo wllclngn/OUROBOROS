@@ -19,7 +19,7 @@ An offline, metadata driven music player built in C++23 for modern Linux Termina
 ![Main](2025-12-14_22-47.png)
 
 ### Album Browser
-![Albums](2025-12-14_22-45.png)
+![Albums](2025-12-15_15-06.png)
 
 ### Search View
 ![Search](2025-12-14_22-46.png)
@@ -79,29 +79,95 @@ cd build && make run_tests
 
 OUROBOROS reads configuration from: `~/.config/ouroboros/config.toml`
 
-Example configuration:
+### Complete Configuration Reference
+
+All available options with defaults and descriptions:
+
+```toml
+# ============================================================================
+# LIBRARY SETTINGS
+# ============================================================================
+[library]
+# Path to your music directory (required)
+# Can be absolute or use ~ for home directory
+music_directory = "~/Music"
+
+# ============================================================================
+# PLAYBACK SETTINGS
+# ============================================================================
+[playback]
+# Default volume on startup (0-100)
+default_volume = 50
+
+# Enable shuffle mode by default
+shuffle = false
+
+# Repeat mode: "off", "one", "all"
+# - off: Stop after queue ends
+# - one: Repeat current track
+# - all: Loop entire queue
+repeat = "all"
+
+# ============================================================================
+# UI SETTINGS
+# ============================================================================
+[ui]
+# Layout mode: "default", "queue", "browser"
+# - default: Split view with browser and queue
+# - queue: Focus on queue
+# - browser: Focus on library browser
+layout = "default"
+
+# Color theme: "dark", "light", "monokai"
+theme = "dark"
+
+# Enable album artwork display (requires Kitty/iTerm2/Sixel terminal)
+enable_album_art = true
+
+# ============================================================================
+# KEYBINDINGS
+# ============================================================================
+[keybinds]
+# Customize any keybinding - use key names or characters
+# Examples: "space", "enter", "ctrl+c", "shift+j", "a", "n", etc.
+
+# Playback controls
+play = "space"
+pause = "p"
+next = "n"
+prev = "N"
+seek_forward = "right"
+seek_backward = "left"
+
+# Navigation
+up = "k"
+down = "j"
+page_up = "ctrl+u"
+page_down = "ctrl+d"
+
+# Actions
+quit = "q"
+toggle_help = "?"
+toggle_search = "ctrl+f"
+toggle_album_view = "ctrl+a"
+add_to_queue = "enter"
+clear_queue = "ctrl+d"
+
+# Volume
+volume_up = "+"
+volume_down = "-"
+
+# Focus switching
+switch_focus = "tab"
+```
+
+### Minimal Configuration Example
+
+If you only need to set the music directory:
 
 ```toml
 [library]
-music_directory = "~/Music"
-scan_on_startup = true
-
-[ui]
-enable_album_art = true
-layout = "default"        # default, queue, browser
-theme = "dark"            # dark, light, monokai
-
-[playback]
-default_volume = 50
-shuffle = false
-repeat = "all"            # off, one, all
-
-[keybinds]
-play = "space"
-next = "n"
-prev = "p"
-quit = "q"
-# See docs/keybindings.md for full customization
+music_directory = "/path/to/your/music"
 ```
 
 ### User Data Locations

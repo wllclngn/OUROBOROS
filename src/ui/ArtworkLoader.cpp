@@ -50,12 +50,12 @@ bool ArtworkLoader::get_artwork(const std::string& track_path, std::vector<uint8
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto it = cache_.find(track_path);
 
-    // DEBUG
-
-    if (it != cache_.end()) {
-
-        if (it->second.loaded) {
-            out_data = it->second.jpeg_data;
+    if (it != cache_.end() && it->second.loaded && !it->second.hash.empty()) {
+        // Fetch from global cache using hash
+        auto& global_cache = backend::ArtworkCache::instance();
+        const auto* cached_entry = global_cache.get(it->second.hash);
+        if (cached_entry) {
+            out_data = cached_entry->data;
             return true;
         }
     }
@@ -131,7 +131,8 @@ void ArtworkLoader::worker_thread() {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
                 auto it = cache_.find(track_path);
                 if (it != cache_.end()) {
-                    it->second.jpeg_data = cached_entry->data;  // Copy from cache
+                    // DON'T COPY DATA - just store hash reference
+                    it->second.jpeg_data.clear();  // Free local copy
                     it->second.mime_type = cached_entry->mime_type;
                     it->second.hash = artwork_hash;
                     it->second.path = track_path;
@@ -146,7 +147,7 @@ void ArtworkLoader::worker_thread() {
         if (!cache_hit) {
             auto result = backend::MetadataParser::extract_artwork_data(track_path);
 
-            // Store result in both local cache and global ArtworkCache
+            // Store result ONLY in global ArtworkCache (no local duplication)
             {
                 std::lock_guard<std::mutex> lock(cache_mutex_);
                 auto it = cache_.find(track_path);
@@ -161,11 +162,12 @@ void ArtworkLoader::worker_thread() {
                     } else {
                         ouroboros::util::Logger::info("ArtworkLoader: CACHE MISS - Loaded from disk: " + std::to_string(result.data.size()) + " bytes, hash: " + result.hash.substr(0, 16) + "...");
 
-                        // Store in global ArtworkCache for deduplication
+                        // Store in global ArtworkCache ONLY (single source of truth)
                         auto& global_cache = backend::ArtworkCache::instance();
                         global_cache.store(result.hash, result.data, result.mime_type);
 
-                        it->second.jpeg_data = std::move(result.data);
+                        // Local cache only stores hash reference, NOT data
+                        it->second.jpeg_data.clear();  // Don't duplicate data
                         it->second.mime_type = result.mime_type;
                         it->second.hash = result.hash;
                         it->second.path = track_path;
@@ -208,10 +210,17 @@ const ArtworkData* ArtworkLoader::get_artwork_ref(const std::string& path) {
     std::lock_guard<std::mutex> lock(cache_mutex_);
 
     auto it = cache_.find(path);
-    if (it != cache_.end() && it->second.loaded) {
-        return &it->second;
+    if (it != cache_.end() && it->second.loaded && !it->second.hash.empty()) {
+        // Need to populate jpeg_data from global cache for zero-copy access
+        auto& global_cache = backend::ArtworkCache::instance();
+        const auto* cached_entry = global_cache.get(it->second.hash);
+        if (cached_entry) {
+            // Temporarily store reference (this is unavoidable for API compat)
+            it->second.jpeg_data = cached_entry->data;
+            return &it->second;
+        }
     }
-    
+
     if (it == cache_.end()) {
         ouroboros::util::Logger::debug("ArtworkLoader: Cache MISS for " + path);
     } else {

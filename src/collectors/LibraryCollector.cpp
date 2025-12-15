@@ -9,13 +9,19 @@
 
 namespace ouroboros::collectors {
 
-LibraryCollector::LibraryCollector(std::shared_ptr<backend::SnapshotPublisher> publisher)
-    : publisher_(publisher) {}
+LibraryCollector::LibraryCollector(std::shared_ptr<backend::SnapshotPublisher> publisher,
+                                   const backend::Config& config)
+    : publisher_(publisher), config_(config) {}
 
 void LibraryCollector::run(std::stop_token stop_token) {
     backend::Library library;
-    
-    auto music_dir = util::Platform::get_music_directory();
+
+    // Use config music_directory if set, otherwise fall back to Platform default
+    auto music_dir = !config_.music_directory.empty()
+        ? config_.music_directory
+        : util::Platform::get_music_directory();
+
+    util::Logger::info("Music directory: " + music_dir.string());
     library.set_music_directory(music_dir);
     
     // 1. Try to load cache

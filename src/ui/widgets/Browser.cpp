@@ -268,13 +268,34 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
 
     // Show progress count if available (below main message)
     if (snap.library->total_count > 0) {
-        std::string progress = "(" + std::to_string(snap.library->scanned_count) + "/" +
-                              std::to_string(snap.library->total_count) + " tracks)";
+        std::string progress = "[" + std::to_string(snap.library->scanned_count) + "/" +
+                              std::to_string(snap.library->total_count) + " TRACKS LOADED...]";
         int progress_x = content_rect.x + (content_rect.width / 2) - (progress.length() / 2);
         int progress_y = center_y + 2;
 
         canvas.draw_text(progress_x, progress_y, progress,
-                        Style{Color::BrightBlack, Color::Default, Attribute::Dim});
+                        Style{Color::White, Color::Default, Attribute::None});
+
+        // Slow scan detection - show notice after 15 seconds if rate < 1000 tracks/min
+        auto elapsed_seconds = duration_cast<seconds>(elapsed).count();
+        if (elapsed_seconds >= 15 && snap.library->scanned_count > 0) {
+            // Calculate scan rate (tracks per minute)
+            double tracks_per_minute = (snap.library->scanned_count * 60.0) / elapsed_seconds;
+
+            if (tracks_per_minute < 1000.0) {
+                std::string notice = "NOTICE: OUROBOROS has detected slow cache rendering. Please be patient as the cache is built.";
+                std::string notice2 = "Operations within OUROBOROS will operate faster upon completion.";
+
+                int notice_x = content_rect.x + (content_rect.width / 2) - (notice.length() / 2);
+                int notice2_x = content_rect.x + (content_rect.width / 2) - (notice2.length() / 2);
+                int notice_y = progress_y + 2;
+
+                canvas.draw_text(notice_x, notice_y, notice,
+                                Style{Color::Yellow, Color::Default, Attribute::None});
+                canvas.draw_text(notice2_x, notice_y + 1, notice2,
+                                Style{Color::Yellow, Color::Default, Attribute::None});
+            }
+        }
     }
 }
 

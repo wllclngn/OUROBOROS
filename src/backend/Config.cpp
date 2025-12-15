@@ -81,7 +81,7 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
             else if (current_section == "keybinds") {
                 cfg.keybinds[key] = value;
             }
-            else if (current_section == "paths") {
+            else if (current_section == "library" || current_section == "paths") {
                 if (key == "music_directory") {
                     cfg.music_directory = std::filesystem::path(value);
                 }

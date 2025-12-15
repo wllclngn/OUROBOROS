@@ -167,8 +167,8 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             int cell_x = content_rect.x + (c * cell_w);
             int cell_y = y_offset;
 
-            // Box position
-            int box_x = cell_x;
+            // Box position - shift right by 1 to center
+            int box_x = cell_x + 1;
             int box_y = cell_y;
 
             // Determine border color
@@ -379,8 +379,11 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             int cell_x = content_x + (c * cell_w);
             int cell_y = y_offset;
 
-            // Artwork area: leave 2 lines at bottom for text
-            int art_x = cell_x + 1;
+            // Box position - shift right by 1 to center (match render())
+            int box_x = cell_x + 1;
+
+            // Artwork area: inside box border, leave 2 lines at bottom for text
+            int art_x = box_x + 1;
             int art_y = cell_y + 1;
 
             // Fix 3: Clipping Logic ("The Boss")
@@ -440,7 +443,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     }
 
     // PREFETCH PHASE (Sliding Window)
-    // aggressively decode upcoming images into RAM cache
+    // Prefetch nearby images for smooth scrolling
     const int PREFETCH_ITEMS = 20; 
     int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
 

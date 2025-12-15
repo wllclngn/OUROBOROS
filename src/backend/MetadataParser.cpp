@@ -265,65 +265,26 @@ model::AudioFormat MetadataParser::detect_format(const std::string& path) {
 ArtworkExtractionResult MetadataParser::extract_artwork_data(const std::string& path) {
     namespace fs = std::filesystem;
 
-    ouroboros::util::Logger::info("=== ARTWORK SEARCH START for: " + path + " ===");
+    ouroboros::util::Logger::debug("Artwork search for: " + path);
 
     fs::path audio_file(path);
     fs::path dir = audio_file.parent_path();
 
-    // LOGGING DISABLED: Called on every track change, spams debug logs
-    // ouroboros::util::Logger::debug("Searching directory: " + dir.string());
-
-    const std::vector<std::string> art_names = {
-        "cover.jpg", "cover.png", "cover.jpeg",
-        "folder.jpg", "folder.png",
-        "album.jpg", "album.png",
-        "front.jpg", "front.png",
-        "Cover.jpg", "Cover.png",
-        "Folder.jpg", "Folder.png"
-    };
-
-    for (const auto& name : art_names) {
-        fs::path candidate = dir / name;
-        // LOGGING DISABLED: Called 12+ times per track change, spams debug logs
-        // ouroboros::util::Logger::debug("Checking: " + candidate.string());
-
-        if (fs::exists(candidate)) {
-            ouroboros::util::Logger::info("FOUND ARTWORK: " + candidate.string());
-            std::ifstream file(candidate, std::ios::binary);
-            if (file) {
-                std::vector<uint8_t> data(
-                    (std::istreambuf_iterator<char>(file)),
-                    std::istreambuf_iterator<char>()
-                );
-
-                std::string ext = candidate.extension().string();
-                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
-                std::string mime = "image/jpeg";
-                if (ext == ".png") mime = "image/png";
-
-                // Compute SHA-256 hash for content-addressed caching
-                std::string hash = util::ArtworkHasher::hash_artwork(data);
-
-                ouroboros::util::Logger::info("Loaded " + std::to_string(data.size()) + " bytes, hash: " + hash.substr(0, 16) + "...");
-                return {std::move(data), mime, hash};
-            }
-        }
-    }
-
-    ouroboros::util::Logger::warn("No artwork found with common names, scanning directory...");
-
+    // Scan directory for ANY image file by extension (jpg, jpeg, png, gif, bmp)
+    // No hardcoded filenames - just find images
     try {
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (!entry.is_regular_file()) continue;
 
             std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            // LOGGING DISABLED: Called for every file in directory, spams debug logs
-            // ouroboros::util::Logger::debug("Found file: " + entry.path().filename().string() + " (ext: " + ext + ")");
 
-            if (ext == ".jpg" || ext == ".jpeg" || ext == ".png") {
-                ouroboros::util::Logger::info("Using fallback artwork: " + entry.path().string());
+            // Check for common image formats
+            if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
+                ext == ".gif" || ext == ".bmp") {
+
+                ouroboros::util::Logger::info("Found artwork: " + entry.path().filename().string());
+
                 std::ifstream file(entry.path(), std::ios::binary);
                 if (file) {
                     std::vector<uint8_t> data(
@@ -331,21 +292,27 @@ ArtworkExtractionResult MetadataParser::extract_artwork_data(const std::string& 
                         std::istreambuf_iterator<char>()
                     );
 
-                    std::string mime = (ext == ".png") ? "image/png" : "image/jpeg";
+                    // Determine MIME type
+                    std::string mime = "image/jpeg";
+                    if (ext == ".png") mime = "image/png";
+                    else if (ext == ".gif") mime = "image/gif";
+                    else if (ext == ".bmp") mime = "image/bmp";
 
                     // Compute SHA-256 hash for content-addressed caching
                     std::string hash = util::ArtworkHasher::hash_artwork(data);
 
-                    ouroboros::util::Logger::info("Loaded " + std::to_string(data.size()) + " bytes, hash: " + hash.substr(0, 16) + "...");
+                    ouroboros::util::Logger::debug("Loaded " + std::to_string(data.size()) +
+                        " bytes, hash: " + hash.substr(0, 16) + "...");
                     return {std::move(data), mime, hash};
                 }
             }
         }
-    } catch (const fs::filesystem_error&) {
-        ouroboros::util::Logger::error("Filesystem error while scanning directory");
+    } catch (const fs::filesystem_error& e) {
+        ouroboros::util::Logger::warn("Could not scan directory for artwork: " + std::string(e.what()));
     }
 
-    ouroboros::util::Logger::error("NO ARTWORK FILES FOUND in " + dir.string());
+    // No artwork found - this is not an error, just expected for some albums
+    ouroboros::util::Logger::debug("No artwork files found in " + dir.string());
     return {{}, "", ""};  // Empty data, mime, and hash
 }
 
