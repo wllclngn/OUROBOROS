@@ -1,0 +1,68 @@
+# OUROBOROS Configuration File
+# Location: ~/.config/ouroboros/config.toml
+
+[playback]
+# Default volume level (0-100)
+default_volume = 50
+
+# Enable shuffle by default
+shuffle = false
+
+# Repeat mode: "off", "one", "all"
+repeat = "all"
+
+[ui]
+# Layout mode: "default", "queue", "browser"
+layout = "default"
+
+# Theme: "dark", "light", "monokai"
+theme = "dark"
+
+# Enable album art display
+enable_album_art = true
+
+[keybinds]
+# Playback controls
+play = "space"
+pause = "p"
+next = "n"
+prev = "N"
+
+# Quit
+quit = "q"
+
+# Volume control
+volume_up = "+"
+volume_down = "-"
+
+# Seek in song
+seek_forward = "j"
+seek_backward = "k"
+
+# Tab navigation
+tab_queue = "q"
+tab_browser = "b"
+tab_now_playing = "n"
+
+# Display toggles
+toggle_header = "H"
+toggle_controls = "C"
+toggle_browser = "B"
+toggle_queue = "Q"
+toggle_spectrogram = "G"
+
+# Modes
+shuffle_toggle = "S"
+repeat_cycle = "R"
+
+[theme.dark]
+background = "#1e1e1e"
+foreground = "#d4d4d4"
+current_track = "#ff7f50"
+highlight = "#0e639c"
+
+[theme.light]
+background = "#ffffff"
+foreground = "#000000"
+current_track = "#ff7f50"
+highlight = "#0099ff"

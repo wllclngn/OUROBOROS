@@ -1,0 +1,14 @@
+DOWNLOAD STB HEADERS
+
+These are header-only libraries from https://github.com/nothings/stb
+
+Required files:
+1. stb_image.h - Image loading (JPEG, PNG)
+2. stb_image_resize2.h - Image resizing
+
+Download:
+cd vendor/stb
+wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
+wget https://raw.githubusercontent.com/nothings/stb/master/stb_image_resize2.h
+
+Public domain - no licensing issues.
