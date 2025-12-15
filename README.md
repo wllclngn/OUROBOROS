@@ -1,8 +1,6 @@
-# OUROBOROS, The Eternal Player, v1.0.0
+# OUROBOROS, The Eternal Player
 
-An offline, metadata driven music player built in C++23 for modern Linux Terminals.
-
-OUROBOROS is a production-ready terminal music player for Linux, featuring a **lock-free snapshot architecture** that guarantees deadlock-free operation. With ~10,800 lines of C++23, it delivers 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+An offline, metadata driven music player built in C++23 for modern Linux Terminals, OUROBOROS is a love letter to era defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation. With ~10,800 lines of C++23, it delivers 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
 - **Lock-Free Architecture**: Zero-deadlock snapshot system with atomic reads (UI never blocks)
@@ -17,9 +15,14 @@ OUROBOROS is a production-ready terminal music player for Linux, featuring a **l
 
 ## Screenshots
 
-| Main Interface | Album Browser | Search View |
-|----------------|---------------|------------|
-| ![Main](2025-12-14_22-47.png) | ![Albums](2025-12-14_22-45.png) | ![Search](2025-12-14_22-46.png) |
+### Main Interface
+![Main](2025-12-14_22-47.png)
+
+### Album Browser
+![Albums](2025-12-14_22-45.png)
+
+### Search View
+![Search](2025-12-14_22-46.png)
 
 ## Build
 
@@ -108,6 +111,8 @@ quit = "q"
 
 ## Keybindings
 
+**Tip:** Press `?` in-app for the full keybindings reference.
+
 ### Navigation
 - `j` / `k` - Navigate down/up in library
 - `↑` / `↓` - Arrow key navigation
@@ -134,8 +139,6 @@ quit = "q"
 - `?` - Toggle help overlay
 - `Ctrl+a` - Toggle album grid view
 - `Ctrl+C` - Force quit
-
-**Tip:** Press `?` in-app for the full keybindings reference.
 
 ## Architecture
 
