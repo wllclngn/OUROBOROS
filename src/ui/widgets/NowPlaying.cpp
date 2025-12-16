@@ -65,13 +65,46 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     // Reserve 3 lines at bottom for track info, format, and statusline
     int metadata_lines = 3;
 
-    // Render track metadata at bottom of content area
-    int y = content_rect.y + content_rect.height - metadata_lines;
+    // Calculate artwork dimensions to align text with artwork left edge
+    int content_width = content_rect.width;
+    int content_height = content_rect.height;
+    int available_artwork_height = content_height - metadata_lines;
+    int max_cols_from_width = content_width;
+    int max_cols_from_height = available_artwork_height * 2;  // 1:1 aspect ratio
+    int art_cols = std::min(max_cols_from_width, max_cols_from_height);
+
+    // ALGORITHM FOR PERFECT SYMMETRY:
+    // 1. Make art_cols even (required for 1:1 aspect ratio)
+    if (art_cols % 2 != 0) art_cols--;
+
+    // 2. Ensure total_padding is even for symmetric split
+    int total_padding = content_width - art_cols;
+    if (total_padding % 2 != 0) {
+        art_cols -= 2;  // Reduce by 2 to make total_padding even
+        total_padding = content_width - art_cols;
+    }
+
+    if (art_cols < 4) art_cols = 4;
+
+    // 3. Now we can split padding evenly (guaranteed symmetric)
+    int horizontal_padding = total_padding / 2;
+    int art_rows = art_cols / 2;
+
+    ouroboros::util::Logger::debug("NowPlaying::render - content_width=" + std::to_string(content_width) +
+                                   " art_cols=" + std::to_string(art_cols) +
+                                   " total_padding=" + std::to_string(total_padding) +
+                                   " horizontal_padding=" + std::to_string(horizontal_padding));
+
+    // Position text IMMEDIATELY after artwork (not at fixed bottom)
+    // This eliminates gaps when artwork is width-constrained
+    int artwork_bottom = content_rect.y + art_rows;
+    int y = artwork_bottom;
 
     // Track info line: ARTIST ALBUM YEAR TRACK_NUMBER SONG (multi-color like Browser)
-    int x = content_rect.x + 1;
+    // Align text with artwork left edge for symmetry
+    int x = content_rect.x + horizontal_padding;
     int line_y = y++;
-    int remaining_w = content_rect.width - 1;
+    int remaining_w = art_cols;  // Text width matches artwork width
 
     // Helper to draw and advance
     auto draw_part = [&](const std::string& text, Style s) {
@@ -90,18 +123,6 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     // Separator bullet
     draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
 
-    // Album (Default)
-    if (!track.album.empty()) {
-        draw_part(track.album, Style{Color::Default, Color::Default, Attribute::None});
-        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
-    }
-
-    // Year (Default)
-    if (!track.date.empty()) {
-        draw_part(track.date, Style{Color::Default, Color::Default, Attribute::None});
-        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
-    }
-
     // Track number (Dim)
     if (track.track_number > 0) {
         std::ostringstream num_oss;
@@ -110,9 +131,23 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
-    // Title (BrightWhite)
-    draw_part(!track.title.empty() ? track.title : "Untitled",
+    // Title with quotes (BrightWhite)
+    draw_part("\"" + (!track.title.empty() ? track.title : "Untitled") + "\"",
              Style{Color::BrightWhite, Color::Default, Attribute::None});
+
+    // Separator bullet
+    draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
+
+    // Year with parentheses (Default)
+    if (!track.date.empty()) {
+        draw_part("(" + track.date + ")", Style{Color::Default, Color::Default, Attribute::None});
+        draw_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
+    }
+
+    // Album (Default)
+    if (!track.album.empty()) {
+        draw_part(track.album, Style{Color::Default, Color::Default, Attribute::None});
+    }
 
     // Format info
     std::ostringstream format_line;
@@ -150,14 +185,14 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
     std::string format_str = format_line.str();
     if (!format_str.empty()) {
-        canvas.draw_text(content_rect.x + 1, y++, truncate_text(format_str, content_rect.width - 1),
+        canvas.draw_text(content_rect.x + horizontal_padding, y++, truncate_text(format_str, art_cols),
                         Style{Color::Cyan, Color::Default, Attribute::Dim});
     }
 
     // STATUSLINE: Playback info + progress + volume + repeat
-    int statusline_x = content_rect.x + 1;
+    int statusline_x = content_rect.x + horizontal_padding;
     int statusline_y = y++;
-    int statusline_remaining = content_rect.width - 1;
+    int statusline_remaining = art_cols;
 
     auto draw_status_part = [&](const std::string& text, Style s) {
         if (statusline_remaining <= 0) return;
@@ -249,31 +284,45 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
     int content_width = widget_rect.width - 2;   // Subtract left+right borders
     int content_height = widget_rect.height - 2;  // Subtract top+bottom borders
 
-    // Reserve 3 lines at bottom for metadata (track info, format, statusline)
+    // Reserve 3 lines at bottom for metadata (no extra padding - maximize artwork)
     int metadata_lines = 3;
     int available_artwork_height = content_height - metadata_lines;
 
-    // Calculate artwork dimensions - balanced padding on both sides
-    int art_cols = content_width - 2;  // Reserve 1 cell padding each side
-    int art_rows = art_cols / 2;       // Maintain aspect
+    // Maximize artwork size while maintaining 1:1 aspect ratio
+    // Use whichever dimension is the limiting factor
+    int max_cols_from_width = content_width;
+    int max_cols_from_height = available_artwork_height * 2;  // 1:1 aspect: cols = 2 * rows
 
-    // Constrain by available height if needed
-    if (art_rows > available_artwork_height) {
-        art_rows = available_artwork_height;
-        // Don't recalculate art_cols - keep balanced padding
-    }
+    int art_cols = std::min(max_cols_from_width, max_cols_from_height);
 
-    // Ensure even columns for proper image scaling
+    // ALGORITHM FOR PERFECT SYMMETRY:
+    // 1. Make art_cols even (required for 1:1 aspect ratio)
     if (art_cols % 2 != 0) art_cols--;
 
-    // Position artwork - 1 cell left/right padding, no top padding
-    int art_x = content_x + 1;
+    // 2. Ensure total_padding is even for symmetric split
+    int total_padding = content_width - art_cols;
+    if (total_padding % 2 != 0) {
+        art_cols -= 2;  // Reduce by 2 to make total_padding even
+        total_padding = content_width - art_cols;
+    }
+
+    int art_rows = art_cols / 2;
+
+    // 3. Now we can split padding evenly (guaranteed symmetric)
+    int horizontal_padding = total_padding / 2;
+    int art_x = content_x + horizontal_padding;
     int art_y = content_y;
 
     // Safety bounds (minimum viable display)
     if (art_cols < 4) art_cols = 4;
     if (art_rows < 2) art_rows = 2;
 
+    ouroboros::util::Logger::debug("NowPlaying::render_image_if_needed - content_width=" + std::to_string(content_width) +
+                                   " art_cols=" + std::to_string(art_cols) +
+                                   " total_padding=" + std::to_string(total_padding) +
+                                   " horizontal_padding=" + std::to_string(horizontal_padding) +
+                                   " LEFT=" + std::to_string(horizontal_padding) +
+                                   " RIGHT=" + std::to_string(total_padding - horizontal_padding));
     ouroboros::util::Logger::debug("NowPlaying: Calling render_image. X=" + std::to_string(art_x) + " Y=" + std::to_string(art_y) + " Cols=" + std::to_string(art_cols) + " Rows=" + std::to_string(art_rows));
 
     bool success = img_renderer.render_image(

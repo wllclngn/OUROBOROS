@@ -16,13 +16,13 @@ An offline, metadata driven music player built in C++23 for modern Linux Termina
 ## Screenshots
 
 ### Main Interface
-![Main](2025-12-14_22-47.png)
+![Main](2025-12-15_18-48.png)
 
 ### Album Browser
-![Albums](2025-12-15_15-06.png)
+![Albums](2025-12-15_18-54.png)
 
 ### Search View
-![Search](2025-12-14_22-46.png)
+![Albums](2025-12-15_18-54_1.png)
 
 ## Build
 

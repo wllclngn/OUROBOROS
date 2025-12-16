@@ -12,16 +12,50 @@ namespace ouroboros::ui {
 
 // Layout constants
 namespace {
-    constexpr int MIN_TERMINAL_COLS = 60;
-    constexpr int MIN_TERMINAL_ROWS = 15;
-    constexpr int MIN_CONTENT_HEIGHT = 10;
-    constexpr int MIN_BROWSER_WIDTH = 40;
-    constexpr int MIN_RIGHT_COLUMN_WIDTH = 30;
     constexpr int COLUMN_GUTTER = 1;
 
-    // FlexLayout growth ratios for right column (NowPlaying vs Queue)
-    constexpr float NOWPLAYING_FLEX_RATIO = 0.6f;  // ~60% of right column
-    constexpr float QUEUE_FLEX_RATIO = 0.4f;       // ~40% of right column
+    // Absolute minimums (terminal must be at least this size)
+    constexpr int MIN_TERMINAL_COLS = 40;  // Absolute minimum width
+    constexpr int MIN_TERMINAL_ROWS = 10;  // Absolute minimum height
+
+    // RESPONSIVE BREAKPOINTS (like mobile/desktop web design)
+    constexpr int BREAKPOINT_SMALL = 80;   // < 80 cols = compact mode
+    constexpr int BREAKPOINT_LARGE = 120;  // > 120 cols = expanded mode
+
+    // Layout mode based on terminal width
+    enum class LayoutMode {
+        COMPACT,   // < 80 cols: Hide Queue, maximize NowPlaying
+        NORMAL,    // 80-120 cols: Standard layout
+        EXPANDED   // > 120 cols: More space for Browser
+    };
+
+    // Determine layout mode from terminal width
+    LayoutMode get_layout_mode(int terminal_width) {
+        if (terminal_width < BREAKPOINT_SMALL) return LayoutMode::COMPACT;
+        if (terminal_width >= BREAKPOINT_LARGE) return LayoutMode::EXPANDED;
+        return LayoutMode::NORMAL;
+    }
+
+    // Get minimum widths based on layout mode
+    struct ResponsiveConstraints {
+        int min_browser_width;
+        int min_right_width;
+        bool show_queue;
+        float browser_flex;
+        float right_flex;
+    };
+
+    ResponsiveConstraints get_constraints(LayoutMode mode) {
+        switch (mode) {
+            case LayoutMode::COMPACT:
+                return {20, 25, false, 1.0f, 1.0f};  // Hide Queue, minimal widths
+            case LayoutMode::NORMAL:
+                return {40, 30, true, 1.0f, 1.0f};   // Standard 50/50 split
+            case LayoutMode::EXPANDED:
+                return {50, 35, true, 1.5f, 1.0f};   // More Browser space (60/40)
+        }
+        return {40, 30, true, 1.0f, 1.0f};
+    }
 }
 
 Renderer::Renderer(std::shared_ptr<backend::SnapshotPublisher> publisher)
@@ -45,33 +79,37 @@ Renderer::Renderer(std::shared_ptr<backend::SnapshotPublisher> publisher)
 Renderer::~Renderer() = default;
 
 void Renderer::compute_layout(int cols, int rows) {
-    // FLEXLAYOUT-BASED: Declarative, constraint-driven layout
+    // RESPONSIVE LAYOUT: Adapts to terminal size like mobile/desktop web
 
-    // Content area now fills the entire screen (statusline moved to NowPlaying widget)
+    // Content area fills entire screen
     LayoutRect content_area = {0, 0, cols, rows};
 
-    // 2. HORIZONTAL SPLIT: [Browser] + [Right Column]
+    // Determine layout mode based on terminal width
+    LayoutMode mode = get_layout_mode(cols);
+    ResponsiveConstraints constraints = get_constraints(mode);
+
+    // HORIZONTAL SPLIT: [Browser] + [Right Column]
     FlexLayout horizontal_layout;
     horizontal_layout.set_direction(FlexDirection::Row);
     horizontal_layout.set_spacing(COLUMN_GUTTER);
 
-    // Browser: flexible, prefers more space
+    // Browser: flexible, adapts to screen size
     LayoutConstraints browser_constraints;
     if (show_album_view_) {
         browser_constraints.size = album_browser_->get_constraints();
     } else {
         browser_constraints.size = browser_->get_constraints();
     }
-    browser_constraints.size.min_width = MIN_BROWSER_WIDTH;
-    browser_constraints.flex.flex_grow = 1.0f;
+    browser_constraints.size.min_width = constraints.min_browser_width;
+    browser_constraints.flex.flex_grow = constraints.browser_flex;
 
-    // Right column: flexible
+    // Right column: flexible, adapts to screen size
     LayoutConstraints right_constraints;
-    right_constraints.size.min_width = MIN_RIGHT_COLUMN_WIDTH;
-    right_constraints.flex.flex_grow = 1.0f;
+    right_constraints.size.min_width = constraints.min_right_width;
+    right_constraints.flex.flex_grow = constraints.right_flex;
 
-    horizontal_layout.add_item(nullptr, browser_constraints);  // Placeholder for browser
-    horizontal_layout.add_item(nullptr, right_constraints);     // Placeholder for right column
+    horizontal_layout.add_item(nullptr, browser_constraints);
+    horizontal_layout.add_item(nullptr, right_constraints);
 
     auto horiz_rects = horizontal_layout.compute_layout(content_area.width, content_area.height);
 
@@ -86,42 +124,44 @@ void Renderer::compute_layout(int cols, int rows) {
     right_area.width = horiz_rects[1].width;
     right_area.height = horiz_rects[1].height;
 
-    // 3. VERTICAL SPLIT (Right Column): [NowPlaying] + [Queue]
-    // ARTWORK-CENTRIC LAYOUT:
-    
+    // VERTICAL SPLIT (Right Column): [NowPlaying] + [Queue]
+    // RESPONSIVE: Queue hidden in compact mode
+
     int right_width = right_area.width;
     int right_height = right_area.height;
-    
-    // NowPlaying internal layout constants
-    constexpr int NP_BORDER_H = 2; // Top + Bottom border
-    constexpr int NP_BORDER_W = 2; // Left + Right border
-    constexpr int NP_METADATA_H = 5; // Artist, Album, Title, Format, Statusline
-    
-    // Reserve space for Queue
-    constexpr int MIN_QUEUE_H = 5;
-    int max_art_height_avail = right_height - NP_METADATA_H - NP_BORDER_H - MIN_QUEUE_H;
-    
-    // Calculate optimal dimensions (Cols = 2 * Rows)
-    int avail_width_cells = right_width - NP_BORDER_W;
-    
-    int art_cols = std::min(avail_width_cells, max_art_height_avail * 2);
-    
-    // Ensure even width for cleaner centering
-    if (art_cols % 2 != 0) art_cols--;
-    
-    // Ensure minimum size
-    if (art_cols < 10) art_cols = 10; // Minimum 10x5 artwork
-    
-    int art_rows = art_cols / 2;
-    
-    // Calculate total NowPlaying height
-    int np_height = art_rows + NP_METADATA_H + NP_BORDER_H;
-    
-    // Safety clamp
-    if (np_height > right_height - MIN_QUEUE_H) {
-        np_height = right_height - MIN_QUEUE_H;
+
+    // NowPlaying constants
+    constexpr int NP_BORDER_H = 2;
+    constexpr int NP_BORDER_W = 2;
+    constexpr int NP_METADATA_H = 3;
+
+    int np_height;
+    int queue_height;
+
+    if (constraints.show_queue) {
+        // NORMAL/EXPANDED: Show both NowPlaying and Queue
+        constexpr int MIN_QUEUE_H = 5;
+        int max_art_height = right_height - NP_METADATA_H - NP_BORDER_H - MIN_QUEUE_H;
+
+        int avail_width = right_width - NP_BORDER_W;
+        int art_cols = std::min(avail_width, max_art_height * 2);
+        if (art_cols % 2 != 0) art_cols--;
+        if (art_cols < 10) art_cols = 10;
+
+        int art_rows = art_cols / 2;
+        np_height = art_rows + NP_METADATA_H + NP_BORDER_H;
+
+        if (np_height > right_height - MIN_QUEUE_H) {
+            np_height = right_height - MIN_QUEUE_H;
+        }
+
+        queue_height = right_height - np_height;
+    } else {
+        // COMPACT: Hide Queue, NowPlaying takes full height
+        np_height = right_height;
+        queue_height = 0;
     }
-    
+
     header_rect_.x = right_area.x;
     header_rect_.y = right_area.y;
     header_rect_.width = right_width;
@@ -130,7 +170,7 @@ void Renderer::compute_layout(int cols, int rows) {
     queue_rect_.x = right_area.x;
     queue_rect_.y = right_area.y + np_height;
     queue_rect_.width = right_width;
-    queue_rect_.height = right_height - np_height;
+    queue_rect_.height = queue_height;
 }
 
 void Renderer::flush_canvas() {
@@ -225,7 +265,11 @@ void Renderer::render(bool force_redraw) {
     }
 
     header_->render(canvas_, header_rect_, *snap);
-    queue_->render(canvas_, queue_rect_, *snap, focus_ == Focus::Queue);
+
+    // Only render Queue if visible (hidden in compact mode)
+    if (queue_rect_.height > 0) {
+        queue_->render(canvas_, queue_rect_, *snap, focus_ == Focus::Queue);
+    }
 
     // Render help overlay (if visible)
     if (help_overlay_->is_visible()) {
