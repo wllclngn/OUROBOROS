@@ -37,7 +37,33 @@ ImageRenderer::ImageRenderer() {
 void ImageRenderer::detect_protocol() {
     ouroboros::util::Logger::info("ImageRenderer: Detecting protocol");
 
-    
+    // Detect terminal type first (sets quirk flags)
+    detect_terminal_type();
+
+    // Allow user to force a specific protocol via environment variable
+    const char* force_protocol = std::getenv("OUROBOROS_IMAGE_PROTOCOL");
+    if (force_protocol) {
+        std::string proto_str(force_protocol);
+        if (proto_str == "kitty") {
+            protocol_ = ImageProtocol::Kitty;
+            ouroboros::util::Logger::info("ImageRenderer: Forced Kitty protocol via OUROBOROS_IMAGE_PROTOCOL");
+            return;
+        } else if (proto_str == "sixel") {
+            protocol_ = ImageProtocol::Sixel;
+            ouroboros::util::Logger::info("ImageRenderer: Forced Sixel protocol via OUROBOROS_IMAGE_PROTOCOL");
+            return;
+        } else if (proto_str == "iterm2") {
+            protocol_ = ImageProtocol::ITerm2;
+            ouroboros::util::Logger::info("ImageRenderer: Forced iTerm2 protocol via OUROBOROS_IMAGE_PROTOCOL");
+            return;
+        } else if (proto_str == "none") {
+            protocol_ = ImageProtocol::None;
+            ouroboros::util::Logger::info("ImageRenderer: Forced no images via OUROBOROS_IMAGE_PROTOCOL");
+            return;
+        }
+    }
+
+
     if (query_kitty_support()) {
         protocol_ = ImageProtocol::Kitty;
         return;
@@ -58,6 +84,60 @@ void ImageRenderer::detect_protocol() {
     protocol_ = ImageProtocol::None;
 }
 
+void ImageRenderer::detect_terminal_type() {
+    // 1. Check TERM_PROGRAM (most reliable for modern terminals)
+    const char* term_prog = std::getenv("TERM_PROGRAM");
+    if (term_prog) {
+        if (std::string(term_prog) == "ghostty") {
+            terminal_type_ = TerminalType::Ghostty;
+            // Ghostty optimizations (assuming recent version fixes quirks)
+            terminal_respects_image_ids_ = false;
+            terminal_supports_temp_file_ = false;
+            ouroboros::util::Logger::info("ImageRenderer: Detected Ghostty terminal");
+            return;
+        }
+    }
+
+    // 2. Check Kitty-specific environment variables
+    if (std::getenv("KITTY_WINDOW_ID") || std::getenv("KITTY_PID")) {
+        terminal_type_ = TerminalType::Kitty;
+        terminal_respects_image_ids_ = true;   // Kitty: full support
+        terminal_supports_temp_file_ = true;   // Kitty: full support
+        ouroboros::util::Logger::info("ImageRenderer: Detected Kitty terminal");
+        return;
+    }
+
+    // 3. Check TERM variable
+    const char* term_env = std::getenv("TERM");
+    if (term_env) {
+        std::string term_str(term_env);
+
+        // Ghostty detection via TERM
+        if (term_str.find("ghostty") != std::string::npos || term_str == "xterm-ghostty") {
+            terminal_type_ = TerminalType::Ghostty;
+            terminal_respects_image_ids_ = false;
+            terminal_supports_temp_file_ = false;
+            ouroboros::util::Logger::info("ImageRenderer: Detected Ghostty terminal via TERM");
+            return;
+        }
+
+        // Kitty detection via TERM
+        if (term_str.find("kitty") != std::string::npos) {
+            terminal_type_ = TerminalType::Kitty;
+            terminal_respects_image_ids_ = true;
+            terminal_supports_temp_file_ = true;
+            ouroboros::util::Logger::info("ImageRenderer: Detected Kitty terminal via TERM");
+            return;
+        }
+    }
+
+    // 4. Default: assume Other terminal with standard behavior
+    terminal_type_ = TerminalType::Other;
+    terminal_respects_image_ids_ = true;   // Assume standard behavior
+    terminal_supports_temp_file_ = true;   // Assume standard behavior
+    ouroboros::util::Logger::debug("ImageRenderer: Unknown terminal, assuming standard behavior");
+}
+
 bool ImageRenderer::query_kitty_support() {
     ouroboros::util::Logger::debug("ImageRenderer: Querying Kitty support");
 
@@ -68,11 +148,23 @@ bool ImageRenderer::query_kitty_support() {
 
     // Fast path: check TERM environment variable
     const char* term_env = std::getenv("TERM");
-    if (term_env && std::string(term_env).find("kitty") != std::string::npos) {
-        return true;
+    if (term_env) {
+        std::string term_str(term_env);
+
+        // Check for Ghostty terminal (supports Kitty graphics protocol)
+        if (term_str.find("ghostty") != std::string::npos || term_str == "xterm-ghostty") {
+            ouroboros::util::Logger::info("ImageRenderer: Ghostty terminal detected, using Kitty graphics protocol");
+            return true;
+        }
+
+        // Check for Kitty terminal
+        if (term_str.find("kitty") != std::string::npos) {
+            ouroboros::util::Logger::info("ImageRenderer: Kitty terminal detected via TERM");
+            return true;
+        }
     }
 
-    
+
     struct termios old_term, new_term;
     if (tcgetattr(STDIN_FILENO, &old_term) != 0) return false;
     
@@ -227,20 +319,20 @@ void ImageRenderer::detect_cell_size() {
     ouroboros::util::Logger::info("ImageRenderer: Using default cell size: 8×16 pixels");
 }
 
-bool ImageRenderer::render_image(
+uint32_t ImageRenderer::render_image(
     const std::vector<unsigned char>& image_data,
     int x, int y,
     int width_cols, int height_rows,
     const std::string& content_hash,
     int visible_rows
 ) {
-    if (!album_art_enabled_ || image_data.empty()) return false;
+    if (!album_art_enabled_ || image_data.empty()) return 0;
 
     // 1. Ensure image is in pipeline (Cache check, Pending check, or Start Decode)
     // preload_image handles all the async logic and hash calculation
     bool is_cached = preload_image(image_data, width_cols, height_rows, content_hash);
 
-    if (!is_cached) return false;
+    if (!is_cached) return 0;
 
     // 2. Retrieve from Cache and Render
     // Re-calculate hash to look up in cache (fast)
@@ -256,6 +348,7 @@ bool ImageRenderer::render_image(
     
     if (it != cache_.end()) {
         std::string encoded;
+        uint32_t out_id = 0;
         
         // Determine render dimensions (handling partial visibility)
         int render_rows = height_rows;
@@ -272,7 +365,7 @@ bool ImageRenderer::render_image(
 
         if (protocol_ == ImageProtocol::Kitty) {
             // Pass SHA-256-derived data_hash and content_hash for stable, collision-free image_id
-            encoded = render_kitty(it->second.rgba.data(), render_size, width_cols, render_rows, data_hash, content_hash);
+            encoded = render_kitty(it->second.rgba.data(), render_size, width_cols, render_rows, data_hash, content_hash, out_id);
         } else if (protocol_ == ImageProtocol::ITerm2) {
             encoded = render_iterm2(it->second.rgba.data(), it->second.width, it->second.height, width_cols, render_rows);
         } else if (protocol_ == ImageProtocol::Sixel) {
@@ -289,11 +382,11 @@ bool ImageRenderer::render_image(
             if (list_it != lru_list_.end()) {
                 lru_list_.splice(lru_list_.begin(), lru_list_, list_it);
             }
-            return true;
+            return out_id;
         }
     }
     
-    return false;
+    return 0;
 }
 
 bool ImageRenderer::preload_image(
@@ -374,6 +467,15 @@ void ImageRenderer::delete_image(const std::string& content_hash) {
     size_t data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
     uint32_t image_id = static_cast<uint32_t>(data_hash & 0xFFFFFFFF);
 
+    delete_image_by_id(image_id);
+}
+
+void ImageRenderer::delete_image_by_id(uint32_t image_id) {
+    if (protocol_ != ImageProtocol::Kitty || image_id == 0) return;
+
+    // Remove from local tracking so we re-transmit if needed later
+    transmitted_ids_.erase(image_id);
+
     auto& term = Terminal::instance();
     // Kitty delete by ID
     std::string cmd = "\033_Ga=d,d=i,i=" + std::to_string(image_id) + "\033\\";
@@ -389,6 +491,7 @@ void ImageRenderer::clear_image(int x, int y, int width_cols, int height_rows) {
     if (protocol_ == ImageProtocol::Kitty) {
         // Kitty: Delete all images (more reliable than selective delete)
         term.write_raw("\033_Ga=d\033\\");
+        transmitted_ids_.clear(); // We wiped the terminal cache
     } else {
         // Sixel/iTerm2: Overwrite with spaces (current approach works)
         for (int row = 0; row < height_rows; ++row) {
@@ -481,7 +584,7 @@ std::string ImageRenderer::write_to_temp_file(const unsigned char* data, size_t 
     );
 }
 
-std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash) {
+std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id) {
     // Input is Resized RGB Data (3 bytes/pixel)
 
     int img_w = cols * cell_width_;
@@ -490,50 +593,66 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
     // Check for TMUX environment
     static bool in_tmux = (std::getenv("TMUX") != nullptr);
 
-    // Generate stable image ID
-    uint32_t image_id = static_cast<uint32_t>(data_hash & 0xFFFFFFFF);
-
-    // 1. Write pixel data to SHM file
-    std::string b64_path = write_to_temp_file(data, len);
-    if (b64_path.empty()) {
-        return ""; // Fail gracefully
+    // Generate image ID based on terminal capabilities
+    uint32_t image_id;
+    if (terminal_respects_image_ids_) {
+        // Standard behavior: content-based ID (allows caching/placement optimization)
+        image_id = static_cast<uint32_t>(data_hash & 0xFFFFFFFF);
+    } else {
+        // Workaround for Ghostty Issue #6711: unique ID per position
+        static uint32_t unique_id_counter = 1;
+        image_id = unique_id_counter++;
     }
-
-    // 2. Construct Control Sequence (t=t for Temp File)
-    std::ostringstream ss;
     
+    out_id = image_id;
+
+    std::ostringstream ss;
+
     if (in_tmux) {
         ss << "\033Ptmux;\033\033_G";
     } else {
         ss << "\033_G";
     }
 
-    // Header:
-    // a=T: Transmit and Display
-    // t=t: Temporary File (containing RGB data)
-    // f=24: RGB Format
-    // s/v: Pixel dimensions
-    // i: Image ID
-    // q=1: Quiet
-    ss << "a=T,t=t,f=24,i=" << image_id
-       << ",s=" << img_w << ",v=" << img_h
-       << ",c=" << cols << ",r=" << rows 
-       << ",q=1,z=1,C=1";
+    // Choose transmission mode based on terminal capabilities
+    if (terminal_supports_temp_file_) {
+        // Standard: use temp file for better performance (Kitty, WezTerm, etc.)
+        std::string b64_path = write_to_temp_file(data, len);
+        if (b64_path.empty()) {
+            return ""; // Fail gracefully
+        }
+        ss << "a=T,t=t,f=24,i=" << image_id
+           << ",s=" << img_w << ",v=" << img_h
+           << ",c=" << cols << ",r=" << rows
+           << ",q=1,z=1,C=1";
+        ss << ";";
+        ss << b64_path;
 
-    ss << ";";
-    ss << b64_path;
-    
+        std::string hash_info = content_hash.empty() ? "FNV-1a" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
+        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via SHM (t=t), image_id=" +
+                                       std::to_string(image_id) +
+                                       " (" + hash_info + ")");
+    } else {
+        // Workaround: use direct transmission (t=d) for terminals with temp file bugs (Ghostty)
+        std::string b64_data = encode_base64(data, len);
+        ss << "a=T,t=d,f=24,i=" << image_id
+           << ",s=" << img_w << ",v=" << img_h
+           << ",c=" << cols << ",r=" << rows
+           << ",q=1";
+        ss << ";";
+        ss << b64_data;
+
+        std::string hash_info = content_hash.empty() ? "FNV-1a" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
+        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via direct mode (t=d), image_id=" +
+                                       std::to_string(image_id) +
+                                       " (" + hash_info + ")");
+    }
+
     if (in_tmux) {
         ss << "\033\033\\\033\\";
     } else {
         ss << "\033\\";
     }
-
-    // Log optimization
-    std::string hash_info = content_hash.empty() ? "FNV-1a" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
-    ouroboros::util::Logger::debug("ImageRenderer: Uploaded via SHM (t=t), image_id=" +
-                                   std::to_string(image_id) +
-                                   " (" + hash_info + ")");
 
     return ss.str();
 }

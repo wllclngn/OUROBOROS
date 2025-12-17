@@ -27,8 +27,6 @@ ArtworkLoader::~ArtworkLoader() {
 }
 
 void ArtworkLoader::request_artwork(const std::string& track_path) {
-    ouroboros::util::Logger::debug("ArtworkLoader: Requesting artwork");
-
     {
         std::lock_guard<std::mutex> cache_lock(cache_mutex_);
         // If already cached or loading, skip
@@ -38,6 +36,17 @@ void ArtworkLoader::request_artwork(const std::string& track_path) {
         // Mark as pending
         cache_[track_path] = ArtworkData{};
     }
+
+    // Deduplication: Check if already in flight
+    {
+        std::lock_guard<std::mutex> lock(pending_mutex_);
+        if (pending_requests_.find(track_path) != pending_requests_.end()) {
+            return;  // Already queued, skip duplicate
+        }
+        pending_requests_.insert(track_path);
+    }
+
+    ouroboros::util::Logger::debug("ArtworkLoader: Queuing request for " + track_path);
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -73,7 +82,7 @@ void ArtworkLoader::clear_pending_updates() {
 void ArtworkLoader::clear_requests() {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        std::queue<std::string> empty;
+        std::stack<std::string> empty;
         std::swap(request_queue_, empty);
     }
     {
@@ -99,8 +108,9 @@ void ArtworkLoader::worker_thread() {
             }
 
             if (!request_queue_.empty()) {
-                track_path = request_queue_.front();
+                track_path = request_queue_.top();  // LIFO: Get most recent request
                 request_queue_.pop();
+                ouroboros::util::Logger::debug("ArtworkLoader: LIFO POP - Processing most recent request (queue_size=" + std::to_string(request_queue_.size()) + ")");
             } else {
                 continue;
             }
@@ -178,6 +188,13 @@ void ArtworkLoader::worker_thread() {
                 }
             }
         }
+
+        // Remove from pending set - request has been processed
+        {
+            std::lock_guard<std::mutex> lock(pending_mutex_);
+            pending_requests_.erase(track_path);
+            ouroboros::util::Logger::debug("ArtworkLoader: Removed from pending set (size=" + std::to_string(pending_requests_.size()) + ")");
+        }
     }
 
     ouroboros::util::Logger::info("ArtworkLoader: Worker thread exiting");
@@ -222,9 +239,9 @@ const ArtworkData* ArtworkLoader::get_artwork_ref(const std::string& path) {
     }
 
     if (it == cache_.end()) {
-        ouroboros::util::Logger::debug("ArtworkLoader: Cache MISS for " + path);
+        // ouroboros::util::Logger::debug("ArtworkLoader: Cache MISS for " + path);
     } else {
-        ouroboros::util::Logger::debug("ArtworkLoader: Item found but NOT LOADED for " + path);
+        // ouroboros::util::Logger::debug("ArtworkLoader: Item found but NOT LOADED for " + path);
     }
 
     return nullptr;  // Not ready yet

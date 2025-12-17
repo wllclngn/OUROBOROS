@@ -20,6 +20,7 @@ public:
 
     void render(bool force_redraw = false);
     void handle_input();
+    void handle_input_event(const InputEvent& event);
     bool should_quit() const;
 
     // DEPRECATED: Old interface, kept for compatibility
@@ -59,9 +60,14 @@ private:
     // Focus Management
     enum class Focus {
         Browser,
-        Queue
+        Queue,
+        Search
     };
     Focus focus_ = Focus::Browser;
+
+    // Global Search
+    std::unique_ptr<widgets::SearchBox> global_search_box_;
+    void render_search_overlay(const LayoutRect& rect, const model::Snapshot& snap);
 };
 
 }  // namespace ouroboros::ui

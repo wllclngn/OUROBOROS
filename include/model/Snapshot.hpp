@@ -76,7 +76,11 @@ struct LibraryState {
     bool is_scanning = false;
     int scanned_count = 0;
     int total_count = 0;
-    
+
+    // Hierarchical cache: directory browsing support
+    std::optional<std::string> current_directory;
+    bool is_browsing_by_directory = false;
+
     bool operator==(const LibraryState&) const = default;
 };
 

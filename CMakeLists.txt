@@ -34,6 +34,7 @@ add_executable(ouroboros
     src/backend/SnapshotPublisher.cpp
     src/backend/PipeWireClient.cpp
     src/backend/Library.cpp
+    src/backend/HierarchicalCache.cpp
     src/backend/Queue.cpp
     src/backend/MetadataCache.cpp
     src/backend/MetadataParser.cpp
@@ -51,6 +52,7 @@ add_executable(ouroboros
     src/ui/ImageRenderer.cpp
     src/ui/ArtworkLoader.cpp
     src/ui/widgets/Browser.cpp
+    src/ui/widgets/DirectoryBrowser.cpp
     src/ui/widgets/Queue.cpp
     src/ui/widgets/NowPlaying.cpp
     src/ui/widgets/Controls.cpp
@@ -108,5 +110,4 @@ add_custom_target(distclean
     COMMENT "Cleaning all build artifacts for fresh rebuild"
 )
 
-enable_testing()
-add_subdirectory(tests)
+

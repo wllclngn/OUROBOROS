@@ -43,23 +43,47 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
         auto& img_renderer = ImageRenderer::instance();
         if (img_renderer.images_supported()) {
-            // Clear previous artwork
-            // if (last_art_width_ > 0 && last_art_height_ > 0) {
-            //    img_renderer.clear_image(last_art_x_, last_art_y_, last_art_width_, last_art_height_);
-            // }
-
             // Request async artwork loading (non-blocking)
             auto& loader = ArtworkLoader::instance();
             loader.request_artwork(track.path);
         }
     }
 
-    // Artwork loading happens in background - ArtworkLoader owns the cache
-    // We just query it during render_image_if_needed()
+    // Prepare Format info early to determine layout
+    std::ostringstream format_line;
 
-    // FIX: Don't draw placeholder - it causes flush_canvas to output spaces
-    // that clear Kitty graphics when the placeholder disappears
-    // Just leave the area blank if no image is available
+    // Format type
+    switch (track.format) {
+        case model::AudioFormat::MP3:  format_line << "MP3"; break;
+        case model::AudioFormat::FLAC: format_line << "FLAC"; break;
+        case model::AudioFormat::OGG:  format_line << "OGG"; break;
+        case model::AudioFormat::WAV:  format_line << "WAV"; break;
+        default: format_line << "Unknown"; break;
+    }
+
+    // Sample rate
+    if (track.sample_rate > 0) {
+        format_line << " • " << (track.sample_rate / 1000) << "kHz";
+    }
+
+    // Bitrate
+    if (track.bitrate > 0) {
+        format_line << " • " << track.bitrate << "kbps";
+    }
+
+    // Bit depth
+    if (track.bit_depth > 0) {
+        format_line << " " << track.bit_depth << "bit";
+    }
+
+    // Channels
+    if (track.channels == 2) {
+        format_line << " Stereo";
+    } else if (track.channels == 1) {
+        format_line << " Mono";
+    }
+
+    std::string format_str = format_line.str();
 
     // Calculate layout: artwork takes most space, metadata + statusline at bottom
     // Reserve 3 lines at bottom for track info, format, and statusline
@@ -69,36 +93,50 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     int content_width = content_rect.width;
     int content_height = content_rect.height;
     int available_artwork_height = content_height - metadata_lines;
-    int max_cols_from_width = content_width;
-    int max_cols_from_height = available_artwork_height * 2;  // 1:1 aspect ratio
-    int art_cols = std::min(max_cols_from_width, max_cols_from_height);
 
-    // ALGORITHM FOR PERFECT SYMMETRY:
-    // 1. Make art_cols even (required for 1:1 aspect ratio)
-    if (art_cols % 2 != 0) art_cols--;
+    // ALGORITHM FOR SYMMETRY WITH PADDING:
+    // Reserve 1 col padding each side -> 2 cols total
+    // 1. Start with width constraint
+    int art_cols = content_width - 2;
+    if (art_cols < 0) art_cols = 0;
+    int art_rows = art_cols / 2;
 
-    // 2. Ensure total_padding is even for symmetric split
-    int total_padding = content_width - art_cols;
-    if (total_padding % 2 != 0) {
-        art_cols -= 2;  // Reduce by 2 to make total_padding even
-        total_padding = content_width - art_cols;
+    // 2. Apply height constraint
+    if (art_rows > available_artwork_height) {
+        art_rows = available_artwork_height;
+        art_cols = art_rows * 2;
+        // Adjust parity to match content_width for symmetric padding
+        // If (width - cols) is odd, padding is asymmetric.
+        // We want (width - cols) to be even.
+        if ((content_width - art_cols) % 2 != 0) {
+            // Adjust cols. We must NOT exceed content_width - 2.
+            // Since we reduced from height, art_cols is likely smaller than width-2.
+            // Incrementing keeps us safe usually, unless we hit the limit.
+            if (art_cols + 1 <= content_width - 2) {
+                art_cols++;
+            } else {
+                art_cols--;
+            }
+        }
     }
 
     if (art_cols < 4) art_cols = 4;
+    art_rows = art_cols / 2;
 
-    // 3. Now we can split padding evenly (guaranteed symmetric)
+    // 3. Split padding evenly (now guaranteed symmetric due to matching parity)
+    int total_padding = content_width - art_cols;
     int horizontal_padding = total_padding / 2;
-    int art_rows = art_cols / 2;
+    // art_rows calculated above is correct
 
     ouroboros::util::Logger::debug("NowPlaying::render - content_width=" + std::to_string(content_width) +
                                    " art_cols=" + std::to_string(art_cols) +
                                    " total_padding=" + std::to_string(total_padding) +
                                    " horizontal_padding=" + std::to_string(horizontal_padding));
 
-    // Position text IMMEDIATELY after artwork (not at fixed bottom)
-    // This eliminates gaps when artwork is width-constrained
-    int artwork_bottom = content_rect.y + art_rows;
-    int y = artwork_bottom;
+    // Position text anchored to BOTTOM
+    // This ensures consistent bottom padding (0) and keeps statusline fixed
+    int lines_needed = 2 + (!format_str.empty() ? 1 : 0);
+    int y = content_rect.y + content_rect.height - lines_needed;
 
     // Track info line: ARTIST ALBUM YEAR TRACK_NUMBER SONG (multi-color like Browser)
     // Align text with artwork left edge for symmetry
@@ -150,40 +188,6 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     }
 
     // Format info
-    std::ostringstream format_line;
-
-    // Format type
-    switch (track.format) {
-        case model::AudioFormat::MP3:  format_line << "MP3"; break;
-        case model::AudioFormat::FLAC: format_line << "FLAC"; break;
-        case model::AudioFormat::OGG:  format_line << "OGG"; break;
-        case model::AudioFormat::WAV:  format_line << "WAV"; break;
-        default: format_line << "Unknown"; break;
-    }
-
-    // Sample rate
-    if (track.sample_rate > 0) {
-        format_line << " • " << (track.sample_rate / 1000) << "kHz";
-    }
-
-    // Bitrate
-    if (track.bitrate > 0) {
-        format_line << " • " << track.bitrate << "kbps";
-    }
-
-    // Bit depth
-    if (track.bit_depth > 0) {
-        format_line << " " << track.bit_depth << "bit";
-    }
-
-    // Channels
-    if (track.channels == 2) {
-        format_line << " Stereo";
-    } else if (track.channels == 1) {
-        format_line << " Mono";
-    }
-
-    std::string format_str = format_line.str();
     if (!format_str.empty()) {
         canvas.draw_text(content_rect.x + horizontal_padding, y++, truncate_text(format_str, art_cols),
                         Style{Color::Cyan, Color::Default, Attribute::Dim});
@@ -284,38 +288,45 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
     int content_width = widget_rect.width - 2;   // Subtract left+right borders
     int content_height = widget_rect.height - 2;  // Subtract top+bottom borders
 
+    // Calculate layout: artwork takes most space, metadata + statusline at bottom
     // Reserve 3 lines at bottom for metadata (no extra padding - maximize artwork)
     int metadata_lines = 3;
     int available_artwork_height = content_height - metadata_lines;
 
-    // Maximize artwork size while maintaining 1:1 aspect ratio
-    // Use whichever dimension is the limiting factor
-    int max_cols_from_width = content_width;
-    int max_cols_from_height = available_artwork_height * 2;  // 1:1 aspect: cols = 2 * rows
-
-    int art_cols = std::min(max_cols_from_width, max_cols_from_height);
-
-    // ALGORITHM FOR PERFECT SYMMETRY:
-    // 1. Make art_cols even (required for 1:1 aspect ratio)
-    if (art_cols % 2 != 0) art_cols--;
-
-    // 2. Ensure total_padding is even for symmetric split
-    int total_padding = content_width - art_cols;
-    if (total_padding % 2 != 0) {
-        art_cols -= 2;  // Reduce by 2 to make total_padding even
-        total_padding = content_width - art_cols;
-    }
-
+    // ALGORITHM FOR SYMMETRY WITH PADDING:
+    // Reserve 1 col padding each side -> 2 cols total
+    // 1. Start with width constraint
+    int art_cols = content_width - 2;
+    if (art_cols < 0) art_cols = 0;
     int art_rows = art_cols / 2;
 
-    // 3. Now we can split padding evenly (guaranteed symmetric)
+    // 2. Apply height constraint
+    if (art_rows > available_artwork_height) {
+        art_rows = available_artwork_height;
+        art_cols = art_rows * 2;
+        // Adjust parity to match content_width for symmetric padding
+        // If (width - cols) is odd, padding is asymmetric.
+        // We want (width - cols) to be even.
+        if ((content_width - art_cols) % 2 != 0) {
+            // Adjust cols. We must NOT exceed content_width - 2.
+            // Since we reduced from height, art_cols is likely smaller than width-2.
+            // Incrementing keeps us safe usually, unless we hit the limit.
+            if (art_cols + 1 <= content_width - 2) {
+                art_cols++;
+            } else {
+                art_cols--;
+            }
+        }
+    }
+
+    if (art_cols < 4) art_cols = 4;
+    art_rows = art_cols / 2;
+
+    // 3. Split padding evenly (now guaranteed symmetric due to matching parity)
+    int total_padding = content_width - art_cols;
     int horizontal_padding = total_padding / 2;
     int art_x = content_x + horizontal_padding;
     int art_y = content_y;
-
-    // Safety bounds (minimum viable display)
-    if (art_cols < 4) art_cols = 4;
-    if (art_rows < 2) art_rows = 2;
 
     ouroboros::util::Logger::debug("NowPlaying::render_image_if_needed - content_width=" + std::to_string(content_width) +
                                    " art_cols=" + std::to_string(art_cols) +

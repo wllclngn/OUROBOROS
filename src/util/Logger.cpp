@@ -4,6 +4,7 @@
 #include <iomanip>
 #include <ctime>
 #include <mutex>
+#include <format>
 
 namespace ouroboros::util {
 
@@ -31,16 +32,19 @@ void Logger::log(Level level, const std::string& message) {
     // Timestamp
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
-    log_file << std::put_time(&tm, "[%H:%M:%S] ");
-
+    
+    std::string_view level_str;
     switch (level) {
-        case Level::Debug: log_file << "[DEBUG] "; break;
-        case Level::Info:  log_file << "[INFO]  "; break;
-        case Level::Warn:  log_file << "[WARN]  "; break;
-        case Level::Error: log_file << "[ERROR] "; break;
+        case Level::Debug: level_str = "[DEBUG] "; break;
+        case Level::Info:  level_str = "[INFO]  "; break;
+        case Level::Warn:  level_str = "[WARN]  "; break;
+        case Level::Error: level_str = "[ERROR] "; break;
     }
 
-    log_file << message << std::endl;
+    // PHASE #1: Mix legacy time formatting (for robust std::tm support) 
+    // with C++20 std::format for the message body (efficient allocation).
+    log_file << std::put_time(&tm, "[%H:%M:%S] ");
+    log_file << std::format("{}{}\\n", level_str, message);
     log_file.flush();  // Ensure writes are visible immediately
 }
 

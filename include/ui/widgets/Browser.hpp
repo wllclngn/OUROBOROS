@@ -1,7 +1,6 @@
 #pragma once
 
 #include "ui/Component.hpp"
-#include "ui/widgets/SearchBox.hpp"
 #include "model/Snapshot.hpp"
 #include <string>
 #include <vector>
@@ -12,8 +11,6 @@ namespace ouroboros::ui::widgets {
 
 class Browser : public Component {
 public:
-    Browser(); // Need constructor to init SearchBox
-
     // NEW INTERFACE: Canvas-based rendering
     void render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap) override;
     void render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap, bool is_focused);
@@ -31,12 +28,6 @@ public:
         }
     }
 
-    void start_search() {
-        state_ = State::Searching;
-    }
-
-    bool is_searching() const { return state_ == State::Searching; }
-
     // Multi-select support
     void toggle_selection(int index);
     void clear_selection() { selected_indices_.clear(); }
@@ -49,14 +40,6 @@ private:
 
     // Filter logic
     void update_filtered_indices(const model::Snapshot& snap);
-
-    enum class State {
-        Browsing,
-        Searching
-    };
-    State state_ = State::Browsing;
-
-    std::unique_ptr<SearchBox> search_box_;
 
     int selected_index_ = 0;
     int scroll_offset_ = 0;

@@ -422,11 +422,47 @@ int main() {
 
             if (ret > 0 && (pfd.revents & POLLIN)) {
                 try {
-                    ouroboros::util::Logger::debug("Main: Handling input...");
-                    renderer.handle_input();
-                    ouroboros::util::Logger::debug("Main: Input handled, rendering...");
-                    renderer.render(); // Update UI immediately after input
-                    ouroboros::util::Logger::debug("Main: Post-input render complete");
+                    ouroboros::util::Logger::debug("Main: Input available, draining queue...");
+
+                    // DRAIN LOOP: Consume all buffered input events to prevent queue backlog
+                    // This fixes the Ghostty terminal runaway key repeat issue
+                    ouroboros::ui::InputEvent last_event;
+                    int events_drained = 0;
+                    auto& terminal = ouroboros::ui::Terminal::instance();
+
+                    while (true) {
+                        auto event = terminal.read_input();
+
+                        // Empty event means queue is drained
+                        if (event.key_name.empty() && event.key == 0) {
+                            break;
+                        }
+
+                        // Keep only the last event
+                        last_event = event;
+                        events_drained++;
+
+                        // Safety: warn if drain count is unusually high (possible bug in empty-event detection)
+                        if (events_drained > 1000) {
+                            ouroboros::util::Logger::warn("Main: Input drain exceeded 1000 events - possible terminal bug or stuck key");
+                            break;
+                        }
+                    }
+
+                    // Process only the LAST event from the drained queue
+                    if (events_drained > 0) {
+                        if (events_drained > 5) {
+                            ouroboros::util::Logger::debug("Main: Drained " + std::to_string(events_drained) +
+                                                          " buffered input events, processing last event");
+                        }
+
+                        ouroboros::util::Logger::debug("Main: Processing event key=" + std::to_string(last_event.key) +
+                                                      " name=" + last_event.key_name);
+                        renderer.handle_input_event(last_event);
+                        ouroboros::util::Logger::debug("Main: Event processed, rendering...");
+                        renderer.render(); // Update UI immediately after input
+                        ouroboros::util::Logger::debug("Main: Post-input render complete");
+                    }
                 } catch (const std::exception& e) {
                     ouroboros::util::Logger::error("Main: EXCEPTION during input/render: " + std::string(e.what()));
                     throw;

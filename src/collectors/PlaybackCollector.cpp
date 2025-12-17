@@ -27,6 +27,8 @@ PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher>
 }
 
 void PlaybackCollector::run(std::stop_token stop_token) {
+    bool last_queue_empty_logged = false;
+
     while (!stop_token.stop_requested()) {
         auto snap_ptr = publisher_->get_current();
         if (!snap_ptr) {
@@ -39,12 +41,18 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         const auto& snap = *snap_ptr;
 
         if (snap.queue->track_indices.empty() || snap.queue->current_index >= snap.queue->track_indices.size()) {
-            util::Logger::debug("PlaybackCollector: Queue empty or index out of bounds (size=" +
-                std::to_string(snap.queue->track_indices.size()) + ", idx=" +
-                std::to_string(snap.queue->current_index) + ")");
+            if (!last_queue_empty_logged) {
+                util::Logger::debug("PlaybackCollector: Queue empty or index out of bounds (size=" +
+                    std::to_string(snap.queue->track_indices.size()) + ", idx=" +
+                    std::to_string(snap.queue->current_index) + ")");
+                last_queue_empty_logged = true;
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
+        
+        // Reset flag since we have a valid queue
+        last_queue_empty_logged = false;
 
         // Get track index from queue, then resolve to actual Track via Library
         int track_index = snap.queue->track_indices[snap.queue->current_index];

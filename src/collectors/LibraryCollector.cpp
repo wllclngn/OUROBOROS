@@ -38,18 +38,55 @@ void LibraryCollector::run(std::stop_token stop_token) {
         }
     }
     std::filesystem::path cache_file = cache_dir / "library.bin";
+    
+    // Set cache root for hierarchical cache
+    library.set_cache_root(cache_dir);
 
     bool cache_valid = false;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // TIER 0: Tree Hash Validation (O(1))
+    // PHASE 1: Try Hierarchical Cache
     // ═══════════════════════════════════════════════════════════════════════
-    if (std::filesystem::exists(cache_file)) {
+    if (library.load_from_hierarchical_cache(cache_dir)) {
+        util::Logger::info("Hierarchical cache loaded: " + std::to_string(library.get_track_count()) + " tracks");
+        cache_valid = true;
+
+        // Instant publish!
+        auto new_lib_state = std::make_shared<model::LibraryState>();
+        new_lib_state->tracks = library.get_all_tracks();
+
+        // Sort library
+        util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
+        ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
+            if (a.artist != b.artist) return a.artist < b.artist;
+            if (a.date != b.date) return a.date < b.date;
+            return a.track_number < b.track_number;
+        });
+        util::Logger::info("Library sorted successfully");
+
+        new_lib_state->is_scanning = false;
+        new_lib_state->scanned_count = library.get_track_count();
+        new_lib_state->total_count = library.get_track_count();
+
+        publisher_->update([&](model::Snapshot& s) {
+            s.library = new_lib_state;
+            s.timestamp = std::chrono::steady_clock::now();
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TIER 0: Tree Hash Validation (O(1)) [Monolithic Fallback]
+    // ═══════════════════════════════════════════════════════════════════════
+    backend::Library::CacheValidationResult tier0_result = backend::Library::CacheValidationResult::GenericFailure;
+
+    if (!cache_valid && std::filesystem::exists(cache_file)) {
         if (library.load_from_cache(cache_file)) {
             util::Logger::info("Cache loaded: " + std::to_string(library.get_track_count()) + " tracks");
 
             // Validate cache with TIER 0 (quick check)
-            if (library.validate_cache_tier0(cache_file)) {
+            tier0_result = library.validate_cache_tier0(cache_file);
+            
+            if (tier0_result == backend::Library::CacheValidationResult::Valid) {
                 util::Logger::info("TIER 0: Cache validated successfully - skipping scan");
                 cache_valid = true;
 
@@ -81,7 +118,11 @@ void LibraryCollector::run(std::stop_token stop_token) {
     // ═══════════════════════════════════════════════════════════════════════
     // TIER 1: Directory-Level Scan (O(dirs))
     // ═══════════════════════════════════════════════════════════════════════
-    if (!cache_valid && std::filesystem::exists(cache_file) && library.get_track_count() > 0) {
+    // Optimization: Only try TIER 1 if TIER 0 failed gently (e.g. Generic/Missing).
+    // If TIER 0 said CountMismatch, we KNOW files were added/removed, so we must scan.
+    bool skip_tier1 = (tier0_result == backend::Library::CacheValidationResult::CountMismatch);
+
+    if (!cache_valid && !skip_tier1 && std::filesystem::exists(cache_file) && library.get_track_count() > 0) {
         util::Logger::info("TIER 0 failed - trying TIER 1 directory scan");
 
         auto current_dir_mtimes = util::DirectoryScanner::scan_directories_only(music_dir);
@@ -112,6 +153,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
                 s.timestamp = std::chrono::steady_clock::now();
             });
         }
+    } else if (skip_tier1) {
+        util::Logger::info("Skipping TIER 1 because TIER 0 detected Count Mismatch (files added/removed)");
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -146,6 +189,10 @@ void LibraryCollector::run(std::stop_token stop_token) {
 
         // Save cache
         library.save_to_cache(cache_file);
+
+        // Generate hierarchical caches
+        util::Logger::info("Generating hierarchical caches...");
+        library.generate_hierarchical_caches(cache_dir);
 
         // Publish final library
         auto new_lib_state = std::make_shared<model::LibraryState>();

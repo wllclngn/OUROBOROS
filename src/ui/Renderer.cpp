@@ -70,6 +70,7 @@ Renderer::Renderer(std::shared_ptr<backend::SnapshotPublisher> publisher)
     status_bar_ = std::make_unique<widgets::StatusBar>();
     album_browser_ = std::make_unique<widgets::AlbumBrowser>();
     help_overlay_ = std::make_unique<widgets::HelpOverlay>();
+    global_search_box_ = std::make_unique<widgets::SearchBox>();
 
     // Initialize image renderer
     auto& img = ImageRenderer::instance();
@@ -171,6 +172,20 @@ void Renderer::compute_layout(int cols, int rows) {
     queue_rect_.y = right_area.y + np_height;
     queue_rect_.width = right_width;
     queue_rect_.height = queue_height;
+}
+
+void Renderer::render_search_overlay(const LayoutRect& rect, const model::Snapshot& snap) {
+    (void)rect;
+    if (focus_ != Focus::Search) return;
+
+    // Draw box over Browser area
+    LayoutRect search_rect = {browser_rect_.x, browser_rect_.y, browser_rect_.width, 3};
+
+    // Clear area behind it
+    canvas_.fill_rect(search_rect.x, search_rect.y, search_rect.width, search_rect.height, Cell{" ", Style{}});
+
+    global_search_box_->set_visible(true);
+    global_search_box_->render(canvas_, search_rect, snap);
 }
 
 void Renderer::flush_canvas() {
@@ -277,6 +292,9 @@ void Renderer::render(bool force_redraw) {
         help_overlay_->render(canvas_, fullscreen_rect, *snap);
     }
 
+    // Global Search Overlay
+    render_search_overlay({0, 0, canvas_.width(), canvas_.height()}, *snap);
+
     // FLUSH CANVAS TO TERMINAL
     flush_canvas();
 
@@ -313,11 +331,12 @@ void Renderer::handle_input() {
 
     ouroboros::util::Logger::debug("handle_input: Got key=" + std::to_string(event.key) + " name=" + event.key_name);
 
+    handle_input_event(event);
+}
+
+void Renderer::handle_input_event(const InputEvent& event) {
     // Check if current widget is capturing text input
-    bool input_captured = false;
-    if (focus_ == Focus::Browser && browser_->is_searching()) {
-        input_captured = true;
-    }
+    bool input_captured = (focus_ == Focus::Search);
 
     // Global quit - check both 'q' and 'Q'
     if (!input_captured && (event.key == 'q' || event.key == 'Q')) {
@@ -417,19 +436,8 @@ void Renderer::handle_input() {
 
     // Ctrl+f: Start Search (Ctrl+f = ASCII 6)
     if (event.key == 6) {
-        // Focus Browser
-        focus_ = Focus::Browser;
-        
-        // Switch to List View if in Album View (since AlbumBrowser has no search yet)
-        if (show_album_view_) {
-            show_album_view_ = false;
-            // Clear graphics
-            auto& img_renderer = ImageRenderer::instance();
-            img_renderer.clear_image(0, 0, 0, 0);
-        }
-        
-        // Start Search
-        browser_->start_search();
+        focus_ = Focus::Search;
+        global_search_box_->set_visible(true);
         return;
     }
 
@@ -452,7 +460,26 @@ void Renderer::handle_input() {
     }
 
     // Route input based on focus
-    if (focus_ == Focus::Browser) {
+    if (focus_ == Focus::Search) {
+        auto result = global_search_box_->handle_search_input(event);
+        std::string query = global_search_box_->get_query();
+        
+        // Live update filter
+        ouroboros::util::Logger::debug("GlobalSearch: Query='" + query + "' -> " + (show_album_view_ ? "AlbumBrowser" : "Browser"));
+        if (show_album_view_) {
+            album_browser_->set_filter(query);
+        } else {
+            browser_->set_filter(query);
+        }
+
+        if (result == widgets::SearchBox::Result::Submit) {
+            focus_ = Focus::Browser;
+            global_search_box_->set_visible(false);
+        } else if (result == widgets::SearchBox::Result::Cancel) {
+            focus_ = Focus::Browser;
+            global_search_box_->set_visible(false);
+        }
+    } else if (focus_ == Focus::Browser) {
         // Browser/AlbumBrowser has focus
         if (show_album_view_) {
             album_browser_->handle_input(event);

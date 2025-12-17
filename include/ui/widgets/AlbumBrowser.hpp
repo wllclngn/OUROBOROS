@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <memory>
 #include <unordered_set>
+#include <chrono>
 
 namespace ouroboros::ui::widgets {
 
@@ -33,16 +35,36 @@ public:
     // Render album artwork after Canvas flush (similar to NowPlaying)
     void render_images_if_needed(const LayoutRect& rect, bool force_render);
 
+    // Global Search Interface
+    void set_filter(const std::string& query);
+
 private:
+    void update_filtered_albums();
+
     std::vector<AlbumGroup> albums_;
+    std::vector<size_t> filtered_album_indices_; // Indices into albums_
     int cols_ = 1;
     int scroll_offset_ = 0;
     int selected_index_ = 0;
     int last_scroll_offset_ = -1;  // Dirty tracking for scroll changes
 
+    // Smart prefetch timing: Debounce requests and delay prefetch until scroll idle
+    std::chrono::steady_clock::time_point last_scroll_time_{};
+    std::chrono::steady_clock::time_point last_request_time_{};
+    static constexpr auto SCROLL_DEBOUNCE_MS = std::chrono::milliseconds(35);
+    static constexpr auto PREFETCH_DELAY_MS = std::chrono::milliseconds(150);
+
+    std::string filter_query_;
+    bool filter_dirty_ = false;
+    bool content_changed_ = false; // Flag to force clear images on filter change
+
     // Track which images are currently displayed (for upload deduplication)
-    // Key: "x,y,image_id" Value: SHA-256 hash (for verification)
-    std::map<std::string, std::string> displayed_images_;
+    // Key: "x,y,hash_snippet" (unique per position and content)
+    struct DisplayedImageInfo {
+        std::string hash;
+        uint32_t image_id;
+    };
+    std::map<std::string, DisplayedImageInfo> displayed_images_;
 };
 
 }  // namespace ouroboros::ui::widgets

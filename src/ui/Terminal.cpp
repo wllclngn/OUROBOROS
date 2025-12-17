@@ -9,22 +9,21 @@
 #include <csignal>
 #include <cerrno>
 #include <poll.h>
+#include <format>
+#include <atomic>
 
 namespace ouroboros::ui {
 
-static Terminal* g_terminal_instance = nullptr;
+// PHASE #3: Signal Safety
+// Use volatile sig_atomic_t for signal flag - NEVER call ioctl in a handler!
+static volatile std::sig_atomic_t g_resize_pending = 0;
 
 static void sigwinch_handler(int) {
-    if (g_terminal_instance) {
-        winsize w;
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &w);
-        // Size will be picked up on next get_terminal_width/height call
-    }
+    g_resize_pending = 1;
 }
 
 Terminal& Terminal::instance() {
     static Terminal instance;
-    g_terminal_instance = &instance;
     return instance;
 }
 
@@ -118,7 +117,8 @@ void Terminal::writer_loop() {
                 }
             }
             if (chunk.size() > 100) {
-                ouroboros::util::Logger::debug("Terminal: Wrote " + std::to_string(written) + " bytes to stdout");
+                // PHASE #3: Modern format for logging
+                ouroboros::util::Logger::debug(std::format("Terminal: Wrote {} bytes to stdout", written));
             }
         } else if (!running_ && write_queue_.empty()) {
             break; 
@@ -139,22 +139,30 @@ void Terminal::clear_screen() {
 }
 
 void Terminal::move_cursor(int x, int y) {
-    write_raw("\033[" + std::to_string(y + 1) + ";" + std::to_string(x + 1) + "H");
+    // PHASE #3: Performance Optimization
+    // Use std::format for efficient string construction.
+    // This avoids multiple allocations from the '+' operator used previously.
+    write_raw(std::format("\033[{};{}H", y + 1, x + 1));
 }
 
 void Terminal::print(int x, int y, const std::string& text) {
     // Construct the full sequence to atomicize the cursor move + text
-    // This reduces cursor jumping artifacts
-    std::string seq = "\033[" + std::to_string(y + 1) + ";" + std::to_string(x + 1) + "H" + text;
-    write_raw(seq);
+    // This reduces cursor jumping artifacts and unnecessary intermediate strings
+    write_raw(std::format("\033[{};{}H{}", y + 1, x + 1, text));
 }
 
 void Terminal::flush() {
-    // No-op in async model, or could wait for empty queue. 
-    // For performance, we rely on the writer thread to keep up.
+    // No-op in async model
 }
 
 InputEvent Terminal::read_input() {
+    // PHASE #3: Check safe flag
+    if (g_resize_pending) {
+        g_resize_pending = 0;
+        // Signal event loop to re-render
+        return {InputEvent::Type::Resize, 0, "resize"};
+    }
+
     char c;
     ssize_t n;
 
@@ -163,11 +171,11 @@ InputEvent Terminal::read_input() {
         n = read(STDIN_FILENO, &c, 1);
     } while (n < 0 && errno == EINTR);
 
-    // Debug: log what read() returned
+    // Debug: log what read() returned (only on error/weirdness)
     if (n != 1) {
-        ouroboros::util::Logger::debug("read_input: read() returned " + std::to_string(n) +
-                                       ", errno=" + std::to_string(errno) +
-                                       " (EAGAIN=" + std::to_string(EAGAIN) + ")");
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
+             ouroboros::util::Logger::debug(std::format("read_input: read() returned {}, errno={} ({})", n, errno, EAGAIN));
+        }
     }
 
     if (n == 1) {

@@ -5,10 +5,11 @@
 #include <thread>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
+#include <stack>
 #include <atomic>
 #include <functional>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ouroboros::ui {
 
@@ -66,10 +67,14 @@ private:
 
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
-    std::queue<std::string> request_queue_;
+    std::stack<std::string> request_queue_;  // LIFO: Process most recent requests first
 
     std::mutex cache_mutex_;
     std::unordered_map<std::string, ArtworkData> cache_;
+
+    // Request deduplication: Track in-flight requests to prevent duplicates
+    std::mutex pending_mutex_;
+    std::unordered_set<std::string> pending_requests_;
 
     std::atomic<bool> has_updates_{false};
 };

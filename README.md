@@ -3,6 +3,7 @@
 An offline, metadata driven music player built in C++23 for modern Linux Terminals, OUROBOROS is a love letter to era defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation. With ~10,800 lines of C++23, it delivers 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
+- **Terminal Support**: OUROBOROS supports Kitty and Ghostty Terminals the Kitty protocol system. As of December 2025, Kitty is recommended given its rendering performance.
 - **Lock-Free Architecture**: Zero-deadlock snapshot system with atomic reads (UI never blocks)
 - **Album Artwork Engine**: Kitty/iTerm2/Sixel protocols with `/dev/shm` shared memory transmission
 - **Multi-Format Audio**: MP3, FLAC, OGG/Vorbis, WAV with PipeWire output and per-track format negotiation
@@ -15,14 +16,19 @@ An offline, metadata driven music player built in C++23 for modern Linux Termina
 
 ## Screenshots
 
-### Main Interface
-![Main](2025-12-15_18-48.png)
+### Main Interface: Album View, Large Display
+![Main](2025-12-17_12-26.png)
 
-### Album Browser
-![Albums](2025-12-15_18-54.png)
+### Main Interface: Album View
+![Main](2025-12-17_12-23.png)
 
-### Search View
-![Albums](2025-12-15_18-54_1.png)
+### Search: Track View
+![Albums](2025-12-17_12-24_1.png)
+
+### Search: Album View
+![Albums](2025-12-17_12-24.png)
+
+
 
 ## Build
 

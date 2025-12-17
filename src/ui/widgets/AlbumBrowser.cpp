@@ -3,20 +3,72 @@
 #include "ui/ImageRenderer.hpp"
 #include "ui/ArtworkLoader.hpp"
 #include "backend/MetadataParser.hpp"
+#include "backend/Config.hpp"
 #include "config/Theme.hpp"
 #include "events/EventBus.hpp"
 #include "util/TimSort.hpp"
+#include "util/BoyerMoore.hpp"
 #include "util/Logger.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <vector>
+#include <numeric>
+#include <set>
 
 namespace ouroboros::ui::widgets {
 
 // Global SHARED POINTER to current snapshot for event handling
 // This prevents dangling pointer issues when snap reference goes out of scope
 static std::shared_ptr<const model::Snapshot> g_current_snapshot = nullptr;
+
+void AlbumBrowser::set_filter(const std::string& query) {
+    ouroboros::util::Logger::debug("AlbumBrowser::set_filter: '" + query + "' (current: '" + filter_query_ + "')");
+    if (filter_query_ != query) {
+        filter_query_ = query;
+        filter_dirty_ = true;
+    }
+}
+
+void AlbumBrowser::update_filtered_albums() {
+    filtered_album_indices_.clear();
+
+    if (filter_query_.empty()) {
+        filtered_album_indices_.resize(albums_.size());
+        std::iota(filtered_album_indices_.begin(), filtered_album_indices_.end(), 0);
+        return;
+    }
+
+    util::BoyerMooreSearch searcher(filter_query_);
+
+    for (size_t i = 0; i < albums_.size(); ++i) {
+        const auto& album = albums_[i];
+        bool match = false;
+
+        // Search in Album Title
+        if (searcher.search(album.title) != -1) {
+            match = true;
+        }
+        // Search in Artist
+        else if (searcher.search(album.artist) != -1) {
+            match = true;
+        }
+
+        if (match) {
+            filtered_album_indices_.push_back(i);
+        }
+    }
+
+    // Reset selection if out of bounds
+    if (selected_index_ >= (int)filtered_album_indices_.size()) {
+        selected_index_ = 0;
+    }
+    
+    content_changed_ = true;
+    
+    ouroboros::util::Logger::debug("AlbumBrowser: Filtered " + std::to_string(albums_.size()) + 
+                                   " -> " + std::to_string(filtered_album_indices_.size()) + " albums");
+}
 
 void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
     ouroboros::util::Logger::info("AlbumBrowser: refresh_cache called with " +
@@ -27,7 +79,16 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
 
     for (size_t i = 0; i < snap.library->tracks.size(); ++i) {
         const auto& track = snap.library->tracks[i];
-        std::string key = track.album + "::" + track.artist;
+
+        // Extract directory for grouping key (handles compilation/featured artist albums)
+        std::string album_dir;
+        if (!track.path.empty()) {
+            namespace fs = std::filesystem;
+            album_dir = fs::path(track.path).parent_path().string();
+        }
+
+        // Group by: album name + directory (prevents duplicates for various-artist/featured albums)
+        std::string key = track.album + "::" + album_dir;
 
         if (groups.find(key) == groups.end()) {
             AlbumGroup g;
@@ -38,11 +99,8 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
             // Store first track path for artwork lookup via ArtworkLoader
             g.representative_track_path = track.path;
 
-            // Extract directory from first track in album
-            if (!track.path.empty()) {
-                namespace fs = std::filesystem;
-                g.album_directory = fs::path(track.path).parent_path().string();
-            }
+            // Store directory
+            g.album_directory = album_dir;
 
             groups[key] = g;
 
@@ -62,6 +120,9 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
         if (a.artist != b.artist) return a.artist < b.artist;
         return a.title < b.title;
     });
+
+    // Initial update of filtered indices (matches all)
+    update_filtered_albums();
 
     ouroboros::util::Logger::info("AlbumBrowser: refresh_cache complete - " +
                                   std::to_string(albums_.size()) + " albums created");
@@ -90,23 +151,44 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
         rect.height - 2
     };
 
+    // Update filter if needed
+    if (filter_dirty_) {
+        ouroboros::util::Logger::debug("AlbumBrowser::render: filter_dirty_ is true, updating...");
+        update_filtered_albums();
+        filter_dirty_ = false;
+    }
+
     // DYNAMIC CALCULATION: Grid dimensions based on container
-    // Preferred cell size (user likes 24x10)
-    const int preferred_cell_w = 24;
-    const int preferred_cell_h = 18;  // Increased for larger artwork
+    
+    // Configurable columns
+    cols_ = backend::Config::instance().album_grid_columns;
+    if (cols_ < 1) cols_ = 1;
 
-    // Calculate columns that fit in the actual container width
-    int cols_available = content_rect.width / preferred_cell_w;
-    if (cols_available < 1) cols_available = 1;
-    cols_ = cols_available;
+    // 1. Calculate Width First (Fill the screen)
+    const int cell_w = content_rect.width / cols_;
 
-    // Actual cell dimensions (use container width, keep preferred height)
-    const int cell_w = content_rect.width / cols_available;
-    const int cell_h = preferred_cell_h;
+    // 2. Calculate Height Second (Maintain aspect ratio)
+    // Terminal aspect ratio correction: 1 col width ≈ 0.5 row height visually
+    // So for a square image: height_rows = width_cols / 2
+    const int TEXT_LINES = 1;
+    const int BORDER_H = 2;
+    const int PADDING_W = 2; // Left + Right borders
 
-    int total_albums = albums_.size();
+    int art_width = cell_w - PADDING_W;
+    int art_height = art_width / 2; // Aspect ratio correction
+
+    // Total cell height
+    const int cell_h = art_height + TEXT_LINES + BORDER_H;
+
+    // Center the grid globally
+    int grid_width = cols_ * cell_w;
+    int x_offset = (content_rect.width - grid_width) / 2;
+
+    // Use filtered indices for rendering
+    int total_albums = filtered_album_indices_.size();
     if (total_albums == 0) {
-        canvas.draw_text(content_rect.x + 2, content_rect.y + 2, "(no albums)",
+        canvas.draw_text(content_rect.x + 2, content_rect.y + 2, 
+                        filter_query_.empty() ? "(no albums)" : "(no matching albums)",
                         Style{Color::Default, Color::Default, Attribute::Dim});
         return;
     }
@@ -128,27 +210,10 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
         scroll_offset_ = selected_row - visible_rows + 1;
     }
 
-    // Calculate standard box dimensions ONCE (all albums have same cell_w)
-    // Terminal cells are ~1:2 (width:height), so cols = 2 × rows for visual square
-    const int TEXT_LINES = 2;  // artist + album title
-    const int BORDER_H = 2;    // Top + bottom border
-
-    int available_art_width = cell_w - 2;  // Account for borders
-    int available_art_height = cell_h - (BORDER_H + TEXT_LINES); // Dynamic calculation, no magic numbers
-
-    int art_cols = available_art_width;
-    int art_rows = art_cols / 2;
-
-    if (art_rows > available_art_height) {
-        art_rows = available_art_height;
-        art_cols = art_rows * 2;
-    }
-
-    if (art_cols % 2 != 0) art_cols--;
-    art_rows = art_cols / 2;
-    int box_w = art_cols + 2;  // Artwork width + left/right borders
-    int box_h = art_rows + TEXT_LINES + BORDER_H;  // Artwork + text + borders
-
+    // Box Dimensions (fully dynamic now)
+    int box_w = art_width + PADDING_W;
+    int box_h = cell_h;
+    
     // Render visible albums in grid
     int y_offset = content_rect.y;
 
@@ -160,15 +225,17 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             int idx = r * cols_ + c;
             if (idx >= total_albums) break;
 
-            const auto& album = albums_[idx];
+            // Lookup actual album from filtered list
+            size_t album_idx = filtered_album_indices_[idx];
+            const auto& album = albums_[album_idx];
             bool is_selected = (idx == selected_index_);
 
             // Calculate cell position (for grid spacing)
-            int cell_x = content_rect.x + (c * cell_w);
+            int cell_x = content_rect.x + x_offset + (c * cell_w);
             int cell_y = y_offset;
 
-            // Box position - shift right by 1 to center
-            int box_x = cell_x + 1;
+            // Box position - Center in cell
+            int box_x = cell_x + (cell_w - box_w) / 2;
             int box_y = cell_y;
 
             // Determine border color
@@ -185,36 +252,77 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             // Text width based on box width
             int text_width = box_w - 3;  // Box width - borders - padding
 
-            // Draw artist (bottom - 2)
-            std::string artist = truncate_text(album.artist, text_width);
-            canvas.draw_text(box_x + 1, box_y + box_h - 3, artist,
-                           Style{Color::BrightWhite, Color::Default, Attribute::Bold});
+            // Prepare strings
+            std::string artist_str = album.artist + ": ";
+            std::string album_str = album.title;
+            
+            // Calculate visual widths
+            int artist_display_w = ouroboros::ui::display_cols(artist_str);
+            int album_display_w = ouroboros::ui::display_cols(album_str);
+            
+            int max_artist_w = text_width;
+            
+            // Smart truncation strategy
+            if (artist_display_w + album_display_w > text_width) {
+                // If total is too long...
+                if (artist_display_w > text_width * 0.6) {
+                    // Cap artist at 60% (min 5 chars)
+                    max_artist_w = std::max(static_cast<int>(text_width * 0.6), 5);
+                } else {
+                    // Artist fits in <60%, let it stay, squeeze album
+                    max_artist_w = artist_display_w;
+                }
+            }
+            
+            // Draw Artist (Bold)
+            std::string art_trunc = truncate_text(artist_str, max_artist_w);
+            int next_x = canvas.draw_text(box_x + 1, box_y + box_h - 2, art_trunc, 
+                                        Style{Color::BrightWhite, Color::Default, Attribute::Bold});
 
-            // Draw album title (bottom - 1)
-            std::string title = truncate_text(album.title, text_width);
-            canvas.draw_text(box_x + 1, box_y + box_h - 2, title,
-                           Style{Color::Default, Color::Default, Attribute::Dim});
+            // Draw Album (Dim) in remaining space
+            int remaining = (box_x + 1 + text_width) - next_x;
+            if (remaining > 2) {
+                std::string alb_trunc = truncate_text(album_str, remaining);
+                canvas.draw_text(next_x, box_y + box_h - 2, alb_trunc,
+                               Style{Color::Default, Color::Default, Attribute::Dim});
+            }
         }
 
         y_offset += box_h;  // Use actual box height instead of cell_h
     }
 
     // Draw border (will be redrawn on top of images in draw_border_overlay)
-    draw_box_border(canvas, rect, "LIBRARY [" + std::to_string(albums_.size()) + " ALBUMS]", Style{}, is_focused);
+    std::string title = "LIBRARY";
+    if (!filter_query_.empty()) {
+        title += " [SEARCH: " + filter_query_ + "]";
+    } else {
+        title += " [" + std::to_string(albums_.size()) + " ALBUMS]";
+    }
+    
+    draw_box_border(canvas, rect, title, Style{}, is_focused);
 }
 
 void AlbumBrowser::handle_input(const InputEvent& event) {
+    // Clear filter on ESC if not searching
+    if ((event.key == 27 || event.key_name == "escape") && !filter_query_.empty()) {
+        ouroboros::util::Logger::debug("AlbumBrowser: ESC pressed, clearing filter");
+        set_filter("");
+        return;
+    }
+
     if (albums_.empty()) return;
+    int total_albums = filtered_album_indices_.size();
+    if (total_albums == 0) return;
 
     // Grid navigation: hjkl or arrow keys
     if (event.key_name == "right" || event.key == 'l') {
-        if (selected_index_ < (int)albums_.size() - 1) selected_index_++;
+        if (selected_index_ < total_albums - 1) selected_index_++;
     }
     else if (event.key_name == "left" || event.key == 'h') {
         if (selected_index_ > 0) selected_index_--;
     }
     else if (event.key_name == "down" || event.key == 'j') {
-        if (selected_index_ + cols_ < (int)albums_.size()) selected_index_ += cols_;
+        if (selected_index_ + cols_ < total_albums) selected_index_ += cols_;
     }
     else if (event.key_name == "up" || event.key == 'k') {
         if (selected_index_ - cols_ >= 0) selected_index_ -= cols_;
@@ -226,7 +334,9 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
         }
 
         auto& bus = events::EventBus::instance();
-        const auto& album = albums_[selected_index_];
+        // Lookup actual album from filtered list
+        size_t album_idx = filtered_album_indices_[selected_index_];
+        const auto& album = albums_[album_idx];
 
         // Queue each track in the album (same pattern as Browser multi-select)
         for (int idx : album.track_indices) {
@@ -249,15 +359,26 @@ SizeConstraints AlbumBrowser::get_constraints() const {
 }
 
 void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_render) {
-    ouroboros::util::Logger::debug("AlbumBrowser: render_images_if_needed called - rect(" +
-                                  std::to_string(rect.x) + "," + std::to_string(rect.y) + "," +
-                                  std::to_string(rect.width) + "x" + std::to_string(rect.height) +
-                                  ") force_render=" + (force_render ? "true" : "false"));
+    // ouroboros::util::Logger::debug("AlbumBrowser: render_images_if_needed called - rect(" +
+    //                               std::to_string(rect.x) + "," + std::to_string(rect.y) + "," +
+    //                               std::to_string(rect.width) + "x" + std::to_string(rect.height) +
+    //                               ") force_render=" + (force_render ? "true" : "false"));
 
     auto& img_renderer = ImageRenderer::instance();
     if (!img_renderer.images_supported()) {
         ouroboros::util::Logger::warn("AlbumBrowser: Images not supported, skipping artwork render");
         return;
+    }
+
+    // Fix 0: Content Changed - Full wipe if filter changed
+    if (content_changed_) {
+        ouroboros::util::Logger::debug("AlbumBrowser: Content changed (filter), wiping " + std::to_string(displayed_images_.size()) + " images");
+        for (const auto& [key, info] : displayed_images_) {
+            img_renderer.delete_image_by_id(info.image_id);
+        }
+        displayed_images_.clear();
+        force_render = true;
+        content_changed_ = false;
     }
 
     // Check if ImageRenderer has pending async updates (artwork just finished loading)
@@ -269,46 +390,76 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     }
 
     // Fix 1: Initial Load - Force render if we have albums but haven't displayed anything yet
-    if (!force_render && !albums_.empty() && displayed_images_.empty()) {
+    if (!force_render && !filtered_album_indices_.empty() && displayed_images_.empty()) {
         ouroboros::util::Logger::debug("AlbumBrowser: First render detected, forcing update");
         force_render = true;
     }
 
-    // Fix 2: Stale Images - Surgically delete old images on scroll
-    if (scroll_offset_ != last_scroll_offset_) {
-        ouroboros::util::Logger::debug("AlbumBrowser: Scroll changed (" + 
-                                      std::to_string(last_scroll_offset_) + " -> " + 
-                                      std::to_string(scroll_offset_) + "), clearing old images");
-        for (const auto& [key, hash] : displayed_images_) {
-            img_renderer.delete_image(hash);
-        }
-        displayed_images_.clear();
-        force_render = true;
-    } else if (scroll_offset_ == last_scroll_offset_ && !force_render) {
-        // Optimization: Skip if nothing changed
-        ouroboros::util::Logger::debug("AlbumBrowser: Skipping render - no changes");
+    // OPTIMIZATION: Removed aggressive "delete all on scroll" to prevent flicker.
+    // Instead, we track active images and only delete those that scroll off-screen.
+
+    // Smart prefetch: Debounce to prevent per-frame request spam
+    auto now = std::chrono::steady_clock::now();
+
+    // Debounce: Skip if called too rapidly (per-frame spam during scroll)
+    if (!force_render && (now - last_request_time_) < SCROLL_DEBOUNCE_MS) {
+        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_request_time_).count();
+        ouroboros::util::Logger::debug("AlbumBrowser: DEBOUNCE - Skipping request (elapsed=" + std::to_string(elapsed_ms) + "ms)");
         return;
     }
+    last_request_time_ = now;
 
-    // Update last scroll offset for next frame
-    last_scroll_offset_ = scroll_offset_;
+    // Track scroll position changes
+    if (last_scroll_offset_ != scroll_offset_) {
+        last_scroll_time_ = now;
+        ouroboros::util::Logger::debug("AlbumBrowser: SCROLL detected - offset changed from " + std::to_string(last_scroll_offset_) + " to " + std::to_string(scroll_offset_));
+        last_scroll_offset_ = scroll_offset_;
+    }
 
-    // DYNAMIC CALCULATION: Use same logic as render() - NO MAGIC NUMBERS
-    const int preferred_cell_w = 24;
-    const int preferred_cell_h = 18;  // Match render() cell height
+    // DYNAMIC CALCULATION: Use same logic as render()
+    
+    // Configurable columns
+    int cols_available = backend::Config::instance().album_grid_columns;
+    if (cols_available < 1) cols_available = 1;
 
+    // 1. Calculate Width First (Fill the screen)
     // Calculate content area from actual widget rect (draw_box_border uses 1 cell for borders)
     int content_x = rect.x + 1;
     int content_y = rect.y + 1;
     int content_width = rect.width - 2;   // Subtract left+right borders
     int content_height = rect.height - 2;  // Subtract top+bottom borders
 
-    // Calculate grid dimensions from actual content area
-    int cols_available = content_width / preferred_cell_w;
-    if (cols_available < 1) cols_available = 1;
-
     const int cell_w = content_width / cols_available;
-    const int cell_h = preferred_cell_h;
+
+    // 2. Calculate Height Second (Maintain aspect ratio)
+    const int TEXT_LINES = 1;
+    const int BORDER_H = 2;
+    const int PADDING_W = 2;
+
+        int art_width = cell_w - PADDING_W;
+
+        int art_height = art_width / 2; // Aspect ratio correction
+
+    
+
+        // Aliases for compatibility with existing code
+
+        int art_cols = art_width;
+
+        int art_rows = art_height;
+
+    
+
+        // Total cell height
+
+        const int cell_h = art_height + TEXT_LINES + BORDER_H;
+
+    
+
+        // Center the grid globally
+
+        int grid_width = cols_available * cell_w;
+    int x_offset = (content_width - grid_width) / 2;
 
     // Calculate visible rows from actual container height
     // Use CEILING division to include partial rows (DYNAMISM)
@@ -318,33 +469,20 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int start_row = scroll_offset_;
     int end_row = start_row + visible_rows_grid + 1;  // +1 buffer for partially visible rows
 
-    // Calculate standard box dimensions ONCE (must match render() function)
-    const int TEXT_LINES = 2;  // artist + album title
-    const int BORDER_H = 2;    // Top + bottom border
-
-    int available_art_width = cell_w - 2;
-    int available_art_height = cell_h - (BORDER_H + TEXT_LINES);
-
-    int art_cols = available_art_width;
-    int art_rows = art_cols / 2;
-
-    if (art_rows > available_art_height) {
-        art_rows = available_art_height;
-        art_cols = art_rows * 2;
-    }
-
-    if (art_cols % 2 != 0) art_cols--;
-    art_rows = art_cols / 2;
-
     auto& loader = ArtworkLoader::instance();
+    int total_filtered = filtered_album_indices_.size();
 
     // PRE-LOAD PHASE: Request all visible artwork BEFORE rendering
-    for (int r = start_row; r < end_row && r < (int)albums_.size() / cols_available + 1; ++r) {
+    // LIFO STACK: Push Top-Left to Bottom-Right, so Bottom-Right (newest) pops FIRST
+    // This optimizes for scrolling DOWN, which is the most common action.
+    for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
         for (int c = 0; c < cols_available; ++c) {
             int idx = r * cols_available + c;
-            if (idx >= (int)albums_.size()) break;
+            if (idx >= total_filtered) continue;
 
-            auto& album = albums_[idx];
+            size_t album_idx = filtered_album_indices_[idx];
+            auto& album = albums_[album_idx];
+
             if (!album.representative_track_path.empty()) {
                 loader.request_artwork(album.representative_track_path);
             }
@@ -355,15 +493,18 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int processed_count = 0;
     int ready_count = 0;
 
-    int y_offset = content_y;
-    for (int r = start_row; r < end_row && r < (int)albums_.size() / cols_available + 1; ++r) {
-        // Early termination check removed - we handle partials below
+    std::map<std::string, DisplayedImageInfo> new_displayed_images;
+    std::set<uint32_t> active_ids; // To track which image IDs are still active
 
+    int y_offset = content_y;
+    for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
         for (int c = 0; c < cols_available; ++c) {
             int idx = r * cols_available + c;
-            if (idx >= (int)albums_.size()) break;
+            if (idx >= total_filtered) break;
 
-            auto& album = albums_[idx];
+            size_t album_idx = filtered_album_indices_[idx];
+            auto& album = albums_[album_idx];
+
             processed_count++;
 
             // Skip albums with missing artwork path
@@ -376,11 +517,12 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             ready_count++;
 
             // Calculate cell position
-            int cell_x = content_x + (c * cell_w);
+            int cell_x = content_x + x_offset + (c * cell_w);
             int cell_y = y_offset;
 
-            // Box position - shift right by 1 to center (match render())
-            int box_x = cell_x + 1;
+            // Box position - Center in cell
+            int box_w = art_cols + 2;
+            int box_x = cell_x + (cell_w - box_w) / 2;
 
             // Artwork area: inside box border, leave 2 lines at bottom for text
             int art_x = box_x + 1;
@@ -393,89 +535,135 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             int visible_art_rows = -1;
 
             if (art_y >= container_bottom_y) {
-                // Starts below container - fully clipped
-                continue;
+                continue; // Fully clipped
             }
 
             if (art_bottom_y > container_bottom_y) {
-                // Partially visible
                 visible_art_rows = container_bottom_y - art_y;
                 if (visible_art_rows <= 0) continue;
-                
-                ouroboros::util::Logger::debug("AlbumBrowser: CLIPPING row " + std::to_string(r) + 
-                    " item " + std::to_string(c) + ": " + 
-                    std::to_string(visible_art_rows) + "/" + std::to_string(art_rows) + " rows");
             }
 
             // Also check right edge
             if (art_x + art_cols > content_x + content_width) continue;
 
-            // Check if this image is already displayed at this position
+            // Unique key for this position
             std::string display_key = std::to_string(art_x) + "," + std::to_string(art_y) + "," + artwork->hash.substr(0, 16);
+            
+            // Check if this image is already displayed EXACTLY here (no move needed)
             auto display_it = displayed_images_.find(display_key);
-
-            if (display_it != displayed_images_.end() && display_it->second == artwork->hash) {
+            if (display_it != displayed_images_.end() && display_it->second.hash == artwork->hash) {
+                // Already drawn at this position, keep it
+                new_displayed_images[display_key] = display_it->second;
+                active_ids.insert(display_it->second.image_id);
                 continue;
             }
 
-            // Render artwork (ImageRenderer caches internally)
-            bool drawn = img_renderer.render_image(
+            // Render artwork (re-upload/move)
+            uint32_t image_id = img_renderer.render_image(
                 artwork->jpeg_data,
                 art_x,
                 art_y,
                 art_cols,
                 art_rows,
                 artwork->hash,
-                visible_art_rows // Pass clipping info
+                visible_art_rows
             );
 
-            // Track that this image is now displayed
-            if (drawn) {
-                displayed_images_[display_key] = artwork->hash;
+            if (image_id != 0) {
+                new_displayed_images[display_key] = {artwork->hash, image_id};
+                active_ids.insert(image_id);
             }
         }
         
-        // Calculate standard box height for y_offset increment
-        // Note: We use the FULL box height for stepping, even if clipped, 
-        // to maintain grid alignment logic
         int box_h = art_rows + TEXT_LINES + BORDER_H;
         y_offset += box_h;
     }
 
-    // PREFETCH PHASE (Sliding Window)
-    // Prefetch nearby images for smooth scrolling
-    const int PREFETCH_ITEMS = 20; 
-    int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
-
-    auto process_prefetch = [&](int r) {
-        if (r < 0) return;
-        for (int c = 0; c < cols_available; ++c) {
-            int idx = r * cols_available + c;
-            if (idx >= (int)albums_.size()) break;
-
-            auto& album = albums_[idx];
-            if (album.representative_track_path.empty()) continue;
-
-            // 1. Ensure Loaded from Disk
-            loader.request_artwork(album.representative_track_path);
-
-            // 2. Ensure Decoded in RAM
-            const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
-            if (artwork && artwork->loaded) {
-                img_renderer.preload_image(
-                    artwork->jpeg_data,
-                    art_cols,
-                    art_rows,
-                    artwork->hash
-                );
+    // CLEANUP PHASE: Delete images that are no longer visible anywhere
+    for (const auto& [key, info] : displayed_images_) {
+        // If this exact position key is not in new set...
+        if (new_displayed_images.find(key) == new_displayed_images.end()) {
+            // AND the image ID is NOT used elsewhere in the new set...
+            if (active_ids.find(info.image_id) == active_ids.end()) {
+                // Delete it (it scrolled off screen completely)
+                img_renderer.delete_image_by_id(info.image_id);
             }
         }
-    };
+    }
 
-    // Prefetch Previous
-    for (int r = start_row - prefetch_rows_count; r < start_row; ++r) process_prefetch(r);
-    // Prefetch Next
-    for (int r = end_row; r < end_row + prefetch_rows_count; ++r) process_prefetch(r);
+    // Update state
+    displayed_images_ = std::move(new_displayed_images);
+
+    // PREFETCH PHASE (Sliding Window) - Only run when scroll is idle
+    auto time_since_scroll = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_scroll_time_
+    );
+
+    if (time_since_scroll >= PREFETCH_DELAY_MS) {
+        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH activated - scroll idle for " + std::to_string(time_since_scroll.count()) + "ms");
+        // User has paused scrolling - safe to prefetch adjacent rows
+        const int PREFETCH_ITEMS = 20;
+        int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
+
+        auto process_prefetch = [&](int r, bool reverse_cols) {
+            if (r < 0) return;
+
+            if (reverse_cols) {
+                // LIFO: Push in reverse so items closer to viewport load first
+                for (int c = cols_available - 1; c >= 0; --c) {
+                    int idx = r * cols_available + c;
+                    if (idx >= total_filtered) continue;
+
+                    size_t album_idx = filtered_album_indices_[idx];
+                    auto& album = albums_[album_idx];
+
+                    if (album.representative_track_path.empty()) continue;
+
+                    loader.request_artwork(album.representative_track_path);
+                    const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
+                    if (artwork && artwork->loaded) {
+                        img_renderer.preload_image(
+                            artwork->jpeg_data,
+                            art_cols,
+                            art_rows,
+                            artwork->hash
+                        );
+                    }
+                }
+            } else {
+                for (int c = 0; c < cols_available; ++c) {
+                    int idx = r * cols_available + c;
+                    if (idx >= total_filtered) break;
+
+                    size_t album_idx = filtered_album_indices_[idx];
+                    auto& album = albums_[album_idx];
+
+                    if (album.representative_track_path.empty()) continue;
+
+                    loader.request_artwork(album.representative_track_path);
+                    const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
+                    if (artwork && artwork->loaded) {
+                        img_renderer.preload_image(
+                            artwork->jpeg_data,
+                            art_cols,
+                            art_rows,
+                            artwork->hash
+                        );
+                    }
+                }
+            }
+        };
+
+        // Prefetch Previous: Iterate furthest to closest, reverse columns
+        // So closest row to viewport pops first
+        for (int r = start_row - prefetch_rows_count; r < start_row; ++r) process_prefetch(r, true);
+        // Prefetch Next: Iterate closest to furthest, normal columns
+        // So closest row to viewport loads first, but gets pushed last (pops first)
+        for (int r = end_row + prefetch_rows_count - 1; r >= end_row; --r) process_prefetch(r, true);
+        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH complete");
+    } else {
+        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH skipped - scroll active (idle_time=" + std::to_string(time_since_scroll.count()) + "ms)");
+    }
 
     ouroboros::util::Logger::info("AlbumBrowser: " +
                                   std::to_string(ready_count) + "/" +

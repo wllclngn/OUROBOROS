@@ -17,6 +17,12 @@ enum class ImageProtocol {
     None          // Fallback to no images
 };
 
+enum class TerminalType {
+    Kitty,        // Kitty terminal (gold standard, all features work)
+    Ghostty,      // Ghostty terminal (Kitty protocol with quirks)
+    Other         // Other terminals (WezTerm, Alacritty, etc.)
+};
+
 struct CachedImage {
     size_t data_hash;
     int cols;
@@ -37,8 +43,8 @@ public:
     bool is_album_art_enabled() const { return album_art_enabled_; }
     
     // Render image at terminal position (x, y) with size (cols, rows)
-    // Returns true if successful
-    bool render_image(
+    // Returns image ID if successful, 0 if failed
+    uint32_t render_image(
         const std::vector<unsigned char>& image_data,
         int x, int y,
         int width_cols, int height_rows,
@@ -57,6 +63,7 @@ public:
     // Clear image area
     // Clear specific image by hash (Kitty)
     void delete_image(const std::string& content_hash);
+    void delete_image_by_id(uint32_t id);
 
     void clear_image(int x, int y, int width_cols, int height_rows);
 
@@ -76,22 +83,28 @@ public:
 private:
     ImageRenderer();
     ~ImageRenderer() = default;
-    
+
     ImageProtocol protocol_ = ImageProtocol::None;
     bool album_art_enabled_ = true;
     int cell_width_ = 8;   // Pixels per column
     int cell_height_ = 16; // Pixels per row
+
+    // Terminal detection and quirk handling
+    TerminalType terminal_type_ = TerminalType::Other;
+    bool terminal_respects_image_ids_ = true;      // false for Ghostty (Issue #6711)
+    bool terminal_supports_temp_file_ = true;      // false for Ghostty (Issue #5774)
     
     // Detect cell size from terminal
     void detect_cell_size();
-    
-    // Terminal capability queries (system-agnostic)
+
+    // Terminal detection and capability queries
+    void detect_terminal_type();
     bool query_kitty_support();
     bool query_sixel_support();
     std::string query_da1();
     
     // Render Logic
-    std::string render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash);
+    std::string render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id);
     std::string render_iterm2(const unsigned char* rgba, int w, int h, int cols, int rows);
     std::string render_sixel(const unsigned char* rgba, int w, int h, int cols, int rows);
     std::string render_unicode_blocks(const unsigned char* rgba, int w, int h, int cols, int rows);
@@ -131,7 +144,14 @@ private:
         bool valid = false; // To indicate success/failure of async job
     };
 
-    static constexpr size_t MAX_CACHE_SIZE = 100; // Larger cache for fast scrolling (prevents re-decoding)
+    // Track IDs and dimensions (rows, cols) of images transmitted to terminal
+    // Key: Image ID, Value: {rows, cols}
+    std::unordered_map<uint32_t, std::pair<int, int>> transmitted_cache_;
+
+    // Track which image IDs have been transmitted to terminal (for placement optimization)
+    std::unordered_set<uint32_t> transmitted_ids_;
+
+    static constexpr size_t MAX_CACHE_SIZE = 250; // Increased for large screens with 50+ visible albums
     std::list<CacheKey> lru_list_;
     std::unordered_map<CacheKey, CachedPixels, CacheKeyHash> cache_;
     

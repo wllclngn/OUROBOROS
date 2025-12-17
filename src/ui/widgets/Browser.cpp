@@ -14,8 +14,6 @@ namespace ouroboros::ui::widgets {
 // This prevents dangling pointer issues when snap reference goes out of scope
 static std::shared_ptr<const model::Snapshot> g_current_snapshot = nullptr;
 
-Browser::Browser() : search_box_(std::make_unique<SearchBox>()) {}
-
 void Browser::update_filtered_indices(const model::Snapshot& snap) {
     const auto& tracks = snap.library->tracks;
     filtered_indices_.clear();
@@ -76,26 +74,10 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     // Layout calculations
     LayoutRect content_rect = rect;
     
-    // If Searching, reserve top space for SearchBox
-    if (state_ == State::Searching) {
-        LayoutRect search_rect = rect;
-        search_rect.height = 3; // Box + borders
-        
-        // Render SearchBox
-        search_box_->set_visible(true); // Ensure visible
-        search_box_->render(canvas, search_rect, snap);
-        
-        // Adjust content area
-        content_rect.y += 3;
-        content_rect.height -= 3;
-    } else {
-        search_box_->set_visible(false);
-    }
-
     // Draw border and title (highlight when focused)
     std::string title = "LIBRARY";
     if (!filter_query_.empty()) {
-        title += " [FILTER: " + filter_query_ + "]";
+        title += " [SEARCH: " + filter_query_ + "]";
         title += " [" + std::to_string(filtered_indices_.size()) + "/" + std::to_string(tracks.size()) + "]";
     } else {
         title += " [" + std::to_string(tracks.size()) + " TRACKS]";
@@ -149,7 +131,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
         int real_index = filtered_indices_[i];
         const auto& track = tracks[real_index];
         
-        bool is_cursor = (i == selected_index_) && (state_ == State::Browsing); // Only show cursor if browsing
+        bool is_cursor = (i == selected_index_);
         bool is_marked = is_selected(real_index);
 
         // If cursor or marked, highlight the entire line with single color
@@ -309,33 +291,9 @@ void Browser::toggle_selection(int index) {
 }
 
 void Browser::handle_input(const InputEvent& event) {
-    // STATE: SEARCHING
-    if (state_ == State::Searching) {
-        auto result = search_box_->handle_search_input(event);
-        if (result == SearchBox::Result::Submit) {
-            set_filter(search_box_->get_query());
-            state_ = State::Browsing;
-        } else if (result == SearchBox::Result::Cancel) {
-            state_ = State::Browsing;
-        }
-        return;
-    }
-
-    // STATE: BROWSING
-    
-    // Toggle Search (Ctrl+f or /)
-    if (event.key == 6 || event.key == '/') {
-        state_ = State::Searching;
-        search_box_->set_visible(true);
-        // Maybe pre-fill with current filter? 
-        // No, user might want to refine or clear. Current design SearchBox keeps its state.
-        return;
-    }
-
     // ESC: Clear Filter
     if ((event.key_name == "escape" || event.key == 27) && !filter_query_.empty()) {
         set_filter("");
-        search_box_->clear();
         return;
     }
 

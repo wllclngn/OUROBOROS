@@ -17,12 +17,15 @@ struct Config {
     std::string layout = "default";
     std::string theme = "dark";
     bool enable_album_art = true;
+    int album_grid_columns = 4;
 
     // Keybinds
     std::unordered_map<std::string, std::string> keybinds;
 
     // Directory settings
     std::filesystem::path music_directory;
+
+    static Config& instance();
 };
 
 class ConfigLoader {
