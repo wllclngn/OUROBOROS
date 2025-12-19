@@ -4,6 +4,7 @@
 #include "util/Logger.hpp"
 #include "util/TimSort.hpp"
 #include "util/DirectoryScanner.hpp"
+#include "util/UnicodeUtils.hpp"
 #include <thread>
 #include <fstream>
 
@@ -58,7 +59,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
         // Sort library
         util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
         ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-            if (a.artist != b.artist) return a.artist < b.artist;
+            int cmp = util::case_insensitive_compare(a.artist, b.artist);
+            if (cmp != 0) return cmp < 0;
             if (a.date != b.date) return a.date < b.date;
             return a.track_number < b.track_number;
         });
@@ -97,7 +99,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
                 // Sort library
                 util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
                 ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-                    if (a.artist != b.artist) return a.artist < b.artist;
+                    int cmp = util::case_insensitive_compare(a.artist, b.artist);
+                    if (cmp != 0) return cmp < 0;
                     if (a.date != b.date) return a.date < b.date;
                     return a.track_number < b.track_number;
                 });
@@ -138,7 +141,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
 
             util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
             ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-                if (a.artist != b.artist) return a.artist < b.artist;
+                int cmp = util::case_insensitive_compare(a.artist, b.artist);
+                if (cmp != 0) return cmp < 0;
                 if (a.date != b.date) return a.date < b.date;
                 return a.track_number < b.track_number;
             });
@@ -200,7 +204,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
 
         util::Logger::info("Sorting scanned library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
         ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-            if (a.artist != b.artist) return a.artist < b.artist;
+            int cmp = util::case_insensitive_compare(a.artist, b.artist);
+            if (cmp != 0) return cmp < 0;
             if (a.date != b.date) return a.date < b.date;
             return a.track_number < b.track_number;
         });

@@ -44,7 +44,7 @@ void Logger::log(Level level, const std::string& message) {
     // PHASE #1: Mix legacy time formatting (for robust std::tm support) 
     // with C++20 std::format for the message body (efficient allocation).
     log_file << std::put_time(&tm, "[%H:%M:%S] ");
-    log_file << std::format("{}{}\\n", level_str, message);
+    log_file << std::format("{}{}\n", level_str, message);
     log_file.flush();  // Ensure writes are visible immediately
 }
 

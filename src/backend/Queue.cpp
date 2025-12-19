@@ -44,22 +44,30 @@ std::optional<model::Track> Queue::get_current_track() const {
 }
 
 bool Queue::next() {
-    ouroboros::util::Logger::debug("Queue: Moving to next track");
+    ouroboros::util::Logger::debug("Queue: next() called - current_index=" +
+        std::to_string(current_index_) + ", queue_size=" + std::to_string(tracks_.size()));
 
     if (current_index_ + 1 < tracks_.size()) {
         current_index_++;
+        ouroboros::util::Logger::info("Queue: Advanced to next track - index=" +
+            std::to_string(current_index_));
         return true;
     }
+    ouroboros::util::Logger::debug("Queue: Cannot advance - at end of queue");
     return false;
 }
 
 bool Queue::prev() {
-    ouroboros::util::Logger::debug("Queue: Moving to previous track");
+    ouroboros::util::Logger::debug("Queue: prev() called - current_index=" +
+        std::to_string(current_index_));
 
     if (current_index_ > 0) {
         current_index_--;
+        ouroboros::util::Logger::info("Queue: Moved to previous track - index=" +
+            std::to_string(current_index_));
         return true;
     }
+    ouroboros::util::Logger::debug("Queue: Cannot move back - at start of queue");
     return false;
 }
 

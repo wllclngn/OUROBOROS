@@ -39,10 +39,20 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     bool track_changed = (cached_path_ != track.path);
 
     if (track_changed) {
+        ouroboros::util::Logger::info("NowPlaying: Track changed - path=" + track.path);
         cached_path_ = track.path;
+
+        // Reset render tracking so new artwork will be displayed
+        force_next_render_ = true;
 
         auto& img_renderer = ImageRenderer::instance();
         if (img_renderer.images_supported()) {
+            ouroboros::util::Logger::debug("NowPlaying: Requesting artwork for new track");
+            // Delete only this NowPlaying image (by ID), not all images
+            if (last_art_image_id_ != 0) {
+                img_renderer.delete_image_by_id(last_art_image_id_);
+                last_art_image_id_ = 0;
+            }
             // Request async artwork loading (non-blocking)
             auto& loader = ArtworkLoader::instance();
             loader.request_artwork(track.path);
@@ -267,11 +277,15 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
         return;
     }
 
-    // Skip if we already rendered this image (unless forcing)
+    // Skip if we already rendered this image (unless forcing or track just changed)
     static std::string last_rendered_path;
-    if (!force_render && cached_path_ == last_rendered_path) {
+    bool should_force = force_render || force_next_render_;
+    if (!should_force && cached_path_ == last_rendered_path) {
         return;  // Already rendered
     }
+
+    // Clear the force flag now that we're rendering
+    force_next_render_ = false;
 
     ouroboros::util::Logger::debug("NowPlaying: Attempting render. Path=" + cached_path_ + " DataSize=" + std::to_string(artwork->jpeg_data.size()));
 
@@ -336,21 +350,23 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
                                    " RIGHT=" + std::to_string(total_padding - horizontal_padding));
     ouroboros::util::Logger::debug("NowPlaying: Calling render_image. X=" + std::to_string(art_x) + " Y=" + std::to_string(art_y) + " Cols=" + std::to_string(art_cols) + " Rows=" + std::to_string(art_rows));
 
-    bool success = img_renderer.render_image(
+    uint32_t image_id = img_renderer.render_image(
         artwork->jpeg_data,
         art_x,
         art_y,
         art_cols,
         art_rows
     );
-    
-    ouroboros::util::Logger::debug("NowPlaying: render_image returned " + std::string(success ? "TRUE" : "FALSE"));
+    bool success = (image_id != 0);
+
+    ouroboros::util::Logger::debug("NowPlaying: render_image returned " + std::string(success ? "TRUE" : "FALSE") + " image_id=" + std::to_string(image_id));
 
     if (success) {
         last_art_x_ = art_x;
         last_art_y_ = art_y;
         last_art_width_ = art_cols;
         last_art_height_ = art_rows;
+        last_art_image_id_ = image_id;  // Store for selective deletion
 
         // Track what we rendered (static var declared at top of function)
         last_rendered_path = cached_path_;

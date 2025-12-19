@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <cstdint>
 
 namespace ouroboros::ui::widgets {
 
@@ -26,6 +27,12 @@ private:
     int last_art_y_ = 0;
     int last_art_width_ = 0;
     int last_art_height_ = 0;
+
+    // Track the Kitty image ID for selective deletion
+    uint32_t last_art_image_id_ = 0;
+
+    // Force re-render on next frame (set when track changes)
+    bool force_next_render_ = false;
 
     // Cache the actual widget rect for dynamic calculations
     LayoutRect cached_rect_ = {0, 0, 0, 0};

@@ -371,20 +371,35 @@ int main() {
                     if (current_idx >= 0 && current_idx < static_cast<int>(snap->library->tracks.size())) {
                         std::string current_path = snap->library->tracks[current_idx].path;
 
-                        // Get next 5 tracks from queue
-                        std::vector<std::string> next_paths;
+                        // Get previous 5 + next 5 tracks from queue (for bidirectional navigation)
+                        std::vector<std::string> nearby_paths;
                         if (snap->queue && snap->queue->current_index < snap->queue->track_indices.size()) {
+                            // Previous 5 tracks (for PREVIOUS button)
+                            for (size_t i = 1; i <= 5 && snap->queue->current_index >= i; ++i) {
+                                int idx = snap->queue->track_indices[snap->queue->current_index - i];
+                                if (idx >= 0 && idx < static_cast<int>(snap->library->tracks.size())) {
+                                    nearby_paths.push_back(snap->library->tracks[idx].path);
+                                }
+                            }
+                            // Next 5 tracks (for NEXT button)
                             for (size_t i = 1; i <= 5 && snap->queue->current_index + i < snap->queue->track_indices.size(); ++i) {
                                 int idx = snap->queue->track_indices[snap->queue->current_index + i];
                                 if (idx >= 0 && idx < static_cast<int>(snap->library->tracks.size())) {
-                                    next_paths.push_back(snap->library->tracks[idx].path);
+                                    nearby_paths.push_back(snap->library->tracks[idx].path);
                                 }
                             }
                         }
 
                         ouroboros::util::Logger::debug("Updating artwork cache context...");
-                        artwork_loader.update_queue_context(current_path, next_paths);
-                        ouroboros::util::Logger::debug("Artwork cache context updated");
+                        artwork_loader.update_queue_context(current_path, nearby_paths);
+
+                        // Prefetch artwork for nearby tracks (bidirectional)
+                        int distance = 1;
+                        for (const auto& path : nearby_paths) {
+                            artwork_loader.request_artwork_with_priority(path, distance++, 1);
+                        }
+                        ouroboros::util::Logger::debug("Artwork cache context updated, prefetched " +
+                                                       std::to_string(nearby_paths.size()) + " nearby tracks");
                     }
                 }
             }

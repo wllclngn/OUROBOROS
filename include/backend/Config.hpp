@@ -19,6 +19,9 @@ struct Config {
     bool enable_album_art = true;
     int album_grid_columns = 4;
 
+    // Sorting settings
+    bool sort_albums_by_year = false;  // false = alphabetical, true = by release year
+
     // Keybinds
     std::unordered_map<std::string, std::string> keybinds;
 

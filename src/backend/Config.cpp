@@ -91,6 +91,7 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
                 else if (key == "album_grid_columns") {
                     try { cfg.album_grid_columns = std::stoi(value); } catch(...) {}
                 }
+                else if (key == "sort_albums_by_year") cfg.sort_albums_by_year = (value == "true");
             }
             else if (current_section == "keybinds") {
                 cfg.keybinds[key] = value;
@@ -134,6 +135,8 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "enable_album_art = " << (cfg.enable_album_art ? "true" : "false") << "\n\n";
     file << "# Number of album columns in grid view (default: 4)\n";
     file << "album_grid_columns = " << cfg.album_grid_columns << "\n\n";
+    file << "# Sort albums by year instead of alphabetically\n";
+    file << "sort_albums_by_year = " << (cfg.sort_albums_by_year ? "true" : "false") << "\n\n";
 
     file << "[keybinds]\n";
     file << "# Playback controls\n";

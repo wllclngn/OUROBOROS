@@ -9,6 +9,7 @@
 #include "util/TimSort.hpp"
 #include "util/BoyerMoore.hpp"
 #include "util/Logger.hpp"
+#include "util/UnicodeUtils.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -39,18 +40,20 @@ void AlbumBrowser::update_filtered_albums() {
         return;
     }
 
-    util::BoyerMooreSearch searcher(filter_query_);
+    // Normalize query for Unicode-aware search (bjork matches Björk)
+    std::string normalized_query = util::normalize_for_search(filter_query_);
+    util::BoyerMooreSearch searcher(normalized_query);
 
     for (size_t i = 0; i < albums_.size(); ++i) {
         const auto& album = albums_[i];
         bool match = false;
 
-        // Search in Album Title
-        if (searcher.search(album.title) != -1) {
+        // Search in normalized Album Title
+        if (searcher.search(util::normalize_for_search(album.title)) != -1) {
             match = true;
         }
-        // Search in Artist
-        else if (searcher.search(album.artist) != -1) {
+        // Search in normalized Artist
+        else if (searcher.search(util::normalize_for_search(album.artist)) != -1) {
             match = true;
         }
 
@@ -115,10 +118,19 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
         albums_.push_back(v);
     }
 
-    // Sort albums by Artist then Title using Timsort
-    ouroboros::util::timsort(albums_, [](const AlbumGroup& a, const AlbumGroup& b) {
-        if (a.artist != b.artist) return a.artist < b.artist;
-        return a.title < b.title;
+    // Sort albums by Artist, then by Year or Title (based on config)
+    bool sort_by_year = backend::Config::instance().sort_albums_by_year;
+    ouroboros::util::timsort(albums_, [sort_by_year](const AlbumGroup& a, const AlbumGroup& b) {
+        // Case-insensitive artist comparison
+        int cmp = util::case_insensitive_compare(a.artist, b.artist);
+        if (cmp != 0) return cmp < 0;
+
+        // Within same artist: sort by year or title
+        if (sort_by_year) {
+            if (a.year != b.year) return a.year < b.year;
+        }
+        // Fall back to case-insensitive title comparison
+        return util::case_insensitive_compare(a.title, b.title) < 0;
     });
 
     // Initial update of filtered indices (matches all)
@@ -314,6 +326,9 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
     int total_albums = filtered_album_indices_.size();
     if (total_albums == 0) return;
 
+    // Track old selection for change detection
+    int old_selected = selected_index_;
+
     // Grid navigation: hjkl or arrow keys
     if (event.key_name == "right" || event.key == 'l') {
         if (selected_index_ < total_albums - 1) selected_index_++;
@@ -327,7 +342,17 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
     else if (event.key_name == "up" || event.key == 'k') {
         if (selected_index_ - cols_ >= 0) selected_index_ -= cols_;
     }
-    else if (event.key_name == "enter" || event.key == '\n' || event.key == '\r') {
+
+    // If selection moved significantly, drain stale artwork requests
+    if (std::abs(selected_index_ - old_selected) > 2) {
+        ouroboros::util::Logger::debug("AlbumBrowser: Large selection jump detected (from " +
+                                      std::to_string(old_selected) + " to " +
+                                      std::to_string(selected_index_) +
+                                      "), clearing stale requests");
+        ArtworkLoader::instance().clear_requests();
+    }
+
+    if (event.key_name == "enter" || event.key == '\n' || event.key == '\r') {
         // Add all tracks in album to queue (using safe shared_ptr pattern from Browser)
         if (!g_current_snapshot || g_current_snapshot->library->tracks.empty()) {
             return;
@@ -472,9 +497,16 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     auto& loader = ArtworkLoader::instance();
     int total_filtered = filtered_album_indices_.size();
 
-    // PRE-LOAD PHASE: Request all visible artwork BEFORE rendering
-    // LIFO STACK: Push Top-Left to Bottom-Right, so Bottom-Right (newest) pops FIRST
-    // This optimizes for scrolling DOWN, which is the most common action.
+    // Calculate selected album's grid position for Manhattan distance calculation
+    int selected_row = selected_index_ / cols_available;
+    int selected_col = selected_index_ % cols_available;
+
+    ouroboros::util::Logger::debug("AlbumBrowser: Selected position - row=" + std::to_string(selected_row) +
+                                  ", col=" + std::to_string(selected_col) +
+                                  ", index=" + std::to_string(selected_index_));
+
+    // Build visible paths list for viewport tracking
+    std::vector<std::string> visible_paths;
     for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
         for (int c = 0; c < cols_available; ++c) {
             int idx = r * cols_available + c;
@@ -484,7 +516,37 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             auto& album = albums_[album_idx];
 
             if (!album.representative_track_path.empty()) {
-                loader.request_artwork(album.representative_track_path);
+                visible_paths.push_back(album.representative_track_path);
+            }
+        }
+    }
+
+    // Update viewport state (dirty flag pattern)
+    loader.update_viewport(scroll_offset_, selected_index_, visible_paths);
+
+    ouroboros::util::Logger::debug("AlbumBrowser: Updated viewport with " +
+                                  std::to_string(visible_paths.size()) + " visible albums");
+
+    // PRE-LOAD PHASE: Request artwork prioritized by Manhattan distance from selection
+    // Priority Queue: Processes by viewport tier (0=visible), then distance (closer first)
+    for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
+        for (int c = 0; c < cols_available; ++c) {
+            int idx = r * cols_available + c;
+            if (idx >= total_filtered) continue;
+
+            size_t album_idx = filtered_album_indices_[idx];
+            auto& album = albums_[album_idx];
+
+            if (!album.representative_track_path.empty()) {
+                // Calculate Manhattan distance from selected album
+                int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+
+                // Request with priority: tier 0 (visible), distance-based ordering
+                loader.request_artwork_with_priority(
+                    album.representative_track_path,
+                    distance,
+                    0  // viewport_tier = 0 (visible, highest priority)
+                );
             }
         }
     }
@@ -493,8 +555,8 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int processed_count = 0;
     int ready_count = 0;
 
-    std::map<std::string, DisplayedImageInfo> new_displayed_images;
-    std::set<uint32_t> active_ids; // To track which image IDs are still active
+    std::unordered_map<std::string, DisplayedImageInfo> new_displayed_images;
+    std::unordered_set<uint32_t> active_ids; // To track which image IDs are still active
 
     int y_offset = content_y;
     for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
@@ -609,7 +671,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             if (r < 0) return;
 
             if (reverse_cols) {
-                // LIFO: Push in reverse so items closer to viewport load first
+                // Priority Queue: Process by distance from selection
                 for (int c = cols_available - 1; c >= 0; --c) {
                     int idx = r * cols_available + c;
                     if (idx >= total_filtered) continue;
@@ -619,7 +681,13 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
                     if (album.representative_track_path.empty()) continue;
 
-                    loader.request_artwork(album.representative_track_path);
+                    // Calculate Manhattan distance for prefetch items
+                    int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+                    loader.request_artwork_with_priority(
+                        album.representative_track_path,
+                        distance,
+                        1  // viewport_tier = 1 (prefetch, lower priority than visible)
+                    );
                     const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
                     if (artwork && artwork->loaded) {
                         img_renderer.preload_image(
@@ -640,7 +708,13 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
                     if (album.representative_track_path.empty()) continue;
 
-                    loader.request_artwork(album.representative_track_path);
+                    // Calculate Manhattan distance for prefetch items
+                    int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+                    loader.request_artwork_with_priority(
+                        album.representative_track_path,
+                        distance,
+                        1  // viewport_tier = 1 (prefetch, lower priority than visible)
+                    );
                     const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
                     if (artwork && artwork->loaded) {
                         img_renderer.preload_image(

@@ -17,6 +17,10 @@ pkg_check_modules(MPG123 REQUIRED libmpg123)
 pkg_check_modules(SNDFILE REQUIRED sndfile)
 pkg_check_modules(VORBISFILE REQUIRED vorbisfile)
 
+# Unicode support for search normalization
+pkg_check_modules(ICU_UC REQUIRED icu-uc)
+pkg_check_modules(ICU_I18N REQUIRED icu-i18n)
+
 # Auto-download stb headers
 set(STB_DIR "${CMAKE_SOURCE_DIR}/vendor/stb")
 file(MAKE_DIRECTORY "${STB_DIR}")
@@ -78,7 +82,7 @@ add_executable(ouroboros
     src/audio/PipeWireOutput.cpp
     src/audio/PipeWireContext.cpp
 )
-target_include_directories(ouroboros PUBLIC 
+target_include_directories(ouroboros PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor
     ${PIPEWIRE_INCLUDE_DIRS}
@@ -86,6 +90,8 @@ target_include_directories(ouroboros PUBLIC
     ${MPG123_INCLUDE_DIRS}
     ${SNDFILE_INCLUDE_DIRS}
     ${VORBISFILE_INCLUDE_DIRS}
+    ${ICU_UC_INCLUDE_DIRS}
+    ${ICU_I18N_INCLUDE_DIRS}
 )
 target_compile_options(ouroboros PRIVATE -Wall -Wextra -Werror)
 target_link_libraries(ouroboros PRIVATE
@@ -94,12 +100,16 @@ target_link_libraries(ouroboros PRIVATE
     ${MPG123_LIBRARIES}
     ${SNDFILE_LIBRARIES}
     ${VORBISFILE_LIBRARIES}
+    ${ICU_UC_LIBRARIES}
+    ${ICU_I18N_LIBRARIES}
     ssl
     crypto
 )
 set_target_properties(ouroboros PROPERTIES OUTPUT_NAME ouroboros)
 
+# Install binary and man page
 install(TARGETS ouroboros RUNTIME DESTINATION bin)
+install(FILES ouroboros.1 DESTINATION share/man/man1)
 
 # Add distclean target (like montauk workflow)
 add_custom_target(distclean

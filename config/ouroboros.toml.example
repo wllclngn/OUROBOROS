@@ -21,6 +21,12 @@ theme = "dark"
 # Enable album art display
 enable_album_art = true
 
+# Number of album columns in grid view
+album_grid_columns = 4
+
+# Sort albums by year instead of alphabetically (within each artist)
+sort_albums_by_year = false
+
 [keybinds]
 # Playback controls
 play = "space"

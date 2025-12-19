@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <unordered_set>
+#include <unordered_map>
 #include <chrono>
 
 namespace ouroboros::ui::widgets {
@@ -64,7 +65,7 @@ private:
         std::string hash;
         uint32_t image_id;
     };
-    std::map<std::string, DisplayedImageInfo> displayed_images_;
+    std::unordered_map<std::string, DisplayedImageInfo> displayed_images_;  // Changed to unordered_map for O(1) lookups
 };
 
 }  // namespace ouroboros::ui::widgets
