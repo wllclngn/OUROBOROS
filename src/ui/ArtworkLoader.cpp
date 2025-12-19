@@ -3,6 +3,7 @@
 #include "backend/ArtworkCache.hpp"
 #include <algorithm>
 #include <fstream>
+#include <filesystem>
 #include <unordered_set>
 #include "util/Logger.hpp"
 
@@ -130,6 +131,7 @@ void ArtworkLoader::clear_cache() {
     size_t cache_size = cache_.size();
     cache_.clear();
     lru_list_.clear();
+    dir_to_hash_.clear();  // Also clear directory → hash mapping
 
     ouroboros::util::Logger::debug("ArtworkLoader: Cleared artwork cache (" +
                                    std::to_string(cache_size) + " entries)");
@@ -285,20 +287,31 @@ void ArtworkLoader::worker_thread() {
 
         ouroboros::util::Logger::info("ArtworkLoader: Processing request for: " + track_path);
 
-        // Phase 2: Try ArtworkCache first (O(1) hash-based lookup)
+        // Get album directory for hash lookup
+        std::string album_dir = std::filesystem::path(track_path).parent_path().string();
+
+        // Phase 1: Check directory → hash mapping (O(1) - avoids disk I/O entirely)
         std::string artwork_hash;
         bool cache_hit = false;
 
         {
             std::lock_guard<std::mutex> lock(cache_mutex_);
-            auto it = cache_.find(track_path);
-            if (it != cache_.end() && !it->second.data.hash.empty()) {
-                // We know the hash from previous load
-                artwork_hash = it->second.data.hash;
+
+            // First: Check if this directory already has a known hash
+            auto dir_it = dir_to_hash_.find(album_dir);
+            if (dir_it != dir_to_hash_.end()) {
+                artwork_hash = dir_it->second;
+                ouroboros::util::Logger::debug("ArtworkLoader: DIR HIT - " + album_dir.substr(album_dir.rfind('/') + 1) + " → hash " + artwork_hash.substr(0, 8) + "...");
+            } else {
+                // Fallback: Check if we have hash stored for this specific track path
+                auto it = cache_.find(track_path);
+                if (it != cache_.end() && !it->second.data.hash.empty()) {
+                    artwork_hash = it->second.data.hash;
+                }
             }
         }
 
-        // Check global ArtworkCache if we have a hash
+        // Phase 2: Check global ArtworkCache if we have a hash (no disk I/O needed!)
         if (!artwork_hash.empty()) {
             auto& global_cache = backend::ArtworkCache::instance();
             const auto* cached_entry = global_cache.get(artwork_hash);
@@ -351,6 +364,9 @@ void ArtworkLoader::worker_thread() {
                         // Store in global ArtworkCache ONLY (single source of truth)
                         auto& global_cache = backend::ArtworkCache::instance();
                         global_cache.store(result.hash, result.data, result.mime_type);
+
+                        // CRITICAL: Store directory → hash mapping to prevent future disk I/O
+                        dir_to_hash_[album_dir] = result.hash;
 
                         // Local cache only stores hash reference, NOT data
                         it->second.data.jpeg_data.clear();  // Don't duplicate data

@@ -17,6 +17,8 @@
 #include <chrono>
 #include <csignal>
 #include <cerrno>
+#include <cstdlib>
+#include <unistd.h>
 #include <poll.h>
 #include <filesystem>
 
@@ -25,19 +27,26 @@ using namespace std::chrono_literals;
 // Global shutdown flag (montauk pattern)
 static std::atomic<bool> g_shutdown{false};
 
+// Async-signal-safe terminal restoration (atexit safety net)
+static void on_atexit_restore() {
+    // Minimal restore using only async-signal-safe write() syscall
+    const char* alt_screen_off = "\033[?1049l";
+    const char* show_cursor = "\033[?25h";
+    const char* reset_sgr = "\033[0m";
+    write(STDOUT_FILENO, alt_screen_off, 8);
+    write(STDOUT_FILENO, show_cursor, 6);
+    write(STDOUT_FILENO, reset_sgr, 4);
+}
+
 // Signal handler for graceful shutdown (Ctrl+C, kill, etc.)
-static void signal_handler(int signum) {
-    // Set shutdown flag
+// NOTE: Does NOT call std::exit() - lets main loop exit normally for proper cleanup
+static void signal_handler(int) {
     g_shutdown.store(true);
 
-    // CRITICAL: Restore terminal immediately on signal
-    auto& terminal = ouroboros::ui::Terminal::instance();
-    if (terminal.is_initialized()) {
-        terminal.shutdown();
-    }
-
-    // Exit cleanly
-    std::exit(signum == SIGINT ? 0 : signum);
+    // Async-signal-safe: just restore cursor visibility
+    // Full cleanup happens when main loop exits normally
+    const char* show_cursor = "\033[?25h";
+    write(STDOUT_FILENO, show_cursor, 6);
 }
 
 int main() {
@@ -82,6 +91,9 @@ int main() {
         // Initialize terminal
         auto& terminal = ouroboros::ui::Terminal::instance();
         terminal.init();
+
+        // Register atexit handler as safety net (montauk pattern)
+        std::atexit(on_atexit_restore);
 
         // Install signal handlers for graceful shutdown (AFTER terminal init!)
         std::signal(SIGINT, signal_handler);   // Ctrl+C

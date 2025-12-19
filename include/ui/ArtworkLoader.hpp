@@ -171,6 +171,9 @@ private:
     std::atomic<uint64_t> viewport_generation_{0};
 
     std::atomic<bool> has_updates_{false};
+
+    // Directory → SHA256 hash mapping (all tracks in same album share artwork)
+    std::unordered_map<std::string, std::string> dir_to_hash_;
 };
 
 } // namespace ouroboros::ui

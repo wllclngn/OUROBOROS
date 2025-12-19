@@ -55,14 +55,16 @@ void Terminal::init() {
         running_ = true;
         writer_thread_ = std::thread(&Terminal::writer_loop, this);
 
-        write_raw("\033[?25l"); // Hide cursor
+        write_raw("\033[?1049h"); // Enter alternate screen buffer
+        write_raw("\033[?25l");   // Hide cursor
         initialized_ = true;
     }
 }
 
 void Terminal::shutdown() {
     if (initialized_) {
-        write_raw("\033[?25h"); // Show cursor
+        write_raw("\033[?25h");   // Show cursor
+        write_raw("\033[?1049l"); // Exit alternate screen buffer
         
         // Stop writer thread
         running_ = false;
