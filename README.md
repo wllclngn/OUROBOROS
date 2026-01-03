@@ -108,13 +108,25 @@ This will:
 - **Crypto**: OpenSSL (SHA-256 for content-addressed artwork storage)
 - **Image Support**: stb_image, stb_image_resize2 (auto-downloaded by CMake)
 
-### Install Dependencies (Arch Linux)
+### Install Dependencies: Arch Linux
 
 ```bash
 sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis openssl icu
 ```
 
+### Install Dependencies: Debian Linux
+
+```bash
+sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libssl-dev cmake
+```
+
 ### Advanced Build Options
+
+# Debian Linux
+
+```bash
+cmake ./CMakeLists.txt; make
+```
 
 ```bash
 # Configure and build (Release mode)
