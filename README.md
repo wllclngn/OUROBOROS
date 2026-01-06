@@ -71,26 +71,36 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 
 
 
-## Build
+## Installation
 
-### Quick Install
-
-Install OUROBOROS to your system in one command:
+### Simple Install
 
 ```bash
-make && sudo make install
+./install.py
 ```
 
-Or with a clean build:
+### Advanced Install (CMake)
 
 ```bash
-make distclean && make && sudo make install
+# Configure
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+# Build
+cmake --build build -j$(nproc)
+
+# Install (optional)
+sudo cmake --install build
 ```
 
-This will:
-1. Configure the build (automatic CMake setup)
-2. Compile with all CPU cores
-3. Install to `/usr/local/bin`
+### Other Commands
+
+```bash
+./install.py build      # Build only, don't install
+./install.py clean      # Clean build directory
+./install.py uninstall  # Remove installed binary
+./install.py test       # Run tests
+./install.py --debug    # Debug build
+```
 
 **Then run**: `ouroboros`
 
@@ -120,24 +130,11 @@ sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis ope
 sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libssl-dev cmake
 ```
 
-### Advanced Build Options
-
-# Debian Linux
+### Run Without Installing
 
 ```bash
-cmake ./CMakeLists.txt; make
-```
-
-```bash
-# Configure and build (Release mode)
-cmake -B build -DCMAKE_BUILD_TYPE=Release
-make -C build -j$(nproc)
-
-# Run from build directory (without installing)
+./install.py build
 ./build/ouroboros
-
-# Install to /usr/local/bin (optional)
-sudo make -C build install
 ```
 
 ### Run Tests
