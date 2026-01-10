@@ -151,6 +151,10 @@ private:
     // Track which image IDs have been transmitted to terminal (for placement optimization)
     std::unordered_set<uint32_t> transmitted_ids_;
 
+    // Track what's currently displayed at each position to skip redundant renders
+    // Key: (x << 16 | y), Value: image_id
+    std::unordered_map<uint32_t, uint32_t> displayed_at_position_;
+
     static constexpr size_t MAX_CACHE_SIZE = 250; // Increased for large screens with 50+ visible albums
     std::list<CacheKey> lru_list_;
     std::unordered_map<CacheKey, CachedPixels, CacheKeyHash> cache_;

@@ -284,6 +284,14 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
         return;  // Already rendered
     }
 
+    // Skip if we're already waiting for this path to decode
+    // (Clear pending if path changed - we want to try the new track)
+    if (cached_path_ != pending_render_path_) {
+        pending_render_path_.clear();
+    } else if (!should_force) {
+        return;  // Still waiting for decode of same path
+    }
+
     // Clear the force flag now that we're rendering
     force_next_render_ = false;
 
@@ -370,6 +378,10 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
 
         // Track what we rendered (static var declared at top of function)
         last_rendered_path = cached_path_;
+        pending_render_path_.clear();  // No longer pending
+    } else {
+        // Decode still in progress - don't retry until it completes
+        pending_render_path_ = cached_path_;
     }
 }
 

@@ -22,6 +22,7 @@ public:
 
 private:
     std::string cached_path_;
+    std::string pending_render_path_;  // Track path waiting for decode
 
     int last_art_x_ = 0;
     int last_art_y_ = 0;

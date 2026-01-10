@@ -15,7 +15,7 @@ ArtworkCache& ArtworkCache::instance() {
     return instance;
 }
 
-void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, const std::string& mime_type) {
+void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, const std::string& mime_type, const std::string& source_dir) {
     if (hash.empty() || data.empty()) {
         return;
     }
@@ -40,11 +40,21 @@ void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, con
     if (it != cache_.end()) {
         // Already cached - just increment ref count
         it->second.ref_count++;
+        // Update dir mapping if not set
+        if (!source_dir.empty() && dir_to_hash_.find(source_dir) == dir_to_hash_.end()) {
+            dir_to_hash_[source_dir] = hash;
+        }
         return;
     }
 
     // Store new entry
-    cache_[hash] = ArtworkEntry{std::move(data), mime_type, 1};
+    cache_[hash] = ArtworkEntry{std::move(data), mime_type, source_dir, 1};
+    dirty_ = true;  // Mark cache as needing save
+
+    // Store dir→hash mapping
+    if (!source_dir.empty()) {
+        dir_to_hash_[source_dir] = hash;
+    }
 
     util::Logger::debug("ArtworkCache: Stored artwork " + hash.substr(0, 16) + "... (" +
                        std::to_string(cache_[hash].data.size() / 1024) + " KB, " + mime_type + ")");
@@ -59,6 +69,21 @@ const ArtworkEntry* ArtworkCache::get(const std::string& hash) const {
 
     auto it = cache_.find(hash);
     if (it != cache_.end()) {
+        return &it->second;
+    }
+
+    return nullptr;
+}
+
+const std::string* ArtworkCache::get_hash_for_dir(const std::string& dir) const {
+    if (dir.empty()) {
+        return nullptr;
+    }
+
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    auto it = dir_to_hash_.find(dir);
+    if (it != dir_to_hash_.end()) {
         return &it->second;
     }
 
@@ -95,7 +120,20 @@ void ArtworkCache::unref(const std::string& hash) {
     }
 }
 
-bool ArtworkCache::save(const std::filesystem::path& cache_path) const {
+bool ArtworkCache::is_dirty() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dirty_;
+}
+
+bool ArtworkCache::save(const std::filesystem::path& cache_path) {
+    std::lock_guard<std::mutex> lock(mutex_);
+
+    // Skip save if nothing changed
+    if (!dirty_) {
+        util::Logger::info("ArtworkCache: No changes, skipping save");
+        return true;
+    }
+
     try {
         std::filesystem::create_directories(cache_path.parent_path());
 
@@ -104,8 +142,6 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) const {
             util::Logger::error("ArtworkCache: Failed to open cache file for writing: " + cache_path.string());
             return false;
         }
-
-        std::lock_guard<std::mutex> lock(mutex_);
 
         // Write header
         out.write(reinterpret_cast<const char*>(&CACHE_MAGIC), sizeof(CACHE_MAGIC));
@@ -129,6 +165,13 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) const {
                 out.write(entry.mime_type.data(), mime_len);
             }
 
+            // Source directory
+            uint32_t dir_len = static_cast<uint32_t>(entry.source_dir.length());
+            out.write(reinterpret_cast<const char*>(&dir_len), sizeof(dir_len));
+            if (dir_len > 0) {
+                out.write(entry.source_dir.data(), dir_len);
+            }
+
             // Artwork data
             uint64_t data_len = entry.data.size();
             out.write(reinterpret_cast<const char*>(&data_len), sizeof(data_len));
@@ -138,6 +181,7 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) const {
             out.write(reinterpret_cast<const char*>(&entry.ref_count), sizeof(entry.ref_count));
         }
 
+        dirty_ = false;  // Mark as clean after successful save
         util::Logger::info("ArtworkCache: Saved " + std::to_string(count) + " entries to " + cache_path.string());
         return true;
 
@@ -171,7 +215,8 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
 
         in.read(reinterpret_cast<char*>(&version), sizeof(version));
         if (version != CACHE_VERSION) {
-            util::Logger::warn("ArtworkCache: Cache version mismatch, will rebuild");
+            util::Logger::warn("ArtworkCache: Cache version mismatch (file=" + std::to_string(version) +
+                              ", expected=" + std::to_string(CACHE_VERSION) + "), will rebuild");
             return false;
         }
 
@@ -200,6 +245,15 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
                 in.read(mime_type.data(), mime_len);
             }
 
+            // Source directory
+            uint32_t dir_len;
+            in.read(reinterpret_cast<char*>(&dir_len), sizeof(dir_len));
+            std::string source_dir;
+            if (dir_len > 0) {
+                source_dir.resize(dir_len);
+                in.read(source_dir.data(), dir_len);
+            }
+
             // Artwork data
             uint64_t data_len;
             in.read(reinterpret_cast<char*>(&data_len), sizeof(data_len));
@@ -211,10 +265,17 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             in.read(reinterpret_cast<char*>(&ref_count), sizeof(ref_count));
 
             // Store entry (without validation - assume cache is valid)
-            cache_[hash] = ArtworkEntry{std::move(data), std::move(mime_type), ref_count};
+            cache_[hash] = ArtworkEntry{std::move(data), std::move(mime_type), source_dir, ref_count};
+
+            // Rebuild dir→hash mapping
+            if (!source_dir.empty()) {
+                dir_to_hash_[source_dir] = hash;
+            }
         }
 
-        util::Logger::info("ArtworkCache: Loaded " + std::to_string(cache_.size()) + " entries from " + cache_path.string());
+        dirty_ = false;  // Freshly loaded, no changes yet
+        util::Logger::info("ArtworkCache: Loaded " + std::to_string(cache_.size()) + " entries, " +
+                          std::to_string(dir_to_hash_.size()) + " dir mappings from " + cache_path.string());
         return true;
 
     } catch (const std::exception& e) {

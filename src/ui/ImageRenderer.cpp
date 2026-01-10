@@ -345,11 +345,25 @@ uint32_t ImageRenderer::render_image(
 
     CacheKey key{data_hash, width_cols, height_rows};
     auto it = cache_.find(key);
-    
+
     if (it != cache_.end()) {
+        // Calculate expected image_id for position deduplication
+        uint32_t expected_id = 0;
+        if (protocol_ == ImageProtocol::Kitty && terminal_respects_image_ids_ && !content_hash.empty()) {
+            expected_id = static_cast<uint32_t>(data_hash & 0xFFFFFFFF);
+
+            // Check if this image is already displayed at this position
+            uint32_t pos_key = (static_cast<uint32_t>(x) << 16) | static_cast<uint32_t>(y & 0xFFFF);
+            auto pos_it = displayed_at_position_.find(pos_key);
+            if (pos_it != displayed_at_position_.end() && pos_it->second == expected_id) {
+                // Already displayed at this position, skip redundant upload
+                return expected_id;
+            }
+        }
+
         std::string encoded;
         uint32_t out_id = 0;
-        
+
         // Determine render dimensions (handling partial visibility)
         int render_rows = height_rows;
         size_t render_size = it->second.width * it->second.height * 3; // Default full size
@@ -376,6 +390,12 @@ uint32_t ImageRenderer::render_image(
             auto& term = Terminal::instance();
             term.move_cursor(x, y);
             term.write_raw(encoded);
+
+            // Track what's displayed at this position for future deduplication
+            if (protocol_ == ImageProtocol::Kitty && out_id != 0) {
+                uint32_t pos_key = (static_cast<uint32_t>(x) << 16) | static_cast<uint32_t>(y & 0xFFFF);
+                displayed_at_position_[pos_key] = out_id;
+            }
 
             // Update LRU
             auto list_it = std::find(lru_list_.begin(), lru_list_.end(), key);
@@ -476,6 +496,15 @@ void ImageRenderer::delete_image_by_id(uint32_t image_id) {
     // Remove from local tracking so we re-transmit if needed later
     transmitted_ids_.erase(image_id);
 
+    // Remove from position cache (any position showing this image)
+    for (auto it = displayed_at_position_.begin(); it != displayed_at_position_.end(); ) {
+        if (it->second == image_id) {
+            it = displayed_at_position_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     auto& term = Terminal::instance();
     // Kitty delete by ID
     std::string cmd = "\033_Ga=d,d=i,i=" + std::to_string(image_id) + "\033\\";
@@ -492,6 +521,7 @@ void ImageRenderer::clear_image(int x, int y, int width_cols, int height_rows) {
         // Kitty: Delete all images (more reliable than selective delete)
         term.write_raw("\033_Ga=d\033\\");
         transmitted_ids_.clear(); // We wiped the terminal cache
+        displayed_at_position_.clear(); // Position cache also invalid
     } else {
         // Sixel/iTerm2: Overwrite with spaces (current approach works)
         for (int row = 0; row < height_rows; ++row) {
@@ -603,7 +633,7 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
         static uint32_t unique_id_counter = 1;
         image_id = unique_id_counter++;
     }
-    
+
     out_id = image_id;
 
     std::ostringstream ss;

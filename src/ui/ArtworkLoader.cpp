@@ -15,16 +15,36 @@ ArtworkLoader& ArtworkLoader::instance() {
 }
 
 ArtworkLoader::ArtworkLoader() {
-    // Start background worker thread
-    worker_ = std::thread(&ArtworkLoader::worker_thread, this);
+    // Start initial worker threads
+    ouroboros::util::Logger::info("ArtworkLoader: Starting with " + std::to_string(MIN_WORKERS) +
+                                  " worker(s), max=" + std::to_string(get_max_workers()) +
+                                  " (hardware threads)");
+    for (size_t i = 0; i < MIN_WORKERS; ++i) {
+        std::lock_guard<std::mutex> lock(workers_mutex_);
+        workers_.emplace_back(&ArtworkLoader::worker_thread, this);
+    }
 }
 
 ArtworkLoader::~ArtworkLoader() {
     should_stop_ = true;
-    queue_cv_.notify_one();
-    if (worker_.joinable()) {
-        worker_.join();
+    queue_cv_.notify_all();  // Wake all waiting workers
+
+    // Wait for all workers to exit
+    while (active_workers_.load() > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    // Join all worker threads
+    {
+        std::lock_guard<std::mutex> lock(workers_mutex_);
+        for (auto& worker : workers_) {
+            if (worker.joinable()) {
+                worker.join();
+            }
+        }
+        workers_.clear();
+    }
+    ouroboros::util::Logger::info("ArtworkLoader: All workers stopped");
 }
 
 void ArtworkLoader::request_artwork(const std::string& track_path) {
@@ -48,19 +68,19 @@ void ArtworkLoader::request_artwork_with_priority(
 
         // Mark as pending (create empty CacheEntry if doesn't exist)
         if (it == cache_.end()) {
+            lru_list_.push_front(track_path);
             CacheEntry entry;
             entry.last_access = std::chrono::steady_clock::now();
+            entry.lru_iter = lru_list_.begin();  // Store iterator for O(1) LRU
             cache_[track_path] = entry;
-            lru_list_.push_front(track_path);  // Add to LRU
         }
     }
 
     // Deduplication: Check if already in flight
-    // BUT: tier=0 (NowPlaying) requests ALWAYS go through - they're highest priority
     {
         std::lock_guard<std::mutex> lock(pending_mutex_);
-        if (viewport_tier > 0 && pending_requests_.find(track_path) != pending_requests_.end()) {
-            return;  // Already queued, skip duplicate (only for prefetch requests)
+        if (pending_requests_.find(track_path) != pending_requests_.end()) {
+            return;  // Already queued, skip duplicate
         }
         pending_requests_.insert(track_path);
     }
@@ -78,11 +98,24 @@ void ArtworkLoader::request_artwork_with_priority(
                                    ", tier=" + std::to_string(viewport_tier) +
                                    ", gen=" + std::to_string(req.viewport_generation));
 
+    size_t queue_size;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         request_queue_.push(req);
+        queue_size = request_queue_.size();
     }
     queue_cv_.notify_one();
+
+    // Dynamic scaling: spawn more workers if queue is deep
+    size_t current = active_workers_.load();
+    if (queue_size > SPAWN_THRESHOLD * current && current < get_max_workers()) {
+        // Spawn new worker - it will register itself via active_workers_.fetch_add(1)
+        std::lock_guard<std::mutex> lock(workers_mutex_);
+        workers_.emplace_back(&ArtworkLoader::worker_thread, this);
+        ouroboros::util::Logger::info("ArtworkLoader: Spawning worker (queue_size=" +
+                                     std::to_string(queue_size) + ", active=" +
+                                     std::to_string(current) + ")");
+    }
 }
 
 bool ArtworkLoader::get_artwork(const std::string& track_path, std::vector<uint8_t>& out_data) {
@@ -131,7 +164,6 @@ void ArtworkLoader::clear_cache() {
     size_t cache_size = cache_.size();
     cache_.clear();
     lru_list_.clear();
-    dir_to_hash_.clear();  // Also clear directory → hash mapping
 
     ouroboros::util::Logger::debug("ArtworkLoader: Cleared artwork cache (" +
                                    std::to_string(cache_size) + " entries)");
@@ -182,14 +214,10 @@ bool ArtworkLoader::is_in_viewport(const std::string& path) const {
 }
 
 void ArtworkLoader::mark_accessed(const std::string& path) {
-    // Move to front of LRU list (most recently used)
+    // Move to front of LRU list (most recently used) - O(1) using stored iterator
     auto it = cache_.find(path);
     if (it != cache_.end()) {
-        // Find in LRU list and move to front
-        auto list_it = std::find(lru_list_.begin(), lru_list_.end(), path);
-        if (list_it != lru_list_.end()) {
-            lru_list_.splice(lru_list_.begin(), lru_list_, list_it);
-        }
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_iter);
         it->second.last_access = std::chrono::steady_clock::now();
     }
 }
@@ -239,14 +267,20 @@ void ArtworkLoader::evict_if_needed() {
 }
 
 void ArtworkLoader::worker_thread() {
-    ouroboros::util::Logger::info("ArtworkLoader: Worker thread started");
+    // Register this worker as active
+    active_workers_.fetch_add(1);
+    ouroboros::util::Logger::info("ArtworkLoader: Worker thread started (active=" +
+                                  std::to_string(active_workers_.load()) + ")");
 
     while (!should_stop_) {
         std::string track_path;
+        int viewport_tier = 0;  // Track tier to decide if we trigger UI update
 
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
-            queue_cv_.wait(lock, [this] {
+
+            // Wait with timeout for idle detection
+            bool got_work = queue_cv_.wait_for(lock, IDLE_TIMEOUT, [this] {
                 return !request_queue_.empty() || should_stop_;
             });
 
@@ -254,10 +288,22 @@ void ArtworkLoader::worker_thread() {
                 break;
             }
 
+            // Idle timeout - exit if we're not the last worker
+            if (!got_work && request_queue_.empty()) {
+                if (active_workers_.load() > MIN_WORKERS) {
+                    active_workers_.fetch_sub(1);
+                    ouroboros::util::Logger::info("ArtworkLoader: Worker exiting (idle timeout, active=" +
+                                                  std::to_string(active_workers_.load()) + ")");
+                    return;  // Thread exits
+                }
+                continue;  // Last worker stays alive
+            }
+
             if (!request_queue_.empty()) {
                 ArtworkRequest req = request_queue_.top();  // Priority queue: Get highest priority request
                 request_queue_.pop();
                 track_path = req.track_path;
+                viewport_tier = req.viewport_tier;  // Capture tier for update decision
 
                 // Check if request is stale (viewport changed since queuing)
                 // BUT: tier=0 requests (NowPlaying current track) are NEVER stale - always process
@@ -290,30 +336,26 @@ void ArtworkLoader::worker_thread() {
         // Get album directory for hash lookup
         std::string album_dir = std::filesystem::path(track_path).parent_path().string();
 
-        // Phase 1: Check directory → hash mapping (O(1) - avoids disk I/O entirely)
+        // Phase 1: Check directory → hash mapping in global cache (O(1) - avoids disk I/O entirely)
         std::string artwork_hash;
         bool cache_hit = false;
 
-        {
+        auto& global_cache = backend::ArtworkCache::instance();
+        const std::string* dir_hash = global_cache.get_hash_for_dir(album_dir);
+        if (dir_hash) {
+            artwork_hash = *dir_hash;
+            ouroboros::util::Logger::debug("ArtworkLoader: DIR HIT - " + album_dir.substr(album_dir.rfind('/') + 1) + " → hash " + artwork_hash.substr(0, 8) + "...");
+        } else {
+            // Fallback: Check if we have hash stored for this specific track path in local cache
             std::lock_guard<std::mutex> lock(cache_mutex_);
-
-            // First: Check if this directory already has a known hash
-            auto dir_it = dir_to_hash_.find(album_dir);
-            if (dir_it != dir_to_hash_.end()) {
-                artwork_hash = dir_it->second;
-                ouroboros::util::Logger::debug("ArtworkLoader: DIR HIT - " + album_dir.substr(album_dir.rfind('/') + 1) + " → hash " + artwork_hash.substr(0, 8) + "...");
-            } else {
-                // Fallback: Check if we have hash stored for this specific track path
-                auto it = cache_.find(track_path);
-                if (it != cache_.end() && !it->second.data.hash.empty()) {
-                    artwork_hash = it->second.data.hash;
-                }
+            auto it = cache_.find(track_path);
+            if (it != cache_.end() && !it->second.data.hash.empty()) {
+                artwork_hash = it->second.data.hash;
             }
         }
 
         // Phase 2: Check global ArtworkCache if we have a hash (no disk I/O needed!)
         if (!artwork_hash.empty()) {
-            auto& global_cache = backend::ArtworkCache::instance();
             const auto* cached_entry = global_cache.get(artwork_hash);
             if (cached_entry) {
                 ouroboros::util::Logger::info("ArtworkLoader: CACHE HIT for hash: " + artwork_hash.substr(0, 16) + "... (" + std::to_string(cached_entry->data.size()) + " bytes)");
@@ -328,7 +370,10 @@ void ArtworkLoader::worker_thread() {
                     it->second.data.path = track_path;
                     it->second.data.loaded = true;
                     mark_accessed(track_path);  // Update LRU
-                    has_updates_.store(true);
+                    // Only trigger UI update for visible items (tier 0), not prefetch (tier 1)
+                    if (viewport_tier == 0) {
+                        has_updates_.store(true);
+                    }
                 }
                 cache_hit = true;
             }
@@ -344,10 +389,11 @@ void ArtworkLoader::worker_thread() {
                 auto it = cache_.find(track_path);
                 // Re-add to cache if it was evicted while we were loading
                 if (it == cache_.end()) {
+                    lru_list_.push_front(track_path);
                     CacheEntry entry;
                     entry.last_access = std::chrono::steady_clock::now();
+                    entry.lru_iter = lru_list_.begin();  // Store iterator for O(1) LRU
                     cache_[track_path] = entry;
-                    lru_list_.push_front(track_path);
                     it = cache_.find(track_path);
                 }
                 if (it != cache_.end()) {
@@ -361,12 +407,9 @@ void ArtworkLoader::worker_thread() {
                     } else {
                         ouroboros::util::Logger::info("ArtworkLoader: CACHE MISS - Loaded from disk: " + std::to_string(result.data.size()) + " bytes, hash: " + result.hash.substr(0, 16) + "...");
 
-                        // Store in global ArtworkCache ONLY (single source of truth)
+                        // Store in global ArtworkCache (handles dir→hash mapping internally)
                         auto& global_cache = backend::ArtworkCache::instance();
-                        global_cache.store(result.hash, result.data, result.mime_type);
-
-                        // CRITICAL: Store directory → hash mapping to prevent future disk I/O
-                        dir_to_hash_[album_dir] = result.hash;
+                        global_cache.store(result.hash, result.data, result.mime_type, album_dir);
 
                         // Local cache only stores hash reference, NOT data
                         it->second.data.jpeg_data.clear();  // Don't duplicate data
@@ -376,8 +419,10 @@ void ArtworkLoader::worker_thread() {
                         it->second.data.loaded = true;
                         mark_accessed(track_path);  // Update LRU
                     }
-                    // Signal that artwork is ready for UI update
-                    has_updates_.store(true);
+                    // Only trigger UI update for visible items (tier 0), not prefetch (tier 1)
+                    if (viewport_tier == 0) {
+                        has_updates_.store(true);
+                    }
                 }
             }
         }
@@ -393,7 +438,10 @@ void ArtworkLoader::worker_thread() {
         evict_if_needed();
     }
 
-    ouroboros::util::Logger::info("ArtworkLoader: Worker thread exiting");
+    // Decrement active count when exiting (due to should_stop_)
+    active_workers_.fetch_sub(1);
+    ouroboros::util::Logger::info("ArtworkLoader: Worker thread exiting (shutdown, active=" +
+                                  std::to_string(active_workers_.load()) + ")");
 }
 
 void ArtworkLoader::update_queue_context(

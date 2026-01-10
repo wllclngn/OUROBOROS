@@ -324,7 +324,7 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
                     if (!artwork_result.data.empty() && !artwork_result.hash.empty()) {
                         track.artwork_hash = artwork_result.hash;
                         auto& artwork_cache = ArtworkCache::instance();
-                        artwork_cache.store(artwork_result.hash, artwork_result.data, artwork_result.mime_type);
+                        artwork_cache.store(artwork_result.hash, artwork_result.data, artwork_result.mime_type, path.parent_path().string());
                     }
 
                     results[idx] = track;
@@ -540,7 +540,7 @@ void Library::scan_for_changes(
                     if (!artwork_result.data.empty() && !artwork_result.hash.empty()) {
                         track.artwork_hash = artwork_result.hash;
                         auto& artwork_cache = ArtworkCache::instance();
-                        artwork_cache.store(artwork_result.hash, artwork_result.data, artwork_result.mime_type);
+                        artwork_cache.store(artwork_result.hash, artwork_result.data, artwork_result.mime_type, path.parent_path().string());
                     }
 
                     // Store result

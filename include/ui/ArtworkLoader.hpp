@@ -29,6 +29,7 @@ struct CacheEntry {
     ArtworkData data;
     std::chrono::steady_clock::time_point last_access;
     bool in_viewport = false;  // Protected from eviction
+    std::list<std::string>::iterator lru_iter;  // O(1) LRU update
 };
 
 // Viewport state for dirty flag pattern
@@ -147,7 +148,21 @@ private:
     void evict_if_needed();
     void mark_accessed(const std::string& path);
 
-    std::thread worker_;
+    // Dynamic worker scaling constants
+    static constexpr size_t MIN_WORKERS = 1;
+    static constexpr size_t SPAWN_THRESHOLD = 10;  // Queue depth per worker to trigger spawn
+    static constexpr auto IDLE_TIMEOUT = std::chrono::milliseconds(500);
+
+    // MAX_WORKERS based on hardware threads (computed at runtime)
+    static size_t get_max_workers() {
+        unsigned int hw = std::thread::hardware_concurrency();
+        return (hw > 0) ? hw : 4;  // Fallback to 4 if detection fails
+    }
+
+    // Worker thread management
+    std::vector<std::thread> workers_;
+    std::mutex workers_mutex_;
+    std::atomic<size_t> active_workers_{0};
     std::atomic<bool> should_stop_{false};
 
     std::mutex queue_mutex_;
@@ -171,9 +186,6 @@ private:
     std::atomic<uint64_t> viewport_generation_{0};
 
     std::atomic<bool> has_updates_{false};
-
-    // Directory → SHA256 hash mapping (all tracks in same album share artwork)
-    std::unordered_map<std::string, std::string> dir_to_hash_;
 };
 
 } // namespace ouroboros::ui

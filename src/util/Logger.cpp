@@ -1,4 +1,7 @@
 #include "util/Logger.hpp"
+
+#ifdef OUROBOROS_ENABLE_LOGGING
+
 #include <iostream>
 #include <fstream>
 #include <iomanip>
@@ -32,7 +35,7 @@ void Logger::log(Level level, const std::string& message) {
     // Timestamp
     auto now = std::time(nullptr);
     auto tm = *std::localtime(&now);
-    
+
     std::string_view level_str;
     switch (level) {
         case Level::Debug: level_str = "[DEBUG] "; break;
@@ -41,7 +44,7 @@ void Logger::log(Level level, const std::string& message) {
         case Level::Error: level_str = "[ERROR] "; break;
     }
 
-    // PHASE #1: Mix legacy time formatting (for robust std::tm support) 
+    // PHASE #1: Mix legacy time formatting (for robust std::tm support)
     // with C++20 std::format for the message body (efficient allocation).
     log_file << std::put_time(&tm, "[%H:%M:%S] ");
     log_file << std::format("{}{}\n", level_str, message);
@@ -54,3 +57,19 @@ void Logger::warn(const std::string& message) { log(Level::Warn, message); }
 void Logger::error(const std::string& message) { log(Level::Error, message); }
 
 }  // namespace ouroboros::util
+
+#else
+
+// No-op implementations when logging is disabled
+namespace ouroboros::util {
+
+void Logger::init() {}
+void Logger::log(Level, const std::string&) {}
+void Logger::debug(const std::string&) {}
+void Logger::info(const std::string&) {}
+void Logger::warn(const std::string&) {}
+void Logger::error(const std::string&) {}
+
+}  // namespace ouroboros::util
+
+#endif

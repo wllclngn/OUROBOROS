@@ -58,6 +58,7 @@ private:
     std::string filter_query_;
     bool filter_dirty_ = false;
     bool content_changed_ = false; // Flag to force clear images on filter change
+    bool prefetch_completed_ = false; // Skip redundant prefetch when viewport hasn't changed
 
     // Track which images are currently displayed (for upload deduplication)
     // Key: "x,y,hash_snippet" (unique per position and content)

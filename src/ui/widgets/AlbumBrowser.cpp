@@ -28,6 +28,7 @@ void AlbumBrowser::set_filter(const std::string& query) {
     if (filter_query_ != query) {
         filter_query_ = query;
         filter_dirty_ = true;
+        prefetch_completed_ = false; // Reset prefetch on filter change
     }
 }
 
@@ -343,8 +344,9 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
         if (selected_index_ - cols_ >= 0) selected_index_ -= cols_;
     }
 
-    // If selection moved significantly, drain stale artwork requests
-    if (std::abs(selected_index_ - old_selected) > 2) {
+    // If selection moved significantly (more than 2 rows), drain stale artwork requests
+    int jump_threshold = cols_ * 2;  // Allow normal row navigation
+    if (std::abs(selected_index_ - old_selected) > jump_threshold) {
         ouroboros::util::Logger::debug("AlbumBrowser: Large selection jump detected (from " +
                                       std::to_string(old_selected) + " to " +
                                       std::to_string(selected_index_) +
@@ -423,20 +425,8 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     // OPTIMIZATION: Removed aggressive "delete all on scroll" to prevent flicker.
     // Instead, we track active images and only delete those that scroll off-screen.
 
-    // Smart prefetch: Debounce to prevent per-frame request spam
-    auto now = std::chrono::steady_clock::now();
-
-    // Debounce: Skip if called too rapidly (per-frame spam during scroll)
-    if (!force_render && (now - last_request_time_) < SCROLL_DEBOUNCE_MS) {
-        auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_request_time_).count();
-        ouroboros::util::Logger::debug("AlbumBrowser: DEBOUNCE - Skipping request (elapsed=" + std::to_string(elapsed_ms) + "ms)");
-        return;
-    }
-    last_request_time_ = now;
-
     // Track scroll position changes
     if (last_scroll_offset_ != scroll_offset_) {
-        last_scroll_time_ = now;
         ouroboros::util::Logger::debug("AlbumBrowser: SCROLL detected - offset changed from " + std::to_string(last_scroll_offset_) + " to " + std::to_string(scroll_offset_));
         last_scroll_offset_ = scroll_offset_;
     }
@@ -656,15 +646,9 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     // Update state
     displayed_images_ = std::move(new_displayed_images);
 
-    // PREFETCH PHASE (Sliding Window) - Only run when scroll is idle
-    auto time_since_scroll = std::chrono::duration_cast<std::chrono::milliseconds>(
-        now - last_scroll_time_
-    );
-
-    if (time_since_scroll >= PREFETCH_DELAY_MS) {
-        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH activated - scroll idle for " + std::to_string(time_since_scroll.count()) + "ms");
-        // User has paused scrolling - safe to prefetch adjacent rows
-        const int PREFETCH_ITEMS = 20;
+    // PREFETCH PHASE - Always prefetch adjacent rows immediately (no idle delay)
+    {
+        const int PREFETCH_ITEMS = 100;
         int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
 
         auto process_prefetch = [&](int r, bool reverse_cols) {
@@ -683,20 +667,13 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
                     // Calculate Manhattan distance for prefetch items
                     int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+                    // Only queue data load - do NOT pre-decode here
+                    // Decode happens in RENDER phase for visible items only
                     loader.request_artwork_with_priority(
                         album.representative_track_path,
                         distance,
                         1  // viewport_tier = 1 (prefetch, lower priority than visible)
                     );
-                    const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
-                    if (artwork && artwork->loaded) {
-                        img_renderer.preload_image(
-                            artwork->jpeg_data,
-                            art_cols,
-                            art_rows,
-                            artwork->hash
-                        );
-                    }
                 }
             } else {
                 for (int c = 0; c < cols_available; ++c) {
@@ -710,20 +687,12 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
                     // Calculate Manhattan distance for prefetch items
                     int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+                    // Only queue data load - do NOT pre-decode here
                     loader.request_artwork_with_priority(
                         album.representative_track_path,
                         distance,
                         1  // viewport_tier = 1 (prefetch, lower priority than visible)
                     );
-                    const auto* artwork = loader.get_artwork_ref(album.representative_track_path);
-                    if (artwork && artwork->loaded) {
-                        img_renderer.preload_image(
-                            artwork->jpeg_data,
-                            art_cols,
-                            art_rows,
-                            artwork->hash
-                        );
-                    }
                 }
             }
         };
@@ -734,9 +703,6 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         // Prefetch Next: Iterate closest to furthest, normal columns
         // So closest row to viewport loads first, but gets pushed last (pops first)
         for (int r = end_row + prefetch_rows_count - 1; r >= end_row; --r) process_prefetch(r, true);
-        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH complete");
-    } else {
-        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH skipped - scroll active (idle_time=" + std::to_string(time_since_scroll.count()) + "ms)");
     }
 
     ouroboros::util::Logger::info("AlbumBrowser: " +

@@ -9,6 +9,9 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
+# Debug logging option (off by default)
+option(OUROBOROS_DEBUG_LOG "Enable debug logging to /tmp/ouroboros_debug.log" OFF)
+
 # Audio dependencies
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(PIPEWIRE REQUIRED libpipewire-0.3)
@@ -31,7 +34,14 @@ if(NOT EXISTS "${STB_DIR}/stb_image_resize2.h")
     file(DOWNLOAD "https://raw.githubusercontent.com/nothings/stb/master/stb_image_resize2.h" "${STB_DIR}/stb_image_resize2.h")
 endif()
 
+# Glob all headers for proper dependency tracking
+file(GLOB_RECURSE OUROBOROS_HEADERS
+    "${CMAKE_SOURCE_DIR}/include/*.hpp"
+    "${CMAKE_SOURCE_DIR}/include/*.h"
+)
+
 add_executable(ouroboros
+    ${OUROBOROS_HEADERS}
     src/main.cpp
     src/model/Snapshot.cpp
     src/backend/SnapshotBuffers.cpp
@@ -94,6 +104,9 @@ target_include_directories(ouroboros PUBLIC
     ${ICU_I18N_INCLUDE_DIRS}
 )
 target_compile_options(ouroboros PRIVATE -Wall -Wextra -Werror)
+if(OUROBOROS_DEBUG_LOG)
+    target_compile_definitions(ouroboros PRIVATE OUROBOROS_ENABLE_LOGGING)
+endif()
 target_link_libraries(ouroboros PRIVATE
     ${PIPEWIRE_LIBRARIES}
     ${SPA_LIBRARIES}

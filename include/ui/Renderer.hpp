@@ -22,6 +22,7 @@ public:
     void handle_input();
     void handle_input_event(const InputEvent& event);
     bool should_quit() const;
+    bool is_album_view_active() const { return show_album_view_; }
 
     // DEPRECATED: Old interface, kept for compatibility
     void set_layout(std::unique_ptr<Component> layout) { (void)layout; }

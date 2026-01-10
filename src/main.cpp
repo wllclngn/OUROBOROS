@@ -353,19 +353,25 @@ int main() {
             // Check if artwork finished loading
             auto& artwork_loader = ouroboros::ui::ArtworkLoader::instance();
             bool artwork_updated = false;
-            
+
             if (artwork_loader.has_pending_updates()) {
-                needs_render = true;
-                artwork_updated = true;
                 artwork_loader.clear_pending_updates();
+                // Only trigger render if album view is active (visible artwork changed)
+                if (renderer.is_album_view_active()) {
+                    needs_render = true;
+                    artwork_updated = true;
+                }
             }
 
             // Check if image decoding finished (async jobs in ImageRenderer)
             auto& image_renderer = ouroboros::ui::ImageRenderer::instance();
             if (image_renderer.has_pending_updates()) {
-                needs_render = true;
-                artwork_updated = true;
                 image_renderer.clear_pending_updates();
+                // Only trigger render if album view is active (visible artwork changed)
+                if (renderer.is_album_view_active()) {
+                    needs_render = true;
+                    artwork_updated = true;
+                }
             }
 
             // Force continuous rendering while library is scanning (for loading animation)
