@@ -17,6 +17,14 @@
 
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb/stb_image_resize2.h"
+
+// Suppress warnings in stb_image_write (third-party header)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
+#pragma GCC diagnostic pop
+
 #include "util/Logger.hpp"
 #include "util/ImageDecoderPool.hpp"
 #include "util/ArtworkHasher.hpp"
@@ -370,12 +378,11 @@ uint32_t ImageRenderer::render_image(
 
         // Determine render dimensions (handling partial visibility)
         int render_rows = height_rows;
-        size_t render_size = it->second.width * it->second.height * 3; // Default full size
+        size_t render_size = it->second.data.size(); // Use actual data size (may be PNG or RGB)
 
-        if (visible_rows > 0 && visible_rows < height_rows) {
+        if (visible_rows > 0 && visible_rows < height_rows && it->second.format == CachedFormat::RGB) {
             render_rows = visible_rows;
-            // Crop the pixel data by reducing the size
-            // (RGB data is row-major, so taking the first N bytes crops the bottom)
+            // Crop the pixel data by reducing the size (only for RGB, PNG is not croppable)
             int crop_h = visible_rows * cell_height_;
             if (crop_h > it->second.height) crop_h = it->second.height;
             render_size = it->second.width * crop_h * 3;
@@ -383,11 +390,11 @@ uint32_t ImageRenderer::render_image(
 
         if (protocol_ == ImageProtocol::Kitty) {
             // Pass SHA-256-derived data_hash and content_hash for stable, collision-free image_id
-            encoded = render_kitty(it->second.rgba.data(), render_size, width_cols, render_rows, data_hash, content_hash, out_id);
+            encoded = render_kitty(it->second.data.data(), render_size, width_cols, render_rows, data_hash, content_hash, out_id, it->second.format);
         } else if (protocol_ == ImageProtocol::ITerm2) {
-            encoded = render_iterm2(it->second.rgba.data(), it->second.width, it->second.height, width_cols, render_rows);
+            encoded = render_iterm2(it->second.data.data(), it->second.width, it->second.height, width_cols, render_rows);
         } else if (protocol_ == ImageProtocol::Sixel) {
-            encoded = render_sixel(it->second.rgba.data(), it->second.width, it->second.height, width_cols, render_rows);
+            encoded = render_sixel(it->second.data.data(), it->second.width, it->second.height, width_cols, render_rows);
         }
 
         if (!encoded.empty()) {
@@ -470,16 +477,69 @@ bool ImageRenderer::preload_image(
         );
 
         if (!pixels) {
-            promise->set_value(CachedPixels{{}, 0, 0, 0, false});
+            promise->set_value(CachedPixels{{}, 0, 0, CachedFormat::RGB, 0, false});
             return;
         }
 
-        std::vector<unsigned char> output(target_w * target_h * 3);
-        stbir_resize(pixels, w, h, 0, output.data(), target_w, target_h, 0,
-                     STBIR_RGB, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
+        // Check aspect ratio threshold (>5% off from square needs letterboxing)
+        float aspect_ratio = static_cast<float>(w) / static_cast<float>(h);
+        bool needs_letterbox = (aspect_ratio < 0.95f || aspect_ratio > 1.05f);
 
-        stbi_image_free(pixels);
-        promise->set_value(CachedPixels{std::move(output), target_w, target_h, 0, true});
+        if (needs_letterbox) {
+            // Calculate scale to fit within target bounds while preserving aspect ratio
+            float scale = std::min(static_cast<float>(target_w) / w,
+                                   static_cast<float>(target_h) / h);
+            int scaled_w = std::clamp(static_cast<int>(w * scale), 1, target_w);
+            int scaled_h = std::clamp(static_cast<int>(h * scale), 1, target_h);
+
+            // Resize source to scaled dimensions (RGB)
+            std::vector<unsigned char> scaled_rgb(scaled_w * scaled_h * 3);
+            stbir_resize(pixels, w, h, 0, scaled_rgb.data(), scaled_w, scaled_h, 0,
+                         STBIR_RGB, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
+            stbi_image_free(pixels);
+
+            // Create RGBA canvas with transparent background (all zeros = transparent)
+            std::vector<unsigned char> rgba(target_w * target_h * 4, 0);
+
+            // Center the scaled image on canvas, convert RGB -> RGBA with alpha=255
+            int offset_x = (target_w - scaled_w) / 2;
+            int offset_y = (target_h - scaled_h) / 2;
+            for (int y = 0; y < scaled_h; ++y) {
+                for (int x = 0; x < scaled_w; ++x) {
+                    int src = (y * scaled_w + x) * 3;
+                    int dst = ((offset_y + y) * target_w + (offset_x + x)) * 4;
+                    rgba[dst + 0] = scaled_rgb[src + 0];
+                    rgba[dst + 1] = scaled_rgb[src + 1];
+                    rgba[dst + 2] = scaled_rgb[src + 2];
+                    rgba[dst + 3] = 255;  // Opaque
+                }
+            }
+
+            // Encode to PNG using stb_image_write
+            int png_len = 0;
+            unsigned char* png_raw = stbi_write_png_to_mem(
+                rgba.data(), target_w * 4, target_w, target_h, 4, &png_len);
+
+            if (png_raw && png_len > 0) {
+                std::vector<uint8_t> png_data(png_raw, png_raw + png_len);
+                STBIW_FREE(png_raw);
+                promise->set_value(CachedPixels{std::move(png_data), target_w, target_h,
+                                                CachedFormat::PNG, 0, true});
+            } else {
+                // Fallback: send raw RGBA if PNG encoding fails (shouldn't happen)
+                promise->set_value(CachedPixels{std::move(rgba), target_w, target_h,
+                                                CachedFormat::RGB, 0, true});
+            }
+        } else {
+            // Square or nearly-square: direct resize to RGB (unchanged path)
+            std::vector<unsigned char> output(target_w * target_h * 3);
+            stbir_resize(pixels, w, h, 0, output.data(), target_w, target_h, 0,
+                         STBIR_RGB, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_CATMULLROM);
+
+            stbi_image_free(pixels);
+            promise->set_value(CachedPixels{std::move(output), target_w, target_h,
+                                            CachedFormat::RGB, 0, true});
+        }
     });
 
     if (submitted) {
@@ -628,8 +688,8 @@ std::string ImageRenderer::write_to_temp_file(const unsigned char* data, size_t 
     );
 }
 
-std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id) {
-    // Input is Resized RGB Data (3 bytes/pixel)
+std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id, CachedFormat format) {
+    // Input is either RGB data (f=24) or PNG data (f=100)
 
     int img_w = cols * cell_width_;
     int img_h = rows * cell_height_;
@@ -665,30 +725,50 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
         if (b64_path.empty()) {
             return ""; // Fail gracefully
         }
-        ss << "a=T,t=t,f=24,i=" << image_id
-           << ",s=" << img_w << ",v=" << img_h
-           << ",c=" << cols << ",r=" << rows
-           << ",q=1,z=1,C=1";
+
+        if (format == CachedFormat::PNG) {
+            // PNG: terminal reads dimensions from PNG header, use f=100
+            ss << "a=T,t=t,f=100,i=" << image_id
+               << ",c=" << cols << ",r=" << rows
+               << ",q=1,z=1,C=1";
+        } else {
+            // RGB: explicit dimensions required, use f=24
+            ss << "a=T,t=t,f=24,i=" << image_id
+               << ",s=" << img_w << ",v=" << img_h
+               << ",c=" << cols << ",r=" << rows
+               << ",q=1,z=1,C=1";
+        }
         ss << ";";
         ss << b64_path;
 
+        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : "RGB";
         std::string hash_info = content_hash.empty() ? "FNV-1a" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
-        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via SHM (t=t), image_id=" +
-                                       std::to_string(image_id) +
+        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via SHM (t=t), format=" + format_str +
+                                       ", image_id=" + std::to_string(image_id) +
                                        " (" + hash_info + ")");
     } else {
         // Workaround: use direct transmission (t=d) for terminals with temp file bugs (Ghostty)
         std::string b64_data = encode_base64(data, len);
-        ss << "a=T,t=d,f=24,i=" << image_id
-           << ",s=" << img_w << ",v=" << img_h
-           << ",c=" << cols << ",r=" << rows
-           << ",q=1";
+
+        if (format == CachedFormat::PNG) {
+            // PNG: terminal reads dimensions from PNG header, use f=100
+            ss << "a=T,t=d,f=100,i=" << image_id
+               << ",c=" << cols << ",r=" << rows
+               << ",q=1";
+        } else {
+            // RGB: explicit dimensions required, use f=24
+            ss << "a=T,t=d,f=24,i=" << image_id
+               << ",s=" << img_w << ",v=" << img_h
+               << ",c=" << cols << ",r=" << rows
+               << ",q=1";
+        }
         ss << ";";
         ss << b64_data;
 
+        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : "RGB";
         std::string hash_info = content_hash.empty() ? "FNV-1a" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
-        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via direct mode (t=d), image_id=" +
-                                       std::to_string(image_id) +
+        ouroboros::util::Logger::debug("ImageRenderer: Uploaded via direct mode (t=d), format=" + format_str +
+                                       ", image_id=" + std::to_string(image_id) +
                                        " (" + hash_info + ")");
     }
 

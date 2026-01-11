@@ -23,6 +23,12 @@ enum class TerminalType {
     Other         // Other terminals (WezTerm, Alacritty, etc.)
 };
 
+// Format of cached image data
+enum class CachedFormat {
+    RGB,  // Raw RGB pixels (transmitted with f=24)
+    PNG   // PNG-encoded data with transparency (transmitted with f=100)
+};
+
 struct CachedImage {
     size_t data_hash;
     int cols;
@@ -104,7 +110,7 @@ private:
     std::string query_da1();
     
     // Render Logic
-    std::string render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id);
+    std::string render_kitty(const unsigned char* data, size_t len, int cols, int rows, size_t data_hash, const std::string& content_hash, uint32_t& out_id, CachedFormat format);
     std::string render_iterm2(const unsigned char* rgba, int w, int h, int cols, int rows);
     std::string render_sixel(const unsigned char* rgba, int w, int h, int cols, int rows);
     std::string render_unicode_blocks(const unsigned char* rgba, int w, int h, int cols, int rows);
@@ -135,13 +141,14 @@ private:
         }
     };
 
-    // Cache resized RGBA pixel data, not encoded strings (much smaller memory footprint)
+    // Cache resized pixel data (RGB) or PNG-encoded data (for transparent letterboxing)
     struct CachedPixels {
-        std::vector<uint8_t> rgba;
+        std::vector<uint8_t> data;   // Either raw RGB or PNG bytes
         int width;
         int height;
-        uint32_t image_id = 0; // Kitty Image ID for re-placement
-        bool valid = false; // To indicate success/failure of async job
+        CachedFormat format = CachedFormat::RGB;
+        uint32_t image_id = 0;       // Kitty Image ID for re-placement
+        bool valid = false;          // To indicate success/failure of async job
     };
 
     // Track IDs and dimensions (rows, cols) of images transmitted to terminal
