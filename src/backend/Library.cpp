@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <unordered_map>
+#include <unordered_set>
 #include <sys/stat.h>  // For stat() to get inode
 #include <algorithm>
 #include <thread>
@@ -39,11 +40,21 @@ static std::string read_string(std::ifstream& in) {
 Library::Library() {}
 
 void Library::set_music_directory(const std::filesystem::path& dir) {
-    if (!std::filesystem::exists(dir)) {
-        music_dir_ = dir;
-        return;
+    // Legacy single-directory support
+    music_dirs_.clear();
+    music_dirs_.push_back(dir);
+}
+
+void Library::set_music_directories(const std::vector<std::filesystem::path>& dirs) {
+    music_dirs_.clear();
+    for (const auto& dir : dirs) {
+        // Only add directories that exist (gracefully handle unmounted drives)
+        if (std::filesystem::exists(dir)) {
+            music_dirs_.push_back(dir);
+        } else {
+            ouroboros::util::Logger::warn("Skipping non-existent directory: " + dir.string());
+        }
     }
-    music_dir_ = dir;
 }
 
 bool Library::save_to_cache(const std::filesystem::path& cache_path) const {
@@ -168,77 +179,26 @@ bool Library::load_from_cache(const std::filesystem::path& cache_path) {
     }
 }
 
-bool Library::load_from_hierarchical_cache(const std::filesystem::path& cache_root) {
-    util::Logger::info("Library: Attempting to load from hierarchical cache at " + cache_root.string());
-
-    hierarchical_cache_.set_cache_root(cache_root);
-    // music_dir_ should be set already via set_music_directory
-    hierarchical_cache_.set_music_root(music_dir_);
-
-    auto manifest = hierarchical_cache_.load_manifest();
-    if (manifest.directories.empty()) {
-        util::Logger::warn("Library: Hierarchical cache manifest empty or missing");
-        return false;
-    }
-
-    util::Logger::info("Library: Loading " + std::to_string(manifest.directories.size()) + " directories from hierarchical cache");
-
-    size_t total_tracks = 0;
-    std::unordered_map<std::string, model::Track> all_tracks;
-
-    for (const auto& dir_meta : manifest.directories) {
-        std::filesystem::path dir_path = std::filesystem::path(music_dir_) / dir_meta.path;
-        
-        // Load directory cache
-        auto dir_tracks = hierarchical_cache_.load_directory(dir_path);
-        
-        if (dir_tracks.empty()) {
-            util::Logger::warn("Library: Failed to load directory cache for " + dir_meta.path);
-            continue;
-        }
-
-        // Merge
-        for (const auto& [path, track] : dir_tracks) {
-            all_tracks[path] = track;
-            
-            // Populate optimization fields (backward compatibility)
-            // Ideally we'd store these in the hierarchical cache too
-            if (std::filesystem::exists(path)) {
-                 // Optimization: Don't stat every file if we trust the cache
-                 // But we need to know if it's valid.
-                 // For now, assume valid if in cache.
-            }
-        }
-        
-        total_tracks += dir_tracks.size();
-    }
-
-    if (all_tracks.empty()) {
-        util::Logger::error("Library: Failed to load any tracks from hierarchical cache");
-        return false;
-    }
-
-    tracks_ = std::move(all_tracks);
-    util::Logger::info("Library: Successfully loaded " + std::to_string(tracks_.size()) + " tracks from hierarchical cache");
-    
-    // Unload from memory to save RAM? 
-    // No, Library contract is that it holds all tracks. 
-    // HierarchicalCache also holds them in 'loaded_directories_'.
-    // We should clear HierarchicalCache's internal map to avoid double memory usage
-    // since Library has its own copy.
-    hierarchical_cache_.unload_all();
-
-    return true;
-}
-
 void Library::scan_directory(const std::function<void(int scanned, int total)>& progress_callback) {
-    ouroboros::util::Logger::info("Library: Starting directory scan");
+    ouroboros::util::Logger::info("Library: Starting directory scan for " + std::to_string(music_dirs_.size()) + " directories");
 
     is_scanning_ = true;
 
     // OPTIMIZED SINGLE-PASS SCAN using getdents64 (Phase 2 + Phase 4)
-    util::Logger::info("Library: Starting optimized getdents64 scan");
-    auto scan_result = util::DirectoryScanner::scan_directory(music_dir_);
+    // Scan all configured directories and merge results
+    util::DirectoryScanner::ScanResult scan_result;
+    for (const auto& music_dir : music_dirs_) {
+        util::Logger::info("Library: Scanning directory: " + music_dir.string());
+        auto dir_result = util::DirectoryScanner::scan_directory(music_dir);
+
+        // Merge results
+        scan_result.audio_files.insert(scan_result.audio_files.end(),
+                                        dir_result.audio_files.begin(),
+                                        dir_result.audio_files.end());
+        scan_result.dir_mtimes.insert(dir_result.dir_mtimes.begin(), dir_result.dir_mtimes.end());
+        scan_result.file_mtimes.insert(dir_result.file_mtimes.begin(), dir_result.file_mtimes.end());
+        scan_result.tree_hash ^= dir_result.tree_hash;  // XOR combine hashes
+    }
 
     const int total_files = scan_result.audio_files.size();
     util::Logger::info("Library: Found " + std::to_string(total_files) + " audio files");
@@ -402,7 +362,17 @@ Library::CacheValidationResult Library::validate_cache_tier0(const std::filesyst
 
     // Load cache header only (first 256 bytes would contain tree_hash in future)
     // For now, we'll do a quick directory scan and compare
-    auto scan_result = util::DirectoryScanner::scan_directory(music_dir_);
+    // Scan all configured directories and merge results
+    util::DirectoryScanner::ScanResult scan_result;
+    for (const auto& music_dir : music_dirs_) {
+        auto dir_result = util::DirectoryScanner::scan_directory(music_dir);
+        scan_result.audio_files.insert(scan_result.audio_files.end(),
+                                        dir_result.audio_files.begin(),
+                                        dir_result.audio_files.end());
+        scan_result.dir_mtimes.insert(dir_result.dir_mtimes.begin(), dir_result.dir_mtimes.end());
+        scan_result.file_mtimes.insert(dir_result.file_mtimes.begin(), dir_result.file_mtimes.end());
+        scan_result.tree_hash ^= dir_result.tree_hash;  // XOR combine
+    }
 
     // Store for future use
     last_tree_hash_ = scan_result.tree_hash;
@@ -574,27 +544,6 @@ void Library::scan_for_changes(
     }
 
     util::Logger::info("TIER 2: Scan complete");
-}
-
-// ═══════════════════════════════════════════════════════════════════════
-// Hierarchical Cache Operations
-// ═══════════════════════════════════════════════════════════════════════
-
-void Library::set_cache_root(const std::filesystem::path& cache_root) {
-    hierarchical_cache_.set_cache_root(cache_root);
-    hierarchical_cache_.set_music_root(music_dir_);
-    util::Logger::info("Library: Hierarchical cache root set to " + cache_root.string());
-}
-
-void Library::generate_hierarchical_caches(const std::filesystem::path& cache_root) {
-    util::Logger::info("Library: Generating hierarchical caches for " +
-                      std::to_string(tracks_.size()) + " tracks");
-
-    hierarchical_cache_.set_cache_root(cache_root);
-    hierarchical_cache_.set_music_root(music_dir_);
-    hierarchical_cache_.generate_hierarchical_caches(tracks_);
-
-    util::Logger::info("Library: Hierarchical cache generation complete");
 }
 
 }  // namespace ouroboros::backend

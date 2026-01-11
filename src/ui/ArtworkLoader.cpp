@@ -16,9 +16,7 @@ ArtworkLoader& ArtworkLoader::instance() {
 
 ArtworkLoader::ArtworkLoader() {
     // Start initial worker threads
-    ouroboros::util::Logger::info("ArtworkLoader: Starting with " + std::to_string(MIN_WORKERS) +
-                                  " worker(s), max=" + std::to_string(get_max_workers()) +
-                                  " (hardware threads)");
+    ouroboros::util::Logger::info("ArtworkLoader: Starting with " + std::to_string(MIN_WORKERS) + " worker(s)");
     for (size_t i = 0; i < MIN_WORKERS; ++i) {
         std::lock_guard<std::mutex> lock(workers_mutex_);
         workers_.emplace_back(&ArtworkLoader::worker_thread, this);
@@ -108,7 +106,7 @@ void ArtworkLoader::request_artwork_with_priority(
 
     // Dynamic scaling: spawn more workers if queue is deep
     size_t current = active_workers_.load();
-    if (queue_size > SPAWN_THRESHOLD * current && current < get_max_workers()) {
+    if (queue_size > SPAWN_THRESHOLD * current && current < MAX_WORKERS) {
         // Spawn new worker - it will register itself via active_workers_.fetch_add(1)
         std::lock_guard<std::mutex> lock(workers_mutex_);
         workers_.emplace_back(&ArtworkLoader::worker_thread, this);
@@ -274,7 +272,6 @@ void ArtworkLoader::worker_thread() {
 
     while (!should_stop_) {
         std::string track_path;
-        int viewport_tier = 0;  // Track tier to decide if we trigger UI update
 
         {
             std::unique_lock<std::mutex> lock(queue_mutex_);
@@ -303,7 +300,6 @@ void ArtworkLoader::worker_thread() {
                 ArtworkRequest req = request_queue_.top();  // Priority queue: Get highest priority request
                 request_queue_.pop();
                 track_path = req.track_path;
-                viewport_tier = req.viewport_tier;  // Capture tier for update decision
 
                 // Check if request is stale (viewport changed since queuing)
                 // BUT: tier=0 requests (NowPlaying current track) are NEVER stale - always process
@@ -370,10 +366,7 @@ void ArtworkLoader::worker_thread() {
                     it->second.data.path = track_path;
                     it->second.data.loaded = true;
                     mark_accessed(track_path);  // Update LRU
-                    // Only trigger UI update for visible items (tier 0), not prefetch (tier 1)
-                    if (viewport_tier == 0) {
-                        has_updates_.store(true);
-                    }
+                    has_updates_.store(true);
                 }
                 cache_hit = true;
             }
@@ -419,10 +412,8 @@ void ArtworkLoader::worker_thread() {
                         it->second.data.loaded = true;
                         mark_accessed(track_path);  // Update LRU
                     }
-                    // Only trigger UI update for visible items (tier 0), not prefetch (tier 1)
-                    if (viewport_tier == 0) {
-                        has_updates_.store(true);
-                    }
+                    // Signal that artwork is ready for UI update
+                    has_updates_.store(true);
                 }
             }
         }

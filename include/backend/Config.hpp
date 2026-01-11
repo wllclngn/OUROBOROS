@@ -25,8 +25,21 @@ struct Config {
     // Keybinds
     std::unordered_map<std::string, std::string> keybinds;
 
-    // Directory settings
-    std::filesystem::path music_directory;
+    // Directory settings - supports multiple directories
+    std::vector<std::filesystem::path> music_directories;
+
+    // Performance settings (cached at load time, O(1) access)
+    int artwork_max_workers = 0;        // 0 = auto (hardware_concurrency)
+    int artwork_prefetch_items = 100;   // Items to prefetch beyond viewport
+    int artwork_cache_size = 500;       // Max cached artwork entries
+    int artwork_spawn_threshold = 10;   // Queue depth per worker to spawn new worker
+
+    // O(1) accessors - return by reference, no allocation
+    const std::vector<std::filesystem::path>& get_music_directories() const { return music_directories; }
+    int get_artwork_max_workers() const { return artwork_max_workers; }
+    int get_artwork_prefetch_items() const { return artwork_prefetch_items; }
+    int get_artwork_cache_size() const { return artwork_cache_size; }
+    int get_artwork_spawn_threshold() const { return artwork_spawn_threshold; }
 
     static Config& instance();
 };

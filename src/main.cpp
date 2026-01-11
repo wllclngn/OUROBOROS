@@ -357,6 +357,7 @@ int main() {
             if (artwork_loader.has_pending_updates()) {
                 artwork_loader.clear_pending_updates();
                 // Only trigger render if album view is active (visible artwork changed)
+                // Prefetched artwork for queue/browser doesn't need immediate render
                 if (renderer.is_album_view_active()) {
                     needs_render = true;
                     artwork_updated = true;
@@ -368,6 +369,7 @@ int main() {
             if (image_renderer.has_pending_updates()) {
                 image_renderer.clear_pending_updates();
                 // Only trigger render if album view is active (visible artwork changed)
+                // Prefetched images don't need to cause idle renders
                 if (renderer.is_album_view_active()) {
                     needs_render = true;
                     artwork_updated = true;

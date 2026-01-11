@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <ctime>
 #include "util/Logger.hpp"
 #include "util/BoyerMoore.hpp"
 
@@ -249,34 +250,87 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
     }
 
     // Show progress count if available (below main message)
+    int progress_y = center_y + 2;
+
     if (snap.library->total_count > 0) {
         std::string progress = "[" + std::to_string(snap.library->scanned_count) + "/" +
                               std::to_string(snap.library->total_count) + " TRACKS LOADED...]";
         int progress_x = content_rect.x + (content_rect.width / 2) - (progress.length() / 2);
-        int progress_y = center_y + 2;
 
         canvas.draw_text(progress_x, progress_y, progress,
                         Style{Color::White, Color::Default, Attribute::None});
 
-        // Slow scan detection - show notice after 15 seconds if rate < 1000 tracks/min
+        // Calculate and display estimated completion time
         auto elapsed_seconds = duration_cast<seconds>(elapsed).count();
-        if (elapsed_seconds >= 15 && snap.library->scanned_count > 0) {
-            // Calculate scan rate (tracks per minute)
-            double tracks_per_minute = (snap.library->scanned_count * 60.0) / elapsed_seconds;
+        if (elapsed_seconds > 0 && snap.library->scanned_count > 0) {
+            int remaining = snap.library->total_count - snap.library->scanned_count;
+            double tracks_per_second = static_cast<double>(snap.library->scanned_count) / elapsed_seconds;
 
-            if (tracks_per_minute < 1000.0) {
+            if (tracks_per_second > 0 && remaining > 0) {
+                int eta_seconds = static_cast<int>(remaining / tracks_per_second);
+
+                // Calculate actual completion time
+                auto completion_time = std::chrono::system_clock::now() + seconds(eta_seconds);
+                auto completion_time_t = std::chrono::system_clock::to_time_t(completion_time);
+                std::tm* tm_info = std::localtime(&completion_time_t);
+
+                char time_buf[16];
+                std::strftime(time_buf, sizeof(time_buf), "%H:%M:%S", tm_info);
+
+                std::string eta_str = "Estimated completion: " + std::string(time_buf);
+
+                int eta_x = content_rect.x + (content_rect.width / 2) - (eta_str.length() / 2);
+                canvas.draw_text(eta_x, progress_y + 1, eta_str,
+                                Style{Color::Cyan, Color::Default, Attribute::None});
+            }
+
+            // Slow scan detection - show notice after 15 seconds if rate < 1000 tracks/min
+            double tracks_per_minute = tracks_per_second * 60.0;
+            if (elapsed_seconds >= 15 && tracks_per_minute < 1000.0) {
                 std::string notice = "NOTICE: OUROBOROS has detected slow cache rendering. Please be patient as the cache is built.";
-                std::string notice2 = "Operations within OUROBOROS will operate faster upon completion.";
+                std::string notice2 = "Computations within OUROBOROS will resolve faster upon completion.";
 
                 int notice_x = content_rect.x + (content_rect.width / 2) - (notice.length() / 2);
                 int notice2_x = content_rect.x + (content_rect.width / 2) - (notice2.length() / 2);
-                int notice_y = progress_y + 2;
+                int notice_y = progress_y + 3;
 
                 canvas.draw_text(notice_x, notice_y, notice,
                                 Style{Color::Yellow, Color::Default, Attribute::None});
                 canvas.draw_text(notice2_x, notice_y + 1, notice2,
                                 Style{Color::Yellow, Color::Default, Attribute::None});
             }
+        }
+    } else {
+        // Validation phase - use IDENTICAL format to scan phase
+        std::string progress = "[VALIDATING CACHE...]";
+        int progress_x = content_rect.x + (content_rect.width / 2) - (progress.length() / 2);
+
+        canvas.draw_text(progress_x, progress_y, progress,
+                        Style{Color::White, Color::Default, Attribute::None});
+
+        auto elapsed_seconds = duration_cast<seconds>(elapsed).count();
+        if (elapsed_seconds >= 5) {
+            // Estimated completion: show elapsed time (same Cyan style)
+            std::string eta_str = "Estimated completion: calculating...";
+
+            int eta_x = content_rect.x + (content_rect.width / 2) - (eta_str.length() / 2);
+            canvas.draw_text(eta_x, progress_y + 1, eta_str,
+                            Style{Color::Cyan, Color::Default, Attribute::None});
+        }
+
+        // NOTICE after 15 seconds (same Yellow style, same format)
+        if (elapsed_seconds >= 15) {
+            std::string notice = "NOTICE: OUROBOROS has detected slow cache validation. Please be patient as the cache is validated.";
+            std::string notice2 = "Computations within OUROBOROS will resolve faster upon completion.";
+
+            int notice_x = content_rect.x + (content_rect.width / 2) - (notice.length() / 2);
+            int notice2_x = content_rect.x + (content_rect.width / 2) - (notice2.length() / 2);
+            int notice_y = progress_y + 3;
+
+            canvas.draw_text(notice_x, notice_y, notice,
+                            Style{Color::Yellow, Color::Default, Attribute::None});
+            canvas.draw_text(notice2_x, notice_y + 1, notice2,
+                            Style{Color::Yellow, Color::Default, Attribute::None});
         }
     }
 }

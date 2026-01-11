@@ -97,13 +97,67 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
                 cfg.keybinds[key] = value;
             }
             else if (current_section == "library" || current_section == "paths") {
-                if (key == "music_directory") {
-                    cfg.music_directory = std::filesystem::path(value);
+                if (key == "music_directories") {
+                    // Parse array format: ["path1", "path2", ...]
+                    cfg.music_directories.clear();
+                    if (value.front() == '[' && value.back() == ']') {
+                        std::string inner = value.substr(1, value.length() - 2);
+                        size_t pos = 0;
+                        while (pos < inner.length()) {
+                            // Skip whitespace
+                            while (pos < inner.length() && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == ',')) pos++;
+                            if (pos >= inner.length()) break;
+
+                            // Find quoted string
+                            if (inner[pos] == '"') {
+                                size_t start = pos + 1;
+                                size_t end = inner.find('"', start);
+                                if (end != std::string::npos) {
+                                    std::string path_str = inner.substr(start, end - start);
+                                    // Expand ~ to home directory
+                                    if (!path_str.empty() && path_str[0] == '~') {
+                                        const char* home = std::getenv("HOME");
+                                        if (home) path_str = std::string(home) + path_str.substr(1);
+                                    }
+                                    cfg.music_directories.emplace_back(path_str);
+                                    pos = end + 1;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                pos++;
+                            }
+                        }
+                    }
+                }
+                else if (key == "music_directory") {
+                    // Legacy single directory support
+                    std::string path_str = value;
+                    if (!path_str.empty() && path_str[0] == '~') {
+                        const char* home = std::getenv("HOME");
+                        if (home) path_str = std::string(home) + path_str.substr(1);
+                    }
+                    cfg.music_directories.clear();
+                    cfg.music_directories.emplace_back(path_str);
+                }
+            }
+            else if (current_section == "performance") {
+                if (key == "artwork_max_workers") {
+                    try { cfg.artwork_max_workers = std::stoi(value); } catch(...) {}
+                }
+                else if (key == "artwork_prefetch_items") {
+                    try { cfg.artwork_prefetch_items = std::stoi(value); } catch(...) {}
+                }
+                else if (key == "artwork_cache_size") {
+                    try { cfg.artwork_cache_size = std::stoi(value); } catch(...) {}
+                }
+                else if (key == "artwork_spawn_threshold") {
+                    try { cfg.artwork_spawn_threshold = std::stoi(value); } catch(...) {}
                 }
             }
         }
     }
-    
+
     return cfg;
 }
 
@@ -171,13 +225,25 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "shuffle_toggle = \"" << (cfg.keybinds.count("shuffle_toggle") ? cfg.keybinds.at("shuffle_toggle") : "S") << "\"\n";
     file << "repeat_cycle = \"" << (cfg.keybinds.count("repeat_cycle") ? cfg.keybinds.at("repeat_cycle") : "R") << "\"\n\n";
 
-    file << "[paths]\n";
-    file << "# Music library directory\n";
-    if (!cfg.music_directory.empty()) {
-        file << "music_directory = \"" << cfg.music_directory.string() << "\"\n";
+    file << "[library]\n";
+    file << "# Music library directories (array format)\n";
+    if (!cfg.music_directories.empty()) {
+        file << "music_directories = [";
+        for (size_t i = 0; i < cfg.music_directories.size(); ++i) {
+            if (i > 0) file << ", ";
+            file << "\"" << cfg.music_directories[i].string() << "\"";
+        }
+        file << "]\n";
     } else {
-        file << "# music_directory = \"~/Music\"\n";
+        file << "# music_directories = [\"~/Music\"]\n";
     }
+
+    file << "\n[performance]\n";
+    file << "# 0 = auto (uses hardware_concurrency)\n";
+    file << "artwork_max_workers = " << cfg.artwork_max_workers << "\n";
+    file << "artwork_prefetch_items = " << cfg.artwork_prefetch_items << "\n";
+    file << "artwork_cache_size = " << cfg.artwork_cache_size << "\n";
+    file << "artwork_spawn_threshold = " << cfg.artwork_spawn_threshold << "\n";
 }
 
 std::filesystem::path ConfigLoader::get_config_file() {
@@ -190,7 +256,11 @@ std::filesystem::path ConfigLoader::get_config_file() {
 
 Config ConfigLoader::create_default_config() {
     Config cfg;
-    cfg.music_directory = ConfigLoader::get_config_file().parent_path();
+    // Default to ~/Music
+    const char* home = std::getenv("HOME");
+    if (home) {
+        cfg.music_directories.emplace_back(std::filesystem::path(home) / "Music");
+    }
     cfg.keybinds["play"] = "space";
     cfg.keybinds["pause"] = "p";
     cfg.keybinds["next"] = "n";

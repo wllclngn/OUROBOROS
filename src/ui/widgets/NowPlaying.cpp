@@ -22,7 +22,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     // Check if we have a current track
     if (!snap.player.current_track_index.has_value()) {
         ouroboros::util::Logger::debug("NowPlaying: No track currently playing");
-        return;  // Keep UI clean - no placeholder text
+        return;
     }
 
     // Resolve track index to actual Track via Library

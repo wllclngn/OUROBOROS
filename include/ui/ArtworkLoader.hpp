@@ -150,14 +150,9 @@ private:
 
     // Dynamic worker scaling constants
     static constexpr size_t MIN_WORKERS = 1;
+    static constexpr size_t MAX_WORKERS = 8;
     static constexpr size_t SPAWN_THRESHOLD = 10;  // Queue depth per worker to trigger spawn
     static constexpr auto IDLE_TIMEOUT = std::chrono::milliseconds(500);
-
-    // MAX_WORKERS based on hardware threads (computed at runtime)
-    static size_t get_max_workers() {
-        unsigned int hw = std::thread::hardware_concurrency();
-        return (hw > 0) ? hw : 4;  // Fallback to 4 if detection fails
-    }
 
     // Worker thread management
     std::vector<std::thread> workers_;
