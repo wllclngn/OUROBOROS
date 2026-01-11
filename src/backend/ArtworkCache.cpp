@@ -269,12 +269,12 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             std::vector<uint8_t> data(data_len);
             in.read(reinterpret_cast<char*>(data.data()), data_len);
 
-            // Ref count
-            size_t ref_count;
-            in.read(reinterpret_cast<char*>(&ref_count), sizeof(ref_count));
+            // Ref count (read but ignore - reset to 0 since LRU cache is empty at startup)
+            size_t ref_count_ignored;
+            in.read(reinterpret_cast<char*>(&ref_count_ignored), sizeof(ref_count_ignored));
 
-            // Store entry (without validation - assume cache is valid)
-            cache_[hash] = ArtworkEntry{std::move(data), std::move(mime_type), source_dir, ref_count};
+            // Store entry with ref_count=0 (no LRU entries reference it yet)
+            cache_[hash] = ArtworkEntry{std::move(data), std::move(mime_type), source_dir, 0};
 
             // Rebuild dir→hash mapping
             if (!source_dir.empty()) {

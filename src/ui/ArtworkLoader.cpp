@@ -358,8 +358,7 @@ void ArtworkLoader::worker_thread() {
         if (!artwork_hash.empty()) {
             const auto* cached_entry = global_cache.get(artwork_hash);
             if (cached_entry) {
-                // Increment ref count - this track is using this artwork
-                global_cache.ref(artwork_hash);
+                // Note: ref_count was set to 1 when store() was called - no need to ref() again
                 ouroboros::util::Logger::info("ArtworkLoader: CACHE HIT for hash: " + artwork_hash.substr(0, 16) + "... (" + std::to_string(cached_entry->data.size()) + " bytes)");
 
                 std::lock_guard<std::mutex> lock(cache_mutex_);
