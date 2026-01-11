@@ -92,6 +92,8 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
                     try { cfg.album_grid_columns = std::stoi(value); } catch(...) {}
                 }
                 else if (key == "sort_albums_by_year") cfg.sort_albums_by_year = (value == "true");
+                else if (key == "sort_ignore_the_prefix") cfg.sort_ignore_the_prefix = (value == "true");
+                else if (key == "sort_ignore_bracket_prefix") cfg.sort_ignore_bracket_prefix = (value == "true");
             }
             else if (current_section == "keybinds") {
                 cfg.keybinds[key] = value;
@@ -191,6 +193,10 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "album_grid_columns = " << cfg.album_grid_columns << "\n\n";
     file << "# Sort albums by year instead of alphabetically\n";
     file << "sort_albums_by_year = " << (cfg.sort_albums_by_year ? "true" : "false") << "\n\n";
+    file << "# Ignore 'The ' prefix when sorting artists (e.g., 'The Beatles' sorts as 'Beatles')\n";
+    file << "sort_ignore_the_prefix = " << (cfg.sort_ignore_the_prefix ? "true" : "false") << "\n\n";
+    file << "# Ignore '[' prefix when sorting artists (e.g., '[Unknown]' sorts as 'Unknown]')\n";
+    file << "sort_ignore_bracket_prefix = " << (cfg.sort_ignore_bracket_prefix ? "true" : "false") << "\n\n";
 
     file << "[keybinds]\n";
     file << "# Playback controls\n";

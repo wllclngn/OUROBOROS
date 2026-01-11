@@ -21,6 +21,8 @@ struct Config {
 
     // Sorting settings
     bool sort_albums_by_year = false;  // false = alphabetical, true = by release year
+    bool sort_ignore_the_prefix = true;  // Ignore "The " prefix when sorting artists
+    bool sort_ignore_bracket_prefix = true;  // Ignore "[" prefix when sorting artists
 
     // Keybinds
     std::unordered_map<std::string, std::string> keybinds;

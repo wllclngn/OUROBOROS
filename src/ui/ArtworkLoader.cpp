@@ -254,6 +254,10 @@ void ArtworkLoader::evict_if_needed() {
 
         // Evict this entry
         ouroboros::util::Logger::debug("ArtworkLoader: Evicting LRU entry: " + *it);
+        // Decrement ref count in global cache
+        if (!cache_it->second.data.hash.empty()) {
+            backend::ArtworkCache::instance().unref(cache_it->second.data.hash);
+        }
         cache_.erase(cache_it);
         it = decltype(it)(lru_list_.erase(std::next(it).base()));
         --to_evict;
@@ -354,6 +358,8 @@ void ArtworkLoader::worker_thread() {
         if (!artwork_hash.empty()) {
             const auto* cached_entry = global_cache.get(artwork_hash);
             if (cached_entry) {
+                // Increment ref count - this track is using this artwork
+                global_cache.ref(artwork_hash);
                 ouroboros::util::Logger::info("ArtworkLoader: CACHE HIT for hash: " + artwork_hash.substr(0, 16) + "... (" + std::to_string(cached_entry->data.size()) + " bytes)");
 
                 std::lock_guard<std::mutex> lock(cache_mutex_);

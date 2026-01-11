@@ -120,10 +120,34 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
     }
 
     // Sort albums by Artist, then by Year or Title (based on config)
-    bool sort_by_year = backend::Config::instance().sort_albums_by_year;
-    ouroboros::util::timsort(albums_, [sort_by_year](const AlbumGroup& a, const AlbumGroup& b) {
-        // Case-insensitive artist comparison
-        int cmp = util::case_insensitive_compare(a.artist, b.artist);
+    const auto& cfg = backend::Config::instance();
+    bool sort_by_year = cfg.sort_albums_by_year;
+    bool ignore_the = cfg.sort_ignore_the_prefix;
+    bool ignore_bracket = cfg.sort_ignore_bracket_prefix;
+
+    // Helper to get sort key for artist (strips prefixes based on config)
+    auto get_artist_sort_key = [ignore_the, ignore_bracket](const std::string& artist) -> std::string {
+        if (artist.empty()) return artist;
+        size_t start = 0;
+        // Strip "The " prefix if configured (case-insensitive)
+        if (ignore_the && artist.size() >= 4) {
+            if ((artist[0] == 'T' || artist[0] == 't') &&
+                (artist[1] == 'H' || artist[1] == 'h') &&
+                (artist[2] == 'E' || artist[2] == 'e') &&
+                artist[3] == ' ') {
+                start = 4;
+            }
+        }
+        // Strip "[" prefix if configured
+        if (ignore_bracket && start < artist.size() && artist[start] == '[') {
+            start++;
+        }
+        return (start > 0) ? artist.substr(start) : artist;
+    };
+
+    ouroboros::util::timsort(albums_, [sort_by_year, &get_artist_sort_key](const AlbumGroup& a, const AlbumGroup& b) {
+        // Case-insensitive artist comparison with prefix stripping
+        int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
         if (cmp != 0) return cmp < 0;
 
         // Within same artist: sort by year or title

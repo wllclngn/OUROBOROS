@@ -46,7 +46,7 @@ Minimal configuration:
 .nf
 .RS
 [library]
-music_directory = "/path/to/your/music"
+music_directories = ["/path/to/your/music"]
 .RE
 .fi
 
@@ -55,8 +55,8 @@ Complete configuration options:
 .B [library]
 .RS
 .TP
-.B music_directory
-Path to music directory (required). Supports ~ expansion.
+.B music_directories
+Array of music directory paths. Supports multiple directories.
 .RE
 
 .TP

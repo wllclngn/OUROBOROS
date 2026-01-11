@@ -115,7 +115,16 @@ void ArtworkCache::unref(const std::string& hash) {
         // Evict if no more references
         if (it->second.ref_count == 0) {
             util::Logger::debug("ArtworkCache: Evicting unused artwork " + hash.substr(0, 16) + "...");
+            // Clean up dir mapping before erasing
+            const std::string& source_dir = it->second.source_dir;
+            if (!source_dir.empty()) {
+                auto dir_it = dir_to_hash_.find(source_dir);
+                if (dir_it != dir_to_hash_.end() && dir_it->second == hash) {
+                    dir_to_hash_.erase(dir_it);
+                }
+            }
             cache_.erase(it);
+            dirty_ = true;
         }
     }
 }

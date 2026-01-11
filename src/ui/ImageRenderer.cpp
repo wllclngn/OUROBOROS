@@ -336,9 +336,13 @@ uint32_t ImageRenderer::render_image(
 
     // 2. Retrieve from Cache and Render
     // Re-calculate hash to look up in cache (fast)
-    size_t data_hash;
-    if (!content_hash.empty()) {
-        data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+    size_t data_hash = 0;
+    if (!content_hash.empty() && content_hash.size() >= 16) {
+        try {
+            data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+        } catch (const std::exception&) {
+            data_hash = util::ArtworkHasher::fast_hash(image_data);
+        }
     } else {
         data_hash = util::ArtworkHasher::fast_hash(image_data);
     }
@@ -417,9 +421,13 @@ bool ImageRenderer::preload_image(
     if (!album_art_enabled_ || image_data.empty()) return false;
 
     // 1. Calculate Hash
-    size_t data_hash;
-    if (!content_hash.empty()) {
-        data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+    size_t data_hash = 0;
+    if (!content_hash.empty() && content_hash.size() >= 16) {
+        try {
+            data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+        } catch (const std::exception&) {
+            data_hash = util::ArtworkHasher::fast_hash(image_data);
+        }
     } else {
         data_hash = util::ArtworkHasher::fast_hash(image_data);
     }
@@ -475,7 +483,7 @@ bool ImageRenderer::preload_image(
     });
 
     if (submitted) {
-        pending_jobs_[key] = std::move(future);
+        pending_jobs_[key] = PendingJob{std::move(future), std::chrono::steady_clock::now()};
     }
 
     return false;
@@ -483,10 +491,16 @@ bool ImageRenderer::preload_image(
 
 void ImageRenderer::delete_image(const std::string& content_hash) {
     if (protocol_ != ImageProtocol::Kitty || content_hash.empty()) return;
+    if (content_hash.size() < 16) return;
 
-    size_t data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+    size_t data_hash = 0;
+    try {
+        data_hash = std::stoull(content_hash.substr(0, 16), nullptr, 16);
+    } catch (const std::exception&) {
+        return;  // Invalid hash, nothing to delete
+    }
+
     uint32_t image_id = static_cast<uint32_t>(data_hash & 0xFFFFFFFF);
-
     delete_image_by_id(image_id);
 }
 
@@ -754,11 +768,20 @@ bool ImageRenderer::has_pending_updates() {
 }
 
 void ImageRenderer::poll_jobs() {
+    auto now = std::chrono::steady_clock::now();
     auto job_it = pending_jobs_.begin();
     while (job_it != pending_jobs_.end()) {
-        auto& future = job_it->second;
-        if (future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-            CachedPixels result = future.get();
+        auto& pending = job_it->second;
+
+        // Timeout stale jobs
+        if (now - pending.submit_time > PENDING_JOB_TIMEOUT) {
+            ouroboros::util::Logger::warn("ImageRenderer: Pending job timed out");
+            job_it = pending_jobs_.erase(job_it);
+            continue;
+        }
+
+        if (pending.future.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+            CachedPixels result = pending.future.get();
             if (result.valid) {
                 if (cache_.size() >= MAX_CACHE_SIZE) {
                     auto last = lru_list_.back();
@@ -770,7 +793,7 @@ void ImageRenderer::poll_jobs() {
                 has_updates_.store(true);
                 ouroboros::util::Logger::debug("ImageRenderer: Async job completed in poll_jobs");
             } else {
-                 failed_hashes_.insert(job_it->first.data_hash);
+                failed_hashes_.insert(job_it->first.data_hash);
             }
             job_it = pending_jobs_.erase(job_it);
         } else {

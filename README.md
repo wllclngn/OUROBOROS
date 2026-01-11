@@ -160,7 +160,14 @@ Minimal configuration (required):
 
 ```toml
 [library]
-music_directory = "/path/to/your/music"
+music_directories = ["/path/to/your/music"]
+```
+
+Multiple directories are supported:
+
+```toml
+[library]
+music_directories = ["/home/user/Music", "/mnt/external/Albums"]
 ```
 
 On first run, OUROBOROS will create a default config if none exists.
@@ -168,7 +175,7 @@ On first run, OUROBOROS will create a default config if none exists.
 ### Available Settings
 
 **Configuration Categories:**
-- `[library]` - Music directory path
+- `[library]` - Music directories (supports multiple paths)
 - `[playback]` - Default volume, shuffle, repeat mode
 - `[ui]` - Layout, theme, album art, sorting preferences
 - `[keybinds]` - Fully customizable keybindings
@@ -177,8 +184,7 @@ For the complete configuration reference with all options and defaults, see `con
 
 ### User Data Locations
 - **Config**: `~/.config/ouroboros/config.toml`
-- **Library Cache**: `~/.cache/ouroboros/library.bin` (CACHE_VERSION 3, binary format)
-- **Hierarchical Caches**: `~/.cache/ouroboros/dirs/` (per-directory metadata caches)
+- **Library Cache**: `~/.cache/ouroboros/library.bin` (monolithic binary format)
 - **Artwork Cache**: `~/.cache/ouroboros/artwork.cache` (SHA-256 content-addressed storage)
 - **Logs**: `/tmp/ouroboros_debug.log` (timestamped, debug/info/warn/error levels)
 

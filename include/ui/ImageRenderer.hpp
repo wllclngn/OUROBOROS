@@ -160,8 +160,13 @@ private:
     std::unordered_map<CacheKey, CachedPixels, CacheKeyHash> cache_;
     
     // Async processing
-    // We use a separate map to track pending jobs
-    std::unordered_map<CacheKey, std::future<CachedPixels>, CacheKeyHash> pending_jobs_;
+    // We use a separate map to track pending jobs with timeout support
+    struct PendingJob {
+        std::future<CachedPixels> future;
+        std::chrono::steady_clock::time_point submit_time;
+    };
+    std::unordered_map<CacheKey, PendingJob, CacheKeyHash> pending_jobs_;
+    static constexpr std::chrono::seconds PENDING_JOB_TIMEOUT{10};
     // Store hashes of invalid/corrupt images to prevent infinite retry loops
     std::unordered_set<size_t> failed_hashes_;
     // Flag to notify main loop when async jobs complete

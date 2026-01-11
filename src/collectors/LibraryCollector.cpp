@@ -17,6 +17,30 @@ LibraryCollector::LibraryCollector(std::shared_ptr<backend::SnapshotPublisher> p
 void LibraryCollector::run(std::stop_token stop_token) {
     backend::Library library;
 
+    // Helper to get sort key for artist (strips prefixes based on config)
+    auto get_artist_sort_key = [this](const std::string& artist) -> std::string {
+        if (artist.empty()) return artist;
+
+        size_t start = 0;
+
+        // Strip "The " prefix if configured (case-insensitive)
+        if (config_.sort_ignore_the_prefix && artist.size() >= 4) {
+            if ((artist[0] == 'T' || artist[0] == 't') &&
+                (artist[1] == 'H' || artist[1] == 'h') &&
+                (artist[2] == 'E' || artist[2] == 'e') &&
+                artist[3] == ' ') {
+                start = 4;
+            }
+        }
+
+        // Strip "[" prefix if configured
+        if (config_.sort_ignore_bracket_prefix && start < artist.size() && artist[start] == '[') {
+            start++;
+        }
+
+        return (start > 0) ? artist.substr(start) : artist;
+    };
+
     // Use config music_directories if set, otherwise fall back to Platform default
     if (!config_.music_directories.empty()) {
         for (const auto& dir : config_.music_directories) {
@@ -77,8 +101,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
 
                 // Sort library
                 util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-                ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-                    int cmp = util::case_insensitive_compare(a.artist, b.artist);
+                ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+                    int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
                     if (cmp != 0) return cmp < 0;
                     if (a.date != b.date) return a.date < b.date;
                     return a.track_number < b.track_number;
@@ -129,8 +153,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
             new_lib_state->tracks = library.get_all_tracks();
 
             util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-            ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-                int cmp = util::case_insensitive_compare(a.artist, b.artist);
+            ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+                int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
                 if (cmp != 0) return cmp < 0;
                 if (a.date != b.date) return a.date < b.date;
                 return a.track_number < b.track_number;
@@ -188,8 +212,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
         new_lib_state->tracks = library.get_all_tracks();
 
         util::Logger::info("Sorting scanned library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-        ouroboros::util::timsort(new_lib_state->tracks, [](const model::Track& a, const model::Track& b) {
-            int cmp = util::case_insensitive_compare(a.artist, b.artist);
+        ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+            int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
             if (cmp != 0) return cmp < 0;
             if (a.date != b.date) return a.date < b.date;
             return a.track_number < b.track_number;

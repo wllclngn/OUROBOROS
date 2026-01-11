@@ -268,8 +268,7 @@ Intelligent cache invalidation with three validation tiers:
 **Binary Format**: Custom serialization with magic/version
 
 **Cache Locations** (`~/.cache/ouroboros/`):
-- `library.bin` - Monolithic cache (CACHE_VERSION 3)
-- `dirs/` - Hierarchical per-directory caches
+- `library.bin` - Monolithic library cache
 - `artwork.cache` - Content-addressed artwork storage
 
 ---

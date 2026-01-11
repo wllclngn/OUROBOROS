@@ -1,6 +1,10 @@
 # OUROBOROS Configuration File
 # Location: ~/.config/ouroboros/config.toml
 
+[library]
+# Music directories to scan (supports multiple paths)
+music_directories = ["/home/user/Music"]
+
 [playback]
 # Default volume level (0-100)
 default_volume = 50
@@ -26,6 +30,12 @@ album_grid_columns = 4
 
 # Sort albums by year instead of alphabetically (within each artist)
 sort_albums_by_year = false
+
+# Ignore 'The ' prefix when sorting artists (e.g., 'The Beatles' sorts as 'Beatles')
+sort_ignore_the_prefix = true
+
+# Ignore '[' prefix when sorting artists (e.g., '[Unknown]' sorts as 'Unknown]')
+sort_ignore_bracket_prefix = true
 
 [keybinds]
 # Playback controls
