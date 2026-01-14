@@ -73,7 +73,9 @@ void ArtworkWindow::detect_cell_size() {
 void ArtworkWindow::request(const std::string& path, int priority, int width_cols, int height_rows, bool notify) {
     if (path.empty()) return;
 
-    CacheKey key{path, width_cols, height_rows};
+    // Key by album directory, not individual track path - all tracks share same artwork
+    std::string album_dir = std::filesystem::path(path).parent_path().string();
+    CacheKey key{album_dir, width_cols, height_rows};
 
     // Check if already cached (including failed attempts)
     {
@@ -127,7 +129,9 @@ void ArtworkWindow::flush_requests() {
 }
 
 const DecodedArtwork* ArtworkWindow::get_decoded(const std::string& path, int width_cols, int height_rows) {
-    CacheKey key{path, width_cols, height_rows};
+    // Key by album directory, not individual track path
+    std::string album_dir = std::filesystem::path(path).parent_path().string();
+    CacheKey key{album_dir, width_cols, height_rows};
 
     std::lock_guard<std::mutex> lock(cache_mutex_);
     auto it = cache_.find(key);
@@ -231,9 +235,12 @@ void ArtworkWindow::worker_thread() {
                                " " + filename);
         }
 
+        // Process request - get album directory for cache key
+        std::string album_dir = std::filesystem::path(req.path).parent_path().string();
+
         // Double-check: if already in decoded cache, skip (race condition guard)
         {
-            CacheKey key{req.path, req.target_width / cell_width_, req.target_height / cell_height_};
+            CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
             std::lock_guard<std::mutex> lock(cache_mutex_);
             auto it = cache_.find(key);
             if (it != cache_.end() && it->second.ready) {
@@ -243,9 +250,6 @@ void ArtworkWindow::worker_thread() {
                 continue;
             }
         }
-
-        // Process request
-        std::string album_dir = std::filesystem::path(req.path).parent_path().string();
         auto& global_cache = backend::ArtworkCache::instance();
 
         // Try to get hash from directory mapping
@@ -282,7 +286,7 @@ void ArtworkWindow::worker_thread() {
             auto decode_result = decode_jpeg(jpeg_data, req.target_width, req.target_height);
 
             if (decode_result.valid) {
-                CacheKey key{req.path, req.target_width / cell_width_, req.target_height / cell_height_};
+                CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
 
                 std::lock_guard<std::mutex> lock(cache_mutex_);
 
@@ -320,7 +324,7 @@ void ArtworkWindow::worker_thread() {
             }
         } else {
             // No artwork found - cache a "failed" entry to prevent infinite retry loop
-            CacheKey key{req.path, req.target_width / cell_width_, req.target_height / cell_height_};
+            CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
 
             std::lock_guard<std::mutex> lock(cache_mutex_);
 

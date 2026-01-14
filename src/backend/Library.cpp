@@ -164,11 +164,11 @@ bool Library::load_from_cache(const std::filesystem::path& cache_path) {
             }
 
             in.read(reinterpret_cast<char*>(&t.is_valid), sizeof(t.is_valid));
-            
-            // Verify file still exists
-            if (std::filesystem::exists(t.path)) {
-                loaded_tracks[t.path] = t;
-            }
+
+            // CUMULATIVE CACHE: Load ALL tracks, even if file doesn't exist right now
+            // (drive might be unmounted, will be available later)
+            // Stale entries are pruned during scan_directory() when we can verify
+            loaded_tracks[t.path] = t;
         }
 
         tracks_ = std::move(loaded_tracks);
@@ -321,8 +321,24 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
         progress_callback(total_files, total_files);
     }
 
-    // Metadata is now fully populated by MetadataParser during scan
-    tracks_ = std::move(new_tracks);
+    // CUMULATIVE CACHE: Merge new tracks into existing cache instead of replacing
+    // This preserves tracks from other directories (e.g., unmounted drives)
+    // Only prune tracks whose files no longer exist anywhere
+    for (auto& [path, track] : new_tracks) {
+        tracks_[path] = std::move(track);
+    }
+
+    // Prune tracks that no longer exist on disk (cleanup stale entries)
+    for (auto it = tracks_.begin(); it != tracks_.end(); ) {
+        if (!std::filesystem::exists(it->first)) {
+            util::Logger::debug("Library: Pruning stale track: " + it->first);
+            it = tracks_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    util::Logger::info("Library: Cache now contains " + std::to_string(tracks_.size()) + " tracks");
     is_scanning_ = false;
 }
 

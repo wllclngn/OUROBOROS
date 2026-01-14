@@ -75,20 +75,21 @@ private:
     ArtworkWindow(const ArtworkWindow&) = delete;
     ArtworkWindow& operator=(const ArtworkWindow&) = delete;
 
-    // Cache key: path + dimensions
+    // Cache key: album directory + dimensions (content-addressed by directory)
+    // All tracks in same album share artwork, so key by directory not file path
     struct CacheKey {
-        std::string path;
+        std::string album_dir;  // Parent directory, not individual track path
         int width;
         int height;
 
         bool operator==(const CacheKey& other) const {
-            return path == other.path && width == other.width && height == other.height;
+            return album_dir == other.album_dir && width == other.width && height == other.height;
         }
     };
 
     struct CacheKeyHash {
         size_t operator()(const CacheKey& k) const {
-            return std::hash<std::string>()(k.path) ^
+            return std::hash<std::string>()(k.album_dir) ^
                    (std::hash<int>()(k.width) << 1) ^
                    (std::hash<int>()(k.height) << 2);
         }
