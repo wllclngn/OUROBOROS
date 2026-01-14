@@ -150,11 +150,11 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
                 else if (key == "artwork_prefetch_items") {
                     try { cfg.artwork_prefetch_items = std::stoi(value); } catch(...) {}
                 }
-                else if (key == "artwork_cache_size") {
-                    try { cfg.artwork_cache_size = std::stoi(value); } catch(...) {}
-                }
                 else if (key == "artwork_spawn_threshold") {
                     try { cfg.artwork_spawn_threshold = std::stoi(value); } catch(...) {}
+                }
+                else if (key == "artwork_memory_limit_mb") {
+                    try { cfg.artwork_memory_limit_mb = std::stoi(value); } catch(...) {}
                 }
             }
         }
@@ -248,8 +248,9 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "# 0 = auto (uses hardware_concurrency)\n";
     file << "artwork_max_workers = " << cfg.artwork_max_workers << "\n";
     file << "artwork_prefetch_items = " << cfg.artwork_prefetch_items << "\n";
-    file << "artwork_cache_size = " << cfg.artwork_cache_size << "\n";
     file << "artwork_spawn_threshold = " << cfg.artwork_spawn_threshold << "\n";
+    file << "# Memory limit for artwork cache in MB (triggers eviction when exceeded)\n";
+    file << "artwork_memory_limit_mb = " << cfg.artwork_memory_limit_mb << "\n";
 }
 
 std::filesystem::path ConfigLoader::get_config_file() {

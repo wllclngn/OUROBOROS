@@ -7,7 +7,7 @@
 #include "collectors/PlaybackCollector.hpp"
 #include "ui/Terminal.hpp"
 #include "ui/Renderer.hpp"
-#include "ui/ArtworkLoader.hpp"
+#include "ui/ArtworkWindow.hpp"
 #include "ui/ImageRenderer.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
@@ -18,6 +18,7 @@
 #include <csignal>
 #include <cerrno>
 #include <cstdlib>
+#include <clocale>
 #include <unistd.h>
 #include <poll.h>
 #include <filesystem>
@@ -50,6 +51,9 @@ static void signal_handler(int) {
 }
 
 int main() {
+    // Set locale for proper Unicode handling (required for wcwidth)
+    std::setlocale(LC_ALL, "");
+
     try {
         // CRITICAL: Redirect stderr to log file to capture libmpg123 warnings
         // libmpg123 writes directly to stderr, bypassing our logger
@@ -172,7 +176,9 @@ int main() {
                     // If queue was empty, start playing
                     if (new_queue->track_indices.size() == 1) {
                         new_queue->current_index = 0;
-                        ouroboros::util::Logger::debug("AddTrackToQueue: Queue was empty, set current_index=0");
+                        // Set player.current_track_index for immediate UI update (NowPlaying artwork)
+                        snap.player.current_track_index = evt.index;
+                        ouroboros::util::Logger::debug("AddTrackToQueue: Queue was empty, set current_index=0, track_index=" + std::to_string(evt.index));
                     }
 
                     snap.queue = new_queue;
@@ -350,26 +356,14 @@ int main() {
                 // ouroboros::util::Logger::debug("Main loop: Snapshot changed, will render");
             }
 
-            // Check if artwork finished loading
-            auto& artwork_loader = ouroboros::ui::ArtworkLoader::instance();
+            // Check if artwork finished loading (unified ArtworkWindow)
+            auto& artwork_window = ouroboros::ui::ArtworkWindow::instance();
             bool artwork_updated = false;
 
-            if (artwork_loader.has_pending_updates()) {
-                artwork_loader.clear_pending_updates();
+            if (artwork_window.has_updates()) {
+                artwork_window.clear_updates();
                 // Only trigger render if album view is active (visible artwork changed)
                 // Prefetched artwork for queue/browser doesn't need immediate render
-                if (renderer.is_album_view_active()) {
-                    needs_render = true;
-                    artwork_updated = true;
-                }
-            }
-
-            // Check if image decoding finished (async jobs in ImageRenderer)
-            auto& image_renderer = ouroboros::ui::ImageRenderer::instance();
-            if (image_renderer.has_pending_updates()) {
-                image_renderer.clear_pending_updates();
-                // Only trigger render if album view is active (visible artwork changed)
-                // Prefetched images don't need to cause idle renders
                 if (renderer.is_album_view_active()) {
                     needs_render = true;
                     artwork_updated = true;
@@ -381,47 +375,11 @@ int main() {
                 needs_render = true;
             }
 
-            // Update artwork cache context ONLY when current track changes
+            // Track index change detection (for logging)
             if (snap && snap->player.current_track_index != last_track_index) {
                 ouroboros::util::Logger::debug("Track changed detected!");
                 last_track_index = snap->player.current_track_index;
-
-                if (snap->player.current_track_index.has_value()) {
-                    int current_idx = snap->player.current_track_index.value();
-                    if (current_idx >= 0 && current_idx < static_cast<int>(snap->library->tracks.size())) {
-                        std::string current_path = snap->library->tracks[current_idx].path;
-
-                        // Get previous 5 + next 5 tracks from queue (for bidirectional navigation)
-                        std::vector<std::string> nearby_paths;
-                        if (snap->queue && snap->queue->current_index < snap->queue->track_indices.size()) {
-                            // Previous 5 tracks (for PREVIOUS button)
-                            for (size_t i = 1; i <= 5 && snap->queue->current_index >= i; ++i) {
-                                int idx = snap->queue->track_indices[snap->queue->current_index - i];
-                                if (idx >= 0 && idx < static_cast<int>(snap->library->tracks.size())) {
-                                    nearby_paths.push_back(snap->library->tracks[idx].path);
-                                }
-                            }
-                            // Next 5 tracks (for NEXT button)
-                            for (size_t i = 1; i <= 5 && snap->queue->current_index + i < snap->queue->track_indices.size(); ++i) {
-                                int idx = snap->queue->track_indices[snap->queue->current_index + i];
-                                if (idx >= 0 && idx < static_cast<int>(snap->library->tracks.size())) {
-                                    nearby_paths.push_back(snap->library->tracks[idx].path);
-                                }
-                            }
-                        }
-
-                        ouroboros::util::Logger::debug("Updating artwork cache context...");
-                        artwork_loader.update_queue_context(current_path, nearby_paths);
-
-                        // Prefetch artwork for nearby tracks (bidirectional)
-                        int distance = 1;
-                        for (const auto& path : nearby_paths) {
-                            artwork_loader.request_artwork_with_priority(path, distance++, 1);
-                        }
-                        ouroboros::util::Logger::debug("Artwork cache context updated, prefetched " +
-                                                       std::to_string(nearby_paths.size()) + " nearby tracks");
-                    }
-                }
+                // Artwork loading is handled on-demand by NowPlaying via ArtworkWindow
             }
 
             if (needs_render) {

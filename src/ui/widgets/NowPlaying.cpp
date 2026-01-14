@@ -1,7 +1,7 @@
 #include "ui/widgets/NowPlaying.hpp"
 #include "ui/Formatting.hpp"
 #include "ui/ImageRenderer.hpp"
-#include "ui/ArtworkLoader.hpp"
+#include "ui/ArtworkWindow.hpp"
 #include "ui/VisualBlocks.hpp"
 #include "config/Theme.hpp"
 #include <sstream>
@@ -53,9 +53,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
                 img_renderer.delete_image_by_id(last_art_image_id_);
                 last_art_image_id_ = 0;
             }
-            // Request async artwork loading (non-blocking)
-            auto& loader = ArtworkLoader::instance();
-            loader.request_artwork(track.path);
+            // Request will be made in render_image_if_needed with proper dimensions
         }
     }
 
@@ -263,39 +261,10 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool force_render) {
     ouroboros::util::Logger::debug("NowPlaying: render_image_if_needed called for: " + cached_path_);
 
-    // Query ArtworkLoader directly (zero-copy)
-    auto& loader = ArtworkLoader::instance();
-    const auto* artwork = loader.get_artwork_ref(cached_path_);
-
-    if (!artwork) {
-        ouroboros::util::Logger::debug("NowPlaying: No artwork ref for " + cached_path_);
+    if (cached_path_.empty()) {
+        ouroboros::util::Logger::debug("NowPlaying: No cached path");
         return;
     }
-    
-    if (!artwork->loaded) {
-        ouroboros::util::Logger::debug("NowPlaying: Artwork not loaded for " + cached_path_);
-        return;
-    }
-
-    // Skip if we already rendered this image (unless forcing or track just changed)
-    static std::string last_rendered_path;
-    bool should_force = force_render || force_next_render_;
-    if (!should_force && cached_path_ == last_rendered_path) {
-        return;  // Already rendered
-    }
-
-    // Skip if we're already waiting for this path to decode
-    // (Clear pending if path changed - we want to try the new track)
-    if (cached_path_ != pending_render_path_) {
-        pending_render_path_.clear();
-    } else if (!should_force) {
-        return;  // Still waiting for decode of same path
-    }
-
-    // Clear the force flag now that we're rendering
-    force_next_render_ = false;
-
-    ouroboros::util::Logger::debug("NowPlaying: Attempting render. Path=" + cached_path_ + " DataSize=" + std::to_string(artwork->jpeg_data.size()));
 
     auto& img_renderer = ImageRenderer::instance();
     if (!img_renderer.images_supported()) {
@@ -307,32 +276,22 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
     // draw_box_border uses 1 cell for border on each side
     int content_x = widget_rect.x + 1;
     int content_y = widget_rect.y + 1;
-    int content_width = widget_rect.width - 2;   // Subtract left+right borders
-    int content_height = widget_rect.height - 2;  // Subtract top+bottom borders
+    int content_width = widget_rect.width - 2;
+    int content_height = widget_rect.height - 2;
 
     // Calculate layout: artwork takes most space, metadata + statusline at bottom
-    // Reserve 3 lines at bottom for metadata (no extra padding - maximize artwork)
     int metadata_lines = 3;
     int available_artwork_height = content_height - metadata_lines;
 
-    // ALGORITHM FOR SYMMETRY WITH PADDING:
-    // Reserve 1 col padding each side -> 2 cols total
-    // 1. Start with width constraint
+    // ALGORITHM FOR SYMMETRY WITH PADDING
     int art_cols = content_width - 2;
     if (art_cols < 0) art_cols = 0;
     int art_rows = art_cols / 2;
 
-    // 2. Apply height constraint
     if (art_rows > available_artwork_height) {
         art_rows = available_artwork_height;
         art_cols = art_rows * 2;
-        // Adjust parity to match content_width for symmetric padding
-        // If (width - cols) is odd, padding is asymmetric.
-        // We want (width - cols) to be even.
         if ((content_width - art_cols) % 2 != 0) {
-            // Adjust cols. We must NOT exceed content_width - 2.
-            // Since we reduced from height, art_cols is likely smaller than width-2.
-            // Incrementing keeps us safe usually, unless we hit the limit.
             if (art_cols + 1 <= content_width - 2) {
                 art_cols++;
             } else {
@@ -344,11 +303,36 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
     if (art_cols < 4) art_cols = 4;
     art_rows = art_cols / 2;
 
-    // 3. Split padding evenly (now guaranteed symmetric due to matching parity)
     int total_padding = content_width - art_cols;
     int horizontal_padding = total_padding / 2;
     int art_x = content_x + horizontal_padding;
     int art_y = content_y;
+
+    // Request artwork from ArtworkWindow with priority 0 (currently playing track)
+    auto& artwork_window = ArtworkWindow::instance();
+    artwork_window.request(cached_path_, 0, art_cols, art_rows);
+
+    // Query ArtworkWindow for decoded pixels
+    const auto* artwork = artwork_window.get_decoded(cached_path_, art_cols, art_rows);
+
+    if (!artwork) {
+        ouroboros::util::Logger::debug("NowPlaying: Artwork not ready for " + cached_path_);
+        pending_render_path_ = cached_path_;
+        return;
+    }
+
+    // Skip if we already rendered this image (unless forcing or track just changed)
+    static std::string last_rendered_path;
+    bool should_force = force_render || force_next_render_;
+    if (!should_force && cached_path_ == last_rendered_path) {
+        return;  // Already rendered
+    }
+
+    // Clear the force flag now that we're rendering
+    force_next_render_ = false;
+
+    ouroboros::util::Logger::debug("NowPlaying: Attempting render. Path=" + cached_path_ +
+                                  " DataSize=" + std::to_string(artwork->data_size));
 
     ouroboros::util::Logger::debug("NowPlaying::render_image_if_needed - content_width=" + std::to_string(content_width) +
                                    " art_cols=" + std::to_string(art_cols) +
@@ -356,31 +340,39 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
                                    " horizontal_padding=" + std::to_string(horizontal_padding) +
                                    " LEFT=" + std::to_string(horizontal_padding) +
                                    " RIGHT=" + std::to_string(total_padding - horizontal_padding));
-    ouroboros::util::Logger::debug("NowPlaying: Calling render_image. X=" + std::to_string(art_x) + " Y=" + std::to_string(art_y) + " Cols=" + std::to_string(art_cols) + " Rows=" + std::to_string(art_rows));
+    ouroboros::util::Logger::debug("NowPlaying: Calling render_image. X=" + std::to_string(art_x) +
+                                  " Y=" + std::to_string(art_y) +
+                                  " Cols=" + std::to_string(art_cols) +
+                                  " Rows=" + std::to_string(art_rows));
 
     uint32_t image_id = img_renderer.render_image(
-        artwork->jpeg_data,
+        artwork->data,
+        artwork->data_size,
+        artwork->width,
+        artwork->height,
+        artwork->format,
         art_x,
         art_y,
         art_cols,
-        art_rows
+        art_rows,
+        artwork->hash
     );
     bool success = (image_id != 0);
 
-    ouroboros::util::Logger::debug("NowPlaying: render_image returned " + std::string(success ? "TRUE" : "FALSE") + " image_id=" + std::to_string(image_id));
+    ouroboros::util::Logger::debug("NowPlaying: render_image returned " +
+                                  std::string(success ? "TRUE" : "FALSE") +
+                                  " image_id=" + std::to_string(image_id));
 
     if (success) {
         last_art_x_ = art_x;
         last_art_y_ = art_y;
         last_art_width_ = art_cols;
         last_art_height_ = art_rows;
-        last_art_image_id_ = image_id;  // Store for selective deletion
+        last_art_image_id_ = image_id;
 
-        // Track what we rendered (static var declared at top of function)
         last_rendered_path = cached_path_;
-        pending_render_path_.clear();  // No longer pending
+        pending_render_path_.clear();
     } else {
-        // Decode still in progress - don't retry until it completes
         pending_render_path_ = cached_path_;
     }
 }

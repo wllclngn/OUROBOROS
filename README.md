@@ -26,7 +26,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 ### Content-Addressed Artwork
 - **SHA-256 Deduplication**: Custom NIST FIPS 180-4 implementation (100 tracks → 1 cached JPEG, 99% space savings)
 - **Dual-Hash System**: SHA-256 for content addressing + FNV-1a with adaptive sampling for O(1) runtime lookups
-- **Multi-Level Caching**: Disk → memory → decoded pixels (250-entry viewport-aware LRU cache)
+- **Multi-Level Caching**: Disk → memory → decoded pixels (memory-pressure eviction with configurable limit)
 - **Radial Rendering**: Distance-based artwork prioritization from cursor position (loads visible items first, then expands outward)
 - **Async Decoding Pool**: Parallel image processing with sliding window prefetch (20 items ahead/behind viewport)
 - **High-Quality Filtering**: Mitchell-Netrevalli image resizing for photographic content (superior to bilinear/bicubic)

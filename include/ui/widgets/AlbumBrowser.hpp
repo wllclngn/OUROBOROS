@@ -17,7 +17,7 @@ struct AlbumGroup {
     std::string artist;
     std::string year;
     std::vector<int> track_indices; // Indices into the main library vector
-    std::string representative_track_path; // First track path for artwork lookup via ArtworkLoader
+    std::string representative_track_path; // First track path for artwork lookup via ArtworkWindow
     std::string album_directory; // Directory containing the album's tracks
 };
 
@@ -48,12 +48,18 @@ private:
     int scroll_offset_ = 0;
     int selected_index_ = 0;
     int last_scroll_offset_ = -1;  // Dirty tracking for scroll changes
+    int scroll_start_offset_ = 0;  // Where scroll session started (for big jump detection)
+    bool was_scrolling_ = false;  // Track if user was actively scrolling (for state transitions)
+    std::chrono::steady_clock::time_point scroll_start_time_{};  // When scroll session started
 
     // Smart prefetch timing: Debounce requests and delay prefetch until scroll idle
     std::chrono::steady_clock::time_point last_scroll_time_{};
     std::chrono::steady_clock::time_point last_request_time_{};
     static constexpr auto SCROLL_DEBOUNCE_MS = std::chrono::milliseconds(35);
     static constexpr auto PREFETCH_DELAY_MS = std::chrono::milliseconds(150);
+    static constexpr int BIG_JUMP_ROWS = 10;  // Velocity-based: 10+ rows in under 2s
+    static constexpr int HUGE_JUMP_ROWS = 25; // Distance-based: 25+ rows always triggers
+    static constexpr auto BIG_JUMP_TIME_LIMIT = std::chrono::milliseconds(2000);
 
     std::string filter_query_;
     bool filter_dirty_ = false;

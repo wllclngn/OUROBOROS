@@ -262,16 +262,73 @@ model::AudioFormat MetadataParser::detect_format(const std::string& path) {
     return model::AudioFormat::Unknown;
 }
 
+// Extract embedded artwork from MP3 (ID3v2 APIC frame)
+static ArtworkExtractionResult extract_mp3_embedded_artwork(const std::string& path) {
+    mpg123_handle* mh = mpg123_new(nullptr, nullptr);
+    if (!mh) return {{}, "", ""};
+
+    // Enable picture extraction
+    mpg123_param(mh, MPG123_ADD_FLAGS, MPG123_PICTURE, 0);
+
+    if (mpg123_open(mh, path.c_str()) != MPG123_OK) {
+        mpg123_delete(mh);
+        return {{}, "", ""};
+    }
+
+    // Scan to parse ID3 tags
+    mpg123_scan(mh);
+
+    mpg123_id3v1* v1;
+    mpg123_id3v2* v2;
+    if (mpg123_id3(mh, &v1, &v2) == MPG123_OK && v2 && v2->pictures > 0) {
+        // Look for front cover (type 3), or take first picture
+        const mpg123_picture* best = nullptr;
+        for (size_t i = 0; i < v2->pictures; ++i) {
+            if (v2->picture[i].type == 3) {  // Front cover
+                best = &v2->picture[i];
+                break;
+            }
+            if (!best) best = &v2->picture[i];  // Take first as fallback
+        }
+
+        if (best && best->data && best->size > 0) {
+            std::vector<uint8_t> data(best->data, best->data + best->size);
+            std::string mime = best->mime_type.p ? best->mime_type.p : "image/jpeg";
+            std::string hash = util::ArtworkHasher::hash_artwork(data);
+
+            ouroboros::util::Logger::info("Extracted embedded artwork from " +
+                std::filesystem::path(path).filename().string() +
+                " (" + std::to_string(data.size()) + " bytes)");
+
+            mpg123_close(mh);
+            mpg123_delete(mh);
+            return {std::move(data), mime, hash};
+        }
+    }
+
+    mpg123_close(mh);
+    mpg123_delete(mh);
+    return {{}, "", ""};
+}
+
 ArtworkExtractionResult MetadataParser::extract_artwork_data(const std::string& path) {
     namespace fs = std::filesystem;
 
     ouroboros::util::Logger::debug("Artwork search for: " + path);
 
+    // 1. Try embedded artwork first (MP3 only for now)
+    model::AudioFormat format = detect_format(path);
+    if (format == model::AudioFormat::MP3) {
+        auto result = extract_mp3_embedded_artwork(path);
+        if (!result.data.empty()) {
+            return result;
+        }
+    }
+
+    // 2. Fall back to directory scan for external image files
     fs::path audio_file(path);
     fs::path dir = audio_file.parent_path();
 
-    // Scan directory for ANY image file by extension (jpg, jpeg, png, gif, bmp)
-    // No hardcoded filenames - just find images
     try {
         for (const auto& entry : fs::directory_iterator(dir)) {
             if (!entry.is_regular_file()) continue;

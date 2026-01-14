@@ -1,8 +1,35 @@
 #include "ui/Formatting.hpp"
 #include <algorithm>
 #include <iostream>
+#include <wchar.h>
 
 namespace ouroboros::ui {
+
+// Helper: decode UTF-8 character to wchar_t, return bytes consumed (0 on error)
+static int utf8_to_wchar(const char* s, size_t len, wchar_t* out) {
+    if (len == 0 || !s) return 0;
+    unsigned char c = s[0];
+
+    if ((c & 0x80) == 0) {
+        // ASCII
+        *out = c;
+        return 1;
+    } else if ((c & 0xE0) == 0xC0 && len >= 2) {
+        // 2-byte
+        *out = ((c & 0x1F) << 6) | (s[1] & 0x3F);
+        return 2;
+    } else if ((c & 0xF0) == 0xE0 && len >= 3) {
+        // 3-byte (includes CJK)
+        *out = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        return 3;
+    } else if ((c & 0xF8) == 0xF0 && len >= 4) {
+        // 4-byte
+        *out = ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+               ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+        return 4;
+    }
+    return 0;  // Invalid
+}
 
 int display_cols(const std::string& s) {
     int cols = 0;
@@ -32,39 +59,37 @@ int display_cols(const std::string& s) {
                 continue;
             }
         }
-        
-        // Count UTF-8 characters (each multi-byte char = 1 display column)
-        unsigned char c = s[i];
-        if ((c & 0x80) == 0) {
-            i += 1; // ASCII (1 byte)
-        } else if ((c & 0xE0) == 0xC0) {
-            i += 2; // 2-byte UTF-8
-        } else if ((c & 0xF0) == 0xE0) {
-            i += 3; // 3-byte UTF-8
-        } else if ((c & 0xF8) == 0xF0) {
-            i += 4; // 4-byte UTF-8
+
+        // Decode UTF-8 and use wcwidth for proper display width
+        wchar_t wc;
+        int len = utf8_to_wchar(s.c_str() + i, s.size() - i, &wc);
+        if (len > 0) {
+            int w = wcwidth(wc);
+            cols += (w > 0) ? w : 1;  // wcwidth returns -1 for non-printable, use 1
+            i += len;
         } else {
-            i += 1; // Invalid, skip
+            // Invalid UTF-8, skip byte
+            cols++;
+            i++;
         }
-        cols++;
     }
     return cols;
 }
 
 std::string take_cols(const std::string& s, int cols) {
     if (cols <= 0) return "";
-    
+
     std::string out;
     out.reserve(s.size());
     int seen = 0;
     size_t i = 0;
-    
+
     while (i < s.size() && seen < cols) {
         // ANSI Escape Sequence Handling
         if (s[i] == '\x1B') {
             size_t start = i;
             bool handled = false;
-            
+
             // CSI
             if (i + 1 < s.size() && s[i + 1] == '[') {
                 i += 2;
@@ -88,29 +113,31 @@ std::string take_cols(const std::string& s, int cols) {
                 out.append(s, start, i - start);
                 handled = true;
             }
-            
+
             if (handled) continue;
         }
-        
-        // Copy UTF-8 character
-        unsigned char c = s[i];
-        int len = 1;
-        if ((c & 0x80) == 0) {
-            len = 1;
-        } else if ((c & 0xE0) == 0xC0) {
-            len = 2;
-        } else if ((c & 0xF0) == 0xE0) {
-            len = 3;
-        } else if ((c & 0xF8) == 0xF0) {
-            len = 4;
+
+        // Decode UTF-8 and check display width
+        wchar_t wc;
+        int len = utf8_to_wchar(s.c_str() + i, s.size() - i, &wc);
+        if (len > 0) {
+            int w = wcwidth(wc);
+            if (w < 0) w = 1;  // Non-printable, assume 1
+
+            // Don't exceed requested columns (important for wide chars)
+            if (seen + w > cols) break;
+
+            out.append(s, i, len);
+            i += len;
+            seen += w;
+        } else {
+            // Invalid UTF-8, skip byte
+            out += s[i];
+            i++;
+            seen++;
         }
-        
-        if (i + len > s.size()) len = 1;
-        out.append(s, i, len);
-        i += len;
-        seen++;
     }
-    
+
     return out;
 }
 

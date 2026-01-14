@@ -63,7 +63,7 @@ add_executable(ouroboros
     src/ui/Formatting.cpp
     src/ui/VisualBlocks.cpp
     src/ui/ImageRenderer.cpp
-    src/ui/ArtworkLoader.cpp
+    src/ui/ArtworkWindow.cpp
     src/ui/widgets/Browser.cpp
     src/ui/widgets/Queue.cpp
     src/ui/widgets/NowPlaying.cpp

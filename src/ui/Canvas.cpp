@@ -1,8 +1,31 @@
 #include "ui/Canvas.hpp"
 #include <algorithm>
 #include <stdexcept>
+#include <wchar.h>
 
 namespace ouroboros::ui {
+
+// Helper: decode UTF-8 character to wchar_t, return bytes consumed (0 on error)
+static int utf8_to_wchar(const char* s, size_t len, wchar_t* out) {
+    if (len == 0 || !s) return 0;
+    unsigned char c = s[0];
+
+    if ((c & 0x80) == 0) {
+        *out = c;
+        return 1;
+    } else if ((c & 0xE0) == 0xC0 && len >= 2) {
+        *out = ((c & 0x1F) << 6) | (s[1] & 0x3F);
+        return 2;
+    } else if ((c & 0xF0) == 0xE0 && len >= 3) {
+        *out = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        return 3;
+    } else if ((c & 0xF8) == 0xF0 && len >= 4) {
+        *out = ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+               ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+        return 4;
+    }
+    return 0;
+}
 
 Canvas::Canvas(int width, int height) : width_(width), height_(height) {
     buffer_.resize(width * height);
@@ -124,13 +147,25 @@ int Canvas::draw_text(int x, int y, std::string_view text, Style initial_style) 
         if (i + len > text.length()) break; // Incomplete char
 
         std::string grapheme(text.substr(i, len));
-        
-        if (current_x >= 0) {
-            put(current_x, y, grapheme, current_style);
+
+        // Get display width using wcwidth
+        wchar_t wc;
+        int char_width = 1;
+        if (utf8_to_wchar(text.data() + i, len, &wc) > 0) {
+            int w = wcwidth(wc);
+            if (w > 0) char_width = w;
         }
-        
-        // TODO: Handle double-width characters properly
-        current_x++;
+
+        if (current_x >= 0 && current_x < width_) {
+            put(current_x, y, grapheme, current_style);
+
+            // For double-width characters, mark the next cell as continuation
+            if (char_width == 2 && current_x + 1 < width_) {
+                put(current_x + 1, y, "", current_style);  // Empty continuation cell
+            }
+        }
+
+        current_x += char_width;
         i += len;
     }
     return current_x;

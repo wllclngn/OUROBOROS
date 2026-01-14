@@ -1,6 +1,7 @@
 #pragma once
 
 #include "model/Snapshot.hpp"
+#include "util/DirectoryScanner.hpp"
 #include <filesystem>
 #include <vector>
 #include <optional>
@@ -63,6 +64,9 @@ private:
     std::unordered_map<std::string, std::time_t> dir_mtimes_;  // Directory → mtime
     uint64_t last_tree_hash_ = 0;                               // Tree hash from last scan
     std::time_t cache_timestamp_ = 0;                           // When cache was built
+
+    // Performance: reuse scan results from TIER 0 validation to avoid double scanning
+    std::optional<util::DirectoryScanner::ScanResult> cached_scan_result_;
 };
 
 }  // namespace ouroboros::backend

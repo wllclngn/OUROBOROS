@@ -184,20 +184,27 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
 
     is_scanning_ = true;
 
-    // OPTIMIZED SINGLE-PASS SCAN using getdents64 (Phase 2 + Phase 4)
-    // Scan all configured directories and merge results
+    // OPTIMIZED: Reuse scan results from TIER 0 validation if available
     util::DirectoryScanner::ScanResult scan_result;
-    for (const auto& music_dir : music_dirs_) {
-        util::Logger::info("Library: Scanning directory: " + music_dir.string());
-        auto dir_result = util::DirectoryScanner::scan_directory(music_dir);
+    if (cached_scan_result_) {
+        util::Logger::info("Library: Reusing cached scan results from TIER 0 validation");
+        scan_result = std::move(*cached_scan_result_);
+        cached_scan_result_.reset();
+    } else {
+        // OPTIMIZED SINGLE-PASS SCAN using getdents64 (Phase 2 + Phase 4)
+        // Scan all configured directories and merge results
+        for (const auto& music_dir : music_dirs_) {
+            util::Logger::info("Library: Scanning directory: " + music_dir.string());
+            auto dir_result = util::DirectoryScanner::scan_directory(music_dir);
 
-        // Merge results
-        scan_result.audio_files.insert(scan_result.audio_files.end(),
-                                        dir_result.audio_files.begin(),
-                                        dir_result.audio_files.end());
-        scan_result.dir_mtimes.insert(dir_result.dir_mtimes.begin(), dir_result.dir_mtimes.end());
-        scan_result.file_mtimes.insert(dir_result.file_mtimes.begin(), dir_result.file_mtimes.end());
-        scan_result.tree_hash ^= dir_result.tree_hash;  // XOR combine hashes
+            // Merge results
+            scan_result.audio_files.insert(scan_result.audio_files.end(),
+                                            dir_result.audio_files.begin(),
+                                            dir_result.audio_files.end());
+            scan_result.dir_mtimes.insert(dir_result.dir_mtimes.begin(), dir_result.dir_mtimes.end());
+            scan_result.file_mtimes.insert(dir_result.file_mtimes.begin(), dir_result.file_mtimes.end());
+            scan_result.tree_hash ^= dir_result.tree_hash;  // XOR combine hashes
+        }
     }
 
     const int total_files = scan_result.audio_files.size();
@@ -378,22 +385,40 @@ Library::CacheValidationResult Library::validate_cache_tier0(const std::filesyst
     last_tree_hash_ = scan_result.tree_hash;
     dir_mtimes_ = scan_result.dir_mtimes;
 
-    // Compare file counts as quick check
-    if (scan_result.audio_files.size() != tracks_.size()) {
-        util::Logger::info("TIER 0: File count mismatch (" +
-                          std::to_string(scan_result.audio_files.size()) + " vs " +
-                          std::to_string(tracks_.size()) + ")");
+    // Check if all scanned files exist in cache (monolithic cache - directory agnostic)
+    size_t cached_count = 0;
+    size_t missing_count = 0;
+    for (const auto& file_path : scan_result.audio_files) {
+        if (tracks_.find(file_path) != tracks_.end()) {
+            cached_count++;
+        } else {
+            missing_count++;
+            if (missing_count <= 3) {  // Log first few missing files
+                util::Logger::debug("TIER 0: File not in cache: " + file_path);
+            }
+        }
+    }
+
+    if (missing_count > 0) {
+        util::Logger::info("TIER 0: " + std::to_string(missing_count) + " files not in cache (" +
+                          std::to_string(cached_count) + "/" + std::to_string(scan_result.audio_files.size()) + " cached)");
+        // Cache the scan result to avoid re-scanning in scan_directory()
+        cached_scan_result_ = std::move(scan_result);
         return CacheValidationResult::CountMismatch;
     }
 
-    // Quick check: all cached files still exist
-    for (const auto& [path, track] : tracks_) {
-        if (!std::filesystem::exists(path)) {
-            util::Logger::info("TIER 0: Cached file no longer exists: " + path);
+    // Quick check: all relevant cached files still exist on disk
+    for (const auto& file_path : scan_result.audio_files) {
+        if (!std::filesystem::exists(file_path)) {
+            util::Logger::info("TIER 0: Cached file no longer exists: " + file_path);
+            // Cache the scan result to avoid re-scanning in scan_directory()
+            cached_scan_result_ = std::move(scan_result);
             return CacheValidationResult::MissingFiles;
         }
     }
 
+    // Cache the scan result even on success (for subsequent scan_directory() calls)
+    cached_scan_result_ = std::move(scan_result);
     util::Logger::info("TIER 0: Cache validation passed");
     return CacheValidationResult::Valid;
 }
