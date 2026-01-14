@@ -4,6 +4,8 @@
 #include <sstream>
 #include <fstream>
 #include <cstring>
+#include <chrono>
+#include <vector>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <cstdlib>
@@ -469,6 +471,24 @@ std::string ImageRenderer::render_sixel(const unsigned char* data, int w, int h,
 }
 
 std::string ImageRenderer::write_to_temp_file(const unsigned char* data, size_t len) {
+    // Track temp files with creation time for delayed cleanup
+    // Kitty should delete t=t files, but we clean up any stragglers older than 500ms
+    static std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> pending_files;
+
+    auto now = std::chrono::steady_clock::now();
+    auto cutoff = now - std::chrono::milliseconds(500);
+
+    // Remove files older than 500ms (Kitty has definitely read them by now)
+    auto it = pending_files.begin();
+    while (it != pending_files.end()) {
+        if (it->second < cutoff) {
+            unlink(it->first.c_str());
+            it = pending_files.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
     char template_path[] = "/dev/shm/ouroboros-art-XXXXXX";
     int fd = mkstemp(template_path);
     if (fd == -1) {
@@ -489,6 +509,9 @@ std::string ImageRenderer::write_to_temp_file(const unsigned char* data, size_t 
     }
 
     close(fd);
+
+    // Track for delayed cleanup (in case Kitty doesn't delete it)
+    pending_files.emplace_back(template_path, std::chrono::steady_clock::now());
 
     std::string path(template_path);
     return encode_base64(
