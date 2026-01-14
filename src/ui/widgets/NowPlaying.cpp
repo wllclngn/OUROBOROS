@@ -45,16 +45,9 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         // Reset render tracking so new artwork will be displayed
         force_next_render_ = true;
 
-        auto& img_renderer = ImageRenderer::instance();
-        if (img_renderer.images_supported()) {
-            ouroboros::util::Logger::debug("NowPlaying: Requesting artwork for new track");
-            // Delete only this NowPlaying image (by ID), not all images
-            if (last_art_image_id_ != 0) {
-                img_renderer.delete_image_by_id(last_art_image_id_);
-                last_art_image_id_ = 0;
-            }
-            // Request will be made in render_image_if_needed with proper dimensions
-        }
+        // NOTE: Don't delete the old image here. Keep it visible until new artwork
+        // is ready to render. Deletion happens in render_image_if_needed() right
+        // before rendering the new image, preventing the flash of empty space.
     }
 
     // Prepare Format info early to determine layout
@@ -345,6 +338,18 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
                                   " Cols=" + std::to_string(art_cols) +
                                   " Rows=" + std::to_string(art_rows));
 
+    // Delete old image RIGHT BEFORE rendering new one (not earlier)
+    // This prevents the flash of empty space when track changes
+    if (last_art_image_id_ != 0) {
+        img_renderer.delete_image_by_id(last_art_image_id_);
+        last_art_image_id_ = 0;
+    }
+
+    // Use modified hash to get unique image ID for NowPlaying
+    // This prevents ID collision with AlbumBrowser showing the same artwork
+    // ImageRenderer uses first 16 hex chars for ID, so prepend "ff" to shift it
+    std::string nowplaying_hash = "ff" + artwork->hash;
+
     uint32_t image_id = img_renderer.render_image(
         artwork->data,
         artwork->data_size,
@@ -355,7 +360,7 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
         art_y,
         art_cols,
         art_rows,
-        artwork->hash
+        nowplaying_hash
     );
     bool success = (image_id != 0);
 
