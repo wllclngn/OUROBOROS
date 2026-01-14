@@ -150,9 +150,11 @@ const DecodedArtwork* ArtworkWindow::get_decoded(const std::string& path, int wi
 }
 
 void ArtworkWindow::reset() {
-    util::Logger::info("ArtworkWindow: Reset called - clearing all entries");
+    util::Logger::debug("ArtworkWindow: Reset called - clearing request queue");
 
-    // Clear queue
+    // Clear queue only - cache uses LRU eviction and shouldn't be cleared
+    // (clearing cache causes NowPlaying artwork to flicker on Big Jump)
+    // Don't set has_updates_ - queue clearing doesn't require re-render
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         while (!request_queue_.empty()) {
@@ -160,16 +162,6 @@ void ArtworkWindow::reset() {
         }
         pending_paths_.clear();
     }
-
-    // Clear cache
-    {
-        std::lock_guard<std::mutex> lock(cache_mutex_);
-        cache_.clear();
-        lru_list_.clear();
-        total_bytes_.store(0);
-    }
-
-    has_updates_.store(true);
 }
 
 bool ArtworkWindow::has_updates() {

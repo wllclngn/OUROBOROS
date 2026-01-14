@@ -19,6 +19,10 @@ struct AlbumGroup {
     std::vector<int> track_indices; // Indices into the main library vector
     std::string representative_track_path; // First track path for artwork lookup via ArtworkWindow
     std::string album_directory; // Directory containing the album's tracks
+
+    // Pre-computed normalized strings for fast searching (computed once in refresh_cache)
+    std::string normalized_title;
+    std::string normalized_artist;
 };
 
 class AlbumBrowser : public Component {

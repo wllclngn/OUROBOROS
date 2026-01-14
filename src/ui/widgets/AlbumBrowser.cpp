@@ -41,24 +41,16 @@ void AlbumBrowser::update_filtered_albums() {
         return;
     }
 
-    // Normalize query for Unicode-aware search (bjork matches Björk)
+    // Normalize query once for Unicode-aware search (bjork matches Björk)
     std::string normalized_query = util::normalize_for_search(filter_query_);
     util::BoyerMooreSearch searcher(normalized_query);
 
     for (size_t i = 0; i < albums_.size(); ++i) {
         const auto& album = albums_[i];
-        bool match = false;
 
-        // Search in normalized Album Title
-        if (searcher.search(util::normalize_for_search(album.title)) != -1) {
-            match = true;
-        }
-        // Search in normalized Artist
-        else if (searcher.search(util::normalize_for_search(album.artist)) != -1) {
-            match = true;
-        }
-
-        if (match) {
+        // Search in pre-computed normalized strings (no allocation per album)
+        if (searcher.search(album.normalized_title) != -1 ||
+            searcher.search(album.normalized_artist) != -1) {
             filtered_album_indices_.push_back(i);
         }
     }
@@ -99,6 +91,10 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
             g.title = track.album.empty() ? "Unknown Album" : track.album;
             g.artist = track.artist.empty() ? "Unknown Artist" : track.artist;
             g.year = track.date;  // Use date field for year
+
+            // Pre-compute normalized strings for fast searching
+            g.normalized_title = util::normalize_for_search(g.title);
+            g.normalized_artist = util::normalize_for_search(g.artist);
 
             // Store first track path for artwork lookup via ArtworkWindow
             g.representative_track_path = track.path;

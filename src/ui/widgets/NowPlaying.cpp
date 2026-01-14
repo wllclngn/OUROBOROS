@@ -251,7 +251,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     draw_status_part(repeat_str, Style{});
 }
 
-void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool force_render) {
+void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*force_render*/) {
     ouroboros::util::Logger::debug("NowPlaying: render_image_if_needed called for: " + cached_path_);
 
     if (cached_path_.empty()) {
@@ -314,11 +314,17 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool forc
         return;
     }
 
-    // Skip if we already rendered this image (unless forcing or track just changed)
+    // Skip if we already rendered this exact image at this exact position/size
+    // Even with force_render, no need to delete-and-rerender if nothing changed
     static std::string last_rendered_path;
-    bool should_force = force_render || force_next_render_;
-    if (!should_force && cached_path_ == last_rendered_path) {
-        return;  // Already rendered
+    bool same_image = (cached_path_ == last_rendered_path);
+    bool same_position = (art_x == last_art_x_ && art_y == last_art_y_);
+    bool same_size = (art_cols == last_art_width_ && art_rows == last_art_height_);
+
+    if (same_image && same_position && same_size && last_art_image_id_ != 0) {
+        // Image is already correctly displayed, no action needed
+        force_next_render_ = false;
+        return;
     }
 
     // Clear the force flag now that we're rendering
