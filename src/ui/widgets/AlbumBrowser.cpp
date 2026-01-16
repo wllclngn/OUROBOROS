@@ -19,6 +19,64 @@
 
 namespace ouroboros::ui::widgets {
 
+// ============================================================================
+// Atomic Slot Helper Methods
+// ============================================================================
+
+size_t AlbumBrowser::get_slot_index(int visible_row, int col) const {
+    size_t idx = static_cast<size_t>(visible_row * cols_ + col);
+    return (idx < MAX_VISIBLE_SLOTS) ? idx : MAX_VISIBLE_SLOTS - 1;
+}
+
+AlbumBrowserSlot* AlbumBrowser::get_slot(int visible_row, int col) {
+    return &slots_[get_slot_index(visible_row, col)];
+}
+
+void AlbumBrowser::assign_slot(size_t slot_idx, const std::string& album_dir,
+                                int x, int y, int cols, int rows) {
+    if (slot_idx >= MAX_VISIBLE_SLOTS) return;
+    auto& slot = slots_[slot_idx];
+
+    // Check if slot is being reassigned to different album
+    if (slot.album_dir != album_dir) {
+        // DON'T delete image here - let cleanup phase handle it after new renders
+        // Just mark slot as needing new data
+        slot.generation.fetch_add(1, std::memory_order_release);
+        slot.album_dir = album_dir;
+        slot.state.store(SlotState::Empty, std::memory_order_release);
+        slot.decoded_pixels.clear();
+        slot.hash.clear();
+        slot.image_id = 0;  // Clear ID but don't delete - orphan cleanup handles it
+        slot.rendered_x = -1;
+        slot.rendered_y = -1;
+    }
+
+    // Update display position
+    slot.display_x = x;
+    slot.display_y = y;
+    slot.display_cols = cols;
+    slot.display_rows = rows;
+}
+
+void AlbumBrowser::clear_all_slots() {
+    for (auto& slot : slots_) {
+        slot.generation.fetch_add(1, std::memory_order_release);
+        slot.state.store(SlotState::Empty, std::memory_order_release);
+        slot.album_dir.clear();
+        slot.decoded_pixels.clear();
+        slot.decoded_pixels.shrink_to_fit();
+        slot.hash.clear();
+        if (slot.image_id != 0) {
+            ImageRenderer::instance().delete_image_by_id(slot.image_id);
+            slot.image_id = 0;
+        }
+        slot.rendered_x = -1;
+        slot.rendered_y = -1;
+    }
+    ouroboros::util::Logger::debug("AlbumBrowser: Cleared all " +
+                                   std::to_string(MAX_VISIBLE_SLOTS) + " slots");
+}
+
 // Global SHARED POINTER to current snapshot for event handling
 // This prevents dangling pointer issues when snap reference goes out of scope
 static std::shared_ptr<const model::Snapshot> g_current_snapshot = nullptr;
@@ -76,15 +134,15 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
     for (size_t i = 0; i < snap.library->tracks.size(); ++i) {
         const auto& track = snap.library->tracks[i];
 
-        // Extract directory for grouping key (handles compilation/featured artist albums)
+        // Extract directory for album_directory field (used for cache storage)
         std::string album_dir;
         if (!track.path.empty()) {
             namespace fs = std::filesystem;
             album_dir = fs::path(track.path).parent_path().string();
         }
 
-        // Group by: album name + directory (prevents duplicates for various-artist/featured albums)
-        std::string key = track.album + "::" + album_dir;
+        // Group by: artist + year + album (pure metadata grouping)
+        std::string key = track.artist + "::" + track.date + "::" + track.album;
 
         if (groups.find(key) == groups.end()) {
             AlbumGroup g;
@@ -437,13 +495,15 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
     auto& artwork_window = ArtworkWindow::instance();
 
-    // Fix 0: Content Changed - Full wipe if filter changed
+    // Content Changed - Clear all slots and displayed images if filter changed
     if (content_changed_) {
-        ouroboros::util::Logger::debug("AlbumBrowser: Content changed (filter), wiping " + std::to_string(displayed_images_.size()) + " images");
+        ouroboros::util::Logger::debug("AlbumBrowser: Content changed (filter), clearing all");
+        // Delete all displayed images
         for (const auto& [key, info] : displayed_images_) {
             img_renderer.delete_image_by_id(info.image_id);
         }
         displayed_images_.clear();
+        clear_all_slots();
         force_render = true;
         content_changed_ = false;
     }
@@ -452,13 +512,6 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     bool has_async_updates = artwork_window.has_updates();
     if (has_async_updates) {
         artwork_window.clear_updates();
-        ouroboros::util::Logger::debug("AlbumBrowser: ArtworkWindow has pending updates, forcing render");
-        force_render = true;
-    }
-
-    // Fix 1: Initial Load - Force render if we have albums but haven't displayed anything yet
-    if (!force_render && !filtered_album_indices_.empty() && displayed_images_.empty()) {
-        ouroboros::util::Logger::debug("AlbumBrowser: First render detected, forcing update");
         force_render = true;
     }
 
@@ -474,6 +527,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         scroll_start_offset_ = scroll_offset_;
         scroll_start_time_ = now;
         was_scrolling_ = false;
+        last_atomic_scroll_offset_ = scroll_offset_;
     }
 
     bool scroll_changed = (last_scroll_offset_ != scroll_offset_);
@@ -510,22 +564,28 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
                                       (is_big_jump ? " -> BIG JUMP" : ""));
 
         if (is_big_jump) {
-            ouroboros::util::Logger::info("AlbumBrowser: BIG JUMP - resetting artwork cache");
-
+            ouroboros::util::Logger::info("AlbumBrowser: BIG JUMP - clearing all and resetting cache");
             artwork_window.reset();
-
+            // Delete all displayed images
             for (const auto& [key, info] : displayed_images_) {
                 img_renderer.delete_image_by_id(info.image_id);
             }
             displayed_images_.clear();
+            clear_all_slots();
             force_render = true;
         }
 
         was_scrolling_ = false;
     }
 
+    // Detect scroll position change for slot reassignment
+    bool slots_need_reassign = (last_atomic_scroll_offset_ != scroll_offset_);
+    if (slots_need_reassign) {
+        last_atomic_scroll_offset_ = scroll_offset_;
+    }
+
     // Debounce: Skip artwork requests if called too rapidly (per-frame spam during scroll)
-    if (!force_render && (now - last_request_time_) < SCROLL_DEBOUNCE_MS) {
+    if (!force_render && !has_async_updates && (now - last_request_time_) < SCROLL_DEBOUNCE_MS) {
         return;
     }
     last_request_time_ = now;
@@ -573,12 +633,11 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int selected_row = selected_index_ / cols_available;
     int selected_col = selected_index_ % cols_available;
 
-    ouroboros::util::Logger::debug("AlbumBrowser: Selected position - row=" + std::to_string(selected_row) +
-                                  ", col=" + std::to_string(selected_col) +
-                                  ", index=" + std::to_string(selected_index_));
+    // ========================================================================
+    // PHASE 1: SLOT ASSIGNMENT + REQUEST
+    // Assign visible albums to atomic slots, request artwork from ArtworkWindow
+    // ========================================================================
 
-    // PRE-LOAD PHASE: Request artwork prioritized by Manhattan distance from selection
-    // Batch requests without notifying workers until all are queued (ensures priority ordering)
     for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
         for (int c = 0; c < cols_available; ++c) {
             int idx = r * cols_available + c;
@@ -587,36 +646,106 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             size_t album_idx = filtered_album_indices_[idx];
             auto& album = albums_[album_idx];
 
-            if (!album.representative_track_path.empty()) {
-                // Calculate Manhattan distance from selected album
-                int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
+            // Calculate visible row for slot index
+            int visible_row = r - start_row;
+            size_t slot_idx = get_slot_index(visible_row, c);
+            if (slot_idx >= MAX_VISIBLE_SLOTS) continue;
 
-                // Request with notify=false to batch (priority ordering preserved)
+            // Calculate cell position from row/col (no gaps)
+            int cell_x = content_x + x_offset + c * cell_w;
+            int cell_y = content_y + visible_row * cell_h;
+
+            // Box position - Center in cell
+            int box_w = art_cols + 2;
+            int box_x = cell_x + (cell_w - box_w) / 2;
+
+            // Artwork area: inside box border
+            int art_x = box_x + 1;
+            int art_y = cell_y + 1;
+
+            // Assign slot (bumps generation if album changed)
+            assign_slot(slot_idx, album.album_directory, art_x, art_y, art_cols, art_rows);
+
+            // Request artwork from ArtworkWindow
+            if (!album.representative_track_path.empty()) {
+                int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
                 artwork_window.request(
                     album.representative_track_path,
                     distance,
                     art_cols,
                     art_rows,
-                    false  // Don't notify yet
+                    false  // Batch - don't notify yet
                 );
             }
         }
     }
-    // Now notify all workers to process the batch in priority order
     artwork_window.flush_requests();
 
-    // RENDER PHASE - Radial order (by distance from selected)
-    int processed_count = 0;
+    // ========================================================================
+    // PHASE 2: POPULATE SLOTS
+    // Copy decoded artwork from ArtworkWindow to slots (takes mutex briefly)
+    // This is the ONLY place we take the ArtworkWindow mutex
+    // ========================================================================
+
+    int populated_count = 0;
+    for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
+        for (int c = 0; c < cols_available; ++c) {
+            int idx = r * cols_available + c;
+            if (idx >= total_filtered) continue;
+
+            int visible_row = r - start_row;
+            size_t slot_idx = get_slot_index(visible_row, c);
+            if (slot_idx >= MAX_VISIBLE_SLOTS) continue;
+
+            auto& slot = slots_[slot_idx];
+            SlotState state = slot.state.load(std::memory_order_acquire);
+
+            // Skip if already ready
+            if (state == SlotState::Ready) continue;
+
+            size_t album_idx = filtered_album_indices_[idx];
+            auto& album = albums_[album_idx];
+            if (album.representative_track_path.empty()) continue;
+
+            // Query ArtworkWindow for decoded pixels
+            const auto* artwork = artwork_window.get_decoded(album.representative_track_path, art_cols, art_rows);
+            if (!artwork) continue;
+
+            // Copy to slot (this is the atomic publish pattern)
+            // 1. Copy all data while state is still Empty/Loading
+            slot.decoded_pixels.assign(artwork->data, artwork->data + artwork->data_size);
+            slot.width = artwork->width;
+            slot.height = artwork->height;
+            slot.format = artwork->format;
+            slot.hash = artwork->hash;
+
+            // 2. Set state to Ready (release) - publishes all prior writes
+            slot.state.store(SlotState::Ready, std::memory_order_release);
+            populated_count++;
+        }
+    }
+
+    if (populated_count > 0) {
+        ouroboros::util::Logger::debug("AlbumBrowser: Populated " + std::to_string(populated_count) + " slots");
+    }
+
+    // ========================================================================
+    // PHASE 3: RENDER FROM SLOTS (LOCK-FREE)
+    // Read from slots atomically, render to terminal
+    // Use displayed_images_ map for proper cleanup (delete AFTER render)
+    // ========================================================================
+
     int ready_count = 0;
+    int rendered_count = 0;
 
     std::unordered_map<std::string, DisplayedImageInfo> new_displayed_images;
     std::unordered_set<uint32_t> active_ids;
 
-    // Build list of visible items sorted by distance from selection
+    // Build list sorted by distance from selection for radial rendering
     struct RenderItem {
-        int row, col, idx;
+        int visible_row, col, grid_row;
         int distance;
-        size_t album_idx;
+        size_t slot_idx;
     };
     std::vector<RenderItem> render_items;
     render_items.reserve((end_row - start_row + 1) * cols_available);
@@ -626,10 +755,11 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             int idx = r * cols_available + c;
             if (idx >= total_filtered) continue;
 
+            int visible_row = r - start_row;
+            size_t slot_idx = get_slot_index(visible_row, c);
             int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
-            size_t album_idx = filtered_album_indices_[idx];
 
-            render_items.push_back({r, c, idx, distance, album_idx});
+            render_items.push_back({visible_row, c, r, distance, slot_idx});
         }
     }
 
@@ -639,38 +769,29 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
     // Render in radial order
     for (const auto& item : render_items) {
-        auto& album = albums_[item.album_idx];
-        processed_count++;
+        if (item.slot_idx >= MAX_VISIBLE_SLOTS) continue;
 
-        // Skip albums with missing artwork path
-        if (album.representative_track_path.empty()) continue;
+        auto& slot = slots_[item.slot_idx];
 
-        // Query ArtworkWindow for decoded pixels
-        const auto* artwork = artwork_window.get_decoded(album.representative_track_path, art_cols, art_rows);
-        if (!artwork) continue;
+        // Atomic read of state (acquire) - synchronizes with store(release) in populate phase
+        SlotState state = slot.state.load(std::memory_order_acquire);
+        if (state != SlotState::Ready) continue;
+        if (slot.decoded_pixels.empty()) continue;
 
         ready_count++;
 
-        // Calculate cell position from row/col (no gaps)
-        int cell_x = content_x + x_offset + item.col * cell_w;
-        int cell_y = content_y + (item.row - start_row) * cell_h;
-
-        // Box position - Center in cell
-        int box_w = art_cols + 2;
-        int box_x = cell_x + (cell_w - box_w) / 2;
-
-        // Artwork area: inside box border
-        int art_x = box_x + 1;
-        int art_y = cell_y + 1;
+        // Read slot data (safe because state is Ready)
+        int art_x = slot.display_x;
+        int art_y = slot.display_y;
+        int art_cols_slot = slot.display_cols;
+        int art_rows_slot = slot.display_rows;
 
         // Clipping logic
-        int art_bottom_y = art_y + art_rows;
+        int art_bottom_y = art_y + art_rows_slot;
         int container_bottom_y = content_y + content_height;
         int visible_art_rows = -1;
 
-        if (art_y >= container_bottom_y) {
-            continue; // Fully clipped
-        }
+        if (art_y >= container_bottom_y) continue; // Fully clipped
 
         if (art_bottom_y > container_bottom_y) {
             visible_art_rows = container_bottom_y - art_y;
@@ -678,42 +799,47 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         }
 
         // Also check right edge
-        if (art_x + art_cols > content_x + content_width) continue;
+        if (art_x + art_cols_slot > content_x + content_width) continue;
 
-        // Unique key for this position
-        std::string display_key = std::to_string(art_x) + "," + std::to_string(art_y) + "," + artwork->hash.substr(0, 16);
+        // Create display key (position + hash) - same as old approach
+        std::string display_key = std::to_string(art_x) + "," + std::to_string(art_y) + "," + slot.hash.substr(0, 16);
 
-        // Check if this image is already displayed EXACTLY here
+        // Check if already displayed at this exact position with same hash
         auto display_it = displayed_images_.find(display_key);
-        if (display_it != displayed_images_.end() && display_it->second.hash == artwork->hash) {
+        if (display_it != displayed_images_.end() && display_it->second.hash == slot.hash) {
+            // Already displayed - just track it, no re-render needed
             new_displayed_images[display_key] = display_it->second;
             active_ids.insert(display_it->second.image_id);
             continue;
         }
 
-        // Render artwork using pre-decoded pixels from ArtworkWindow
-        ouroboros::util::Logger::debug("AlbumBrowser: RENDERING new image at " + display_key);
+        // Render new image
         uint32_t image_id = img_renderer.render_image(
-            artwork->data,
-            artwork->data_size,
-            artwork->width,
-            artwork->height,
-            artwork->format,
+            slot.decoded_pixels.data(),
+            slot.decoded_pixels.size(),
+            slot.width,
+            slot.height,
+            slot.format,
             art_x,
             art_y,
-            art_cols,
-            art_rows,
-            artwork->hash,
+            art_cols_slot,
+            art_rows_slot,
+            slot.hash,
             visible_art_rows
         );
 
         if (image_id != 0) {
-            new_displayed_images[display_key] = {artwork->hash, image_id};
+            new_displayed_images[display_key] = {slot.hash, image_id};
             active_ids.insert(image_id);
+            rendered_count++;
         }
     }
 
-    // CLEANUP PHASE: Delete images that are no longer visible
+    // ========================================================================
+    // PHASE 4: CLEANUP - Delete images no longer on screen (AFTER all renders)
+    // This is the key to no-flash: render new first, then delete old
+    // ========================================================================
+
     int deleted_count = 0;
     for (const auto& [key, info] : displayed_images_) {
         if (new_displayed_images.find(key) == new_displayed_images.end()) {
@@ -724,21 +850,21 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         }
     }
     if (deleted_count > 0) {
-        ouroboros::util::Logger::debug("AlbumBrowser: CLEANUP deleted " + std::to_string(deleted_count) +
-                                      " images, old=" + std::to_string(displayed_images_.size()) +
-                                      " new=" + std::to_string(new_displayed_images.size()));
+        ouroboros::util::Logger::debug("AlbumBrowser: CLEANUP deleted " + std::to_string(deleted_count) + " orphaned images");
     }
 
-    // Update state
+    // Update displayed images map
     displayed_images_ = std::move(new_displayed_images);
 
-    // PREFETCH PHASE (Sliding Window) - Only run when scroll is idle
+    // ========================================================================
+    // PHASE 5: PREFETCH (when idle)
+    // ========================================================================
+
     auto time_since_scroll = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - last_scroll_time_
     );
 
     if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
-        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH activated - scroll idle for " + std::to_string(time_since_scroll.count()) + "ms");
         const int PREFETCH_ITEMS = 20;
         int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
 
@@ -754,33 +880,27 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
                 if (album.representative_track_path.empty()) continue;
 
-                // Calculate Manhattan distance for prefetch items
                 int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
-                // Add 1000 to priority to make prefetch lower priority than visible
                 artwork_window.request(
                     album.representative_track_path,
                     distance + 1000,
                     art_cols,
                     art_rows,
-                    false  // Batch - don't notify yet
+                    false
                 );
             }
         };
 
-        // Prefetch Previous rows
         for (int r = start_row - prefetch_rows_count; r < start_row; ++r) process_prefetch(r);
-        // Prefetch Next rows
         for (int r = end_row; r < end_row + prefetch_rows_count; ++r) process_prefetch(r);
-        // Flush after prefetch batch
         artwork_window.flush_requests();
         prefetch_completed_ = true;
-        ouroboros::util::Logger::debug("AlbumBrowser: PREFETCH complete");
     }
 
     ouroboros::util::Logger::info("AlbumBrowser: " +
                                   std::to_string(ready_count) + "/" +
-                                  std::to_string(processed_count) +
-                                  " artworks ready");
+                                  std::to_string(render_items.size()) +
+                                  " slots ready, " + std::to_string(rendered_count) + " rendered");
 }
 
 }  // namespace ouroboros::ui::widgets

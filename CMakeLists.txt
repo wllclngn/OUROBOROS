@@ -67,7 +67,6 @@ add_executable(ouroboros
     src/ui/widgets/Browser.cpp
     src/ui/widgets/Queue.cpp
     src/ui/widgets/NowPlaying.cpp
-    src/ui/widgets/Controls.cpp
     src/ui/widgets/StatusBar.cpp
     src/ui/widgets/SearchBox.cpp
     src/ui/widgets/AlbumBrowser.cpp

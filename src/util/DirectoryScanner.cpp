@@ -43,7 +43,11 @@ DirectoryScanner::ScanResult DirectoryScanner::scan_directory(
 ) {
     ScanResult result;
 
+    // Normalize: strip trailing slashes to prevent // in paths
     std::string root_str = root_dir.string();
+    while (root_str.length() > 1 && root_str.back() == '/') {
+        root_str.pop_back();
+    }
     util::Logger::info("DirectoryScanner: Starting getdents64 scan of " + root_str);
 
     scan_directory_recursive(root_str, root_str, result);
@@ -62,7 +66,11 @@ std::unordered_map<std::string, std::time_t> DirectoryScanner::scan_directories_
 ) {
     std::unordered_map<std::string, std::time_t> dir_mtimes;
 
+    // Normalize: strip trailing slashes to prevent // in paths
     std::string root_str = root_dir.string();
+    while (root_str.length() > 1 && root_str.back() == '/') {
+        root_str.pop_back();
+    }
     util::Logger::info("DirectoryScanner: Scanning directories only (TIER 1)");
 
     scan_directories_recursive(root_str, root_str, dir_mtimes);

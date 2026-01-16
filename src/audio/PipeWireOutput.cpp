@@ -7,19 +7,10 @@
 #include <thread>
 #include <chrono>
 #include <vector>
-#include <mutex>
 #include <algorithm>
 #include <cmath>
 
 namespace audio {
-
-// No more static loop!
-
-struct AudioBuffer {
-    std::vector<float> data;
-    size_t read_pos = 0;
-    std::mutex mutex;
-};
 
 static void on_process(void* userdata) {
     auto* output = static_cast<PipeWireOutput*>(userdata);

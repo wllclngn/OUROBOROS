@@ -91,7 +91,7 @@ model::Track MetadataParser::parse_file(const std::string& path) {
         track.artist = extract_artist_from_filename(path);
     }
     if (track.album.empty()) {
-        track.album = extract_album_from_path(path);
+        track.album = "Unknown Album";
     }
 
     // NO ARTWORK LOADING HERE! (JIT optimization)
@@ -411,14 +411,5 @@ std::string MetadataParser::extract_artist_from_filename(const std::string& path
     return "Unknown Artist";
 }
 
-std::string MetadataParser::extract_album_from_path(const std::string& path) {
-    namespace fs = std::filesystem;
-    fs::path p(path);
-    fs::path parent = p.parent_path();
-    if (!parent.empty()) {
-        return parent.filename().string();
-    }
-    return "Unknown Album";
-}
 
 }  // namespace ouroboros::backend

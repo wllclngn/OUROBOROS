@@ -47,12 +47,45 @@ void Library::set_music_directory(const std::filesystem::path& dir) {
 
 void Library::set_music_directories(const std::vector<std::filesystem::path>& dirs) {
     music_dirs_.clear();
+
+    // Collect valid, normalized directories
+    std::vector<std::filesystem::path> valid_dirs;
     for (const auto& dir : dirs) {
-        // Only add directories that exist (gracefully handle unmounted drives)
         if (std::filesystem::exists(dir)) {
-            music_dirs_.push_back(dir);
+            auto normalized = dir.lexically_normal();
+            std::string s = normalized.string();
+            // Strip trailing slashes for consistent comparison
+            while (s.length() > 1 && s.back() == '/') s.pop_back();
+            valid_dirs.emplace_back(s);
         } else {
-            ouroboros::util::Logger::warn("Skipping non-existent directory: " + dir.string());
+            util::Logger::warn("Skipping non-existent directory: " + dir.string());
+        }
+    }
+
+    // Sort by length (parents before children)
+    std::sort(valid_dirs.begin(), valid_dirs.end(),
+              [](const auto& a, const auto& b) {
+                  return a.string().length() < b.string().length();
+              });
+
+    // Filter: skip directories already covered by a parent
+    for (const auto& dir : valid_dirs) {
+        const std::string& dir_str = dir.string();
+        bool covered = false;
+
+        for (const auto& parent : music_dirs_) {
+            const std::string& p = parent.string();
+            if (dir_str.length() > p.length() &&
+                dir_str.compare(0, p.length(), p) == 0 &&
+                dir_str[p.length()] == '/') {
+                covered = true;
+                util::Logger::debug("Skipping subdirectory (covered by parent): " + dir_str);
+                break;
+            }
+        }
+
+        if (!covered) {
+            music_dirs_.push_back(dir);
         }
     }
 }
@@ -131,7 +164,7 @@ bool Library::load_from_cache(const std::filesystem::path& cache_path) {
 
         for (uint64_t i = 0; i < count; ++i) {
             model::Track t;
-            t.path = read_string(in);
+            t.path = std::filesystem::path(read_string(in)).lexically_normal().string();
             t.title = read_string(in);
             t.artist = read_string(in);
             t.album = read_string(in);
@@ -286,7 +319,7 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
                         track.file_inode = st.st_ino;
                     }
 
-                    // Extract artwork
+                    // Extract artwork and store in cache (pre-populates for fast AlbumBrowser)
                     auto artwork_result = MetadataParser::extract_artwork_data(path_str);
                     if (!artwork_result.data.empty() && !artwork_result.hash.empty()) {
                         track.artwork_hash = artwork_result.hash;
@@ -345,8 +378,20 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
 std::vector<model::Track> Library::get_all_tracks() const {
     std::vector<model::Track> result;
     result.reserve(tracks_.size());
+
+    // Only return tracks from currently configured directories
+    // (cumulative cache may contain tracks from other directories)
     for (const auto& [path, track] : tracks_) {
-        result.push_back(track);
+        bool in_configured_dir = false;
+        for (const auto& music_dir : music_dirs_) {
+            if (path.rfind(music_dir.string(), 0) == 0) {  // path.starts_with(music_dir)
+                in_configured_dir = true;
+                break;
+            }
+        }
+        if (in_configured_dir) {
+            result.push_back(track);
+        }
     }
     return result;
 }
@@ -546,7 +591,7 @@ void Library::scan_for_changes(
                         // Failed to get mtime/inode, continue anyway
                     }
 
-                    // Extract artwork
+                    // Extract artwork and store in cache (pre-populates for fast AlbumBrowser)
                     auto artwork_result = MetadataParser::extract_artwork_data(path_str);
                     if (!artwork_result.data.empty() && !artwork_result.hash.empty()) {
                         track.artwork_hash = artwork_result.hash;

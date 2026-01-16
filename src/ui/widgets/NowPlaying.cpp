@@ -302,8 +302,9 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
     int art_y = content_y;
 
     // Request artwork from ArtworkWindow with priority 0 (currently playing track)
+    // Use force_extract=true to get per-track artwork (important for podcasts/mixes)
     auto& artwork_window = ArtworkWindow::instance();
-    artwork_window.request(cached_path_, 0, art_cols, art_rows);
+    artwork_window.request(cached_path_, 0, art_cols, art_rows, true, true);
 
     // Query ArtworkWindow for decoded pixels
     const auto* artwork = artwork_window.get_decoded(cached_path_, art_cols, art_rows);

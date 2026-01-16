@@ -48,7 +48,7 @@ void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, con
     }
 
     // Store new entry
-    cache_[hash] = ArtworkEntry{std::move(data), mime_type, source_dir, 1};
+    cache_[hash] = RawArtworkEntry{std::move(data), mime_type, source_dir, 1};
     dirty_ = true;  // Mark cache as needing save
 
     // Store dir→hash mapping
@@ -60,7 +60,7 @@ void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, con
                        std::to_string(cache_[hash].data.size() / 1024) + " KB, " + mime_type + ")");
 }
 
-const ArtworkEntry* ArtworkCache::get(const std::string& hash) const {
+const RawArtworkEntry* ArtworkCache::get(const std::string& hash) const {
     if (hash.empty()) {
         return nullptr;
     }
@@ -129,6 +129,38 @@ void ArtworkCache::unref(const std::string& hash) {
     }
 }
 
+void ArtworkCache::mark_verified(const std::string& path, const std::string& hash) {
+    if (path.empty()) return;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (verified_tracks_.insert(path).second) {
+        dirty_ = true;  // Only mark dirty if actually inserted
+    }
+    // Store track-specific hash if provided (for unique per-track artwork)
+    if (!hash.empty()) {
+        track_to_hash_[path] = hash;
+        dirty_ = true;
+    }
+}
+
+bool ArtworkCache::is_verified(const std::string& path) const {
+    if (path.empty()) return false;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    return verified_tracks_.count(path) > 0;
+}
+
+const std::string* ArtworkCache::get_hash_for_track(const std::string& path) const {
+    if (path.empty()) return nullptr;
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = track_to_hash_.find(path);
+    if (it != track_to_hash_.end()) {
+        return &it->second;
+    }
+    return nullptr;
+}
+
 bool ArtworkCache::is_dirty() const {
     std::lock_guard<std::mutex> lock(mutex_);
     return dirty_;
@@ -190,8 +222,43 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) {
             out.write(reinterpret_cast<const char*>(&entry.ref_count), sizeof(entry.ref_count));
         }
 
+        // Write verified tracks count and paths
+        uint64_t verified_count = verified_tracks_.size();
+        out.write(reinterpret_cast<const char*>(&verified_count), sizeof(verified_count));
+        for (const auto& path : verified_tracks_) {
+            uint32_t path_len = static_cast<uint32_t>(path.length());
+            out.write(reinterpret_cast<const char*>(&path_len), sizeof(path_len));
+            out.write(path.data(), path_len);
+        }
+
+        // Write track-to-hash mappings (for tracks with unique artwork)
+        uint64_t track_hash_count = track_to_hash_.size();
+        out.write(reinterpret_cast<const char*>(&track_hash_count), sizeof(track_hash_count));
+        for (const auto& [path, hash] : track_to_hash_) {
+            uint32_t path_len = static_cast<uint32_t>(path.length());
+            out.write(reinterpret_cast<const char*>(&path_len), sizeof(path_len));
+            out.write(path.data(), path_len);
+            uint32_t hash_len = static_cast<uint32_t>(hash.length());
+            out.write(reinterpret_cast<const char*>(&hash_len), sizeof(hash_len));
+            out.write(hash.data(), hash_len);
+        }
+
+        // Write dir-to-hash mappings (directory -> artwork hash)
+        uint64_t dir_hash_count = dir_to_hash_.size();
+        out.write(reinterpret_cast<const char*>(&dir_hash_count), sizeof(dir_hash_count));
+        for (const auto& [dir, hash] : dir_to_hash_) {
+            uint32_t dir_len = static_cast<uint32_t>(dir.length());
+            out.write(reinterpret_cast<const char*>(&dir_len), sizeof(dir_len));
+            out.write(dir.data(), dir_len);
+            uint32_t hash_len = static_cast<uint32_t>(hash.length());
+            out.write(reinterpret_cast<const char*>(&hash_len), sizeof(hash_len));
+            out.write(hash.data(), hash_len);
+        }
+
         dirty_ = false;  // Mark as clean after successful save
-        util::Logger::info("ArtworkCache: Saved " + std::to_string(count) + " entries to " + cache_path.string());
+        util::Logger::info("ArtworkCache: Saved " + std::to_string(count) + " entries, " +
+                          std::to_string(dir_hash_count) + " dirs, " +
+                          std::to_string(track_hash_count) + " unique tracks to " + cache_path.string());
         return true;
 
     } catch (const std::exception& e) {
@@ -274,17 +341,57 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             in.read(reinterpret_cast<char*>(&ref_count_ignored), sizeof(ref_count_ignored));
 
             // Store entry with ref_count=0 (no LRU entries reference it yet)
-            cache_[hash] = ArtworkEntry{std::move(data), std::move(mime_type), source_dir, 0};
+            cache_[hash] = RawArtworkEntry{std::move(data), std::move(mime_type), source_dir, 0};
+        }
 
-            // Rebuild dir→hash mapping
-            if (!source_dir.empty()) {
-                dir_to_hash_[source_dir] = hash;
-            }
+        // Read verified tracks
+        verified_tracks_.clear();
+        uint64_t verified_count;
+        in.read(reinterpret_cast<char*>(&verified_count), sizeof(verified_count));
+        for (uint64_t i = 0; i < verified_count; ++i) {
+            uint32_t path_len;
+            in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+            std::string path(path_len, '\0');
+            in.read(path.data(), path_len);
+            verified_tracks_.insert(std::move(path));
+        }
+
+        // Read track-to-hash mappings (for tracks with unique artwork)
+        track_to_hash_.clear();
+        uint64_t track_hash_count;
+        in.read(reinterpret_cast<char*>(&track_hash_count), sizeof(track_hash_count));
+        for (uint64_t i = 0; i < track_hash_count; ++i) {
+            uint32_t path_len;
+            in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+            std::string path(path_len, '\0');
+            in.read(path.data(), path_len);
+            uint32_t hash_len;
+            in.read(reinterpret_cast<char*>(&hash_len), sizeof(hash_len));
+            std::string hash(hash_len, '\0');
+            in.read(hash.data(), hash_len);
+            track_to_hash_[std::move(path)] = std::move(hash);
+        }
+
+        // Read dir-to-hash mappings (directory -> artwork hash)
+        dir_to_hash_.clear();
+        uint64_t dir_hash_count;
+        in.read(reinterpret_cast<char*>(&dir_hash_count), sizeof(dir_hash_count));
+        for (uint64_t i = 0; i < dir_hash_count; ++i) {
+            uint32_t dir_len;
+            in.read(reinterpret_cast<char*>(&dir_len), sizeof(dir_len));
+            std::string dir(dir_len, '\0');
+            in.read(dir.data(), dir_len);
+            uint32_t hash_len;
+            in.read(reinterpret_cast<char*>(&hash_len), sizeof(hash_len));
+            std::string hash(hash_len, '\0');
+            in.read(hash.data(), hash_len);
+            dir_to_hash_[std::move(dir)] = std::move(hash);
         }
 
         dirty_ = false;  // Freshly loaded, no changes yet
         util::Logger::info("ArtworkCache: Loaded " + std::to_string(cache_.size()) + " entries, " +
-                          std::to_string(dir_to_hash_.size()) + " dir mappings from " + cache_path.string());
+                          std::to_string(dir_to_hash_.size()) + " dirs, " +
+                          std::to_string(track_to_hash_.size()) + " unique tracks from " + cache_path.string());
         return true;
 
     } catch (const std::exception& e) {

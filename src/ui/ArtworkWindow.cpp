@@ -70,7 +70,11 @@ void ArtworkWindow::detect_cell_size() {
     }
 }
 
-void ArtworkWindow::request(const std::string& path, int priority, int width_cols, int height_rows, bool notify) {
+void ArtworkWindow::request(const std::string& path, int priority, int width_cols, int height_rows,
+                            bool notify, bool force_extract) {
+    util::Logger::debug("ArtworkWindow::request called: priority=" + std::to_string(priority) +
+                       " force_extract=" + std::string(force_extract ? "true" : "false") +
+                       " path=" + path.substr(path.rfind('/') + 1));
     if (path.empty()) return;
 
     // Key by album directory, not individual track path - all tracks share same artwork
@@ -81,13 +85,27 @@ void ArtworkWindow::request(const std::string& path, int priority, int width_col
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
         auto it = cache_.find(key);
-        if (it != cache_.end()) {
-            if (it->second.ready) {
-                // Already decoded, just update LRU
-                lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_iter);
-                return;
+        if (it != cache_.end() && it->second) {
+            if (it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
+                if (force_extract) {
+                    // For force_extract (NowPlaying), check if per-track entry exists
+                    CacheKey track_key{path, width_cols, height_rows};
+                    auto track_it = cache_.find(track_key);
+                    if (track_it != cache_.end() && track_it->second &&
+                        track_it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
+                        // Per-track entry exists and ready - use it
+                        lru_list_.splice(lru_list_.begin(), lru_list_, track_it->second->lru_iter);
+                        return;
+                    }
+                    // No per-track entry - fall through to queue
+                    // Worker will ALWAYS extract and SHA256 compare for force_extract
+                } else {
+                    // Normal request - already cached, skip
+                    lru_list_.splice(lru_list_.begin(), lru_list_, it->second->lru_iter);
+                    return;
+                }
             }
-            if (it->second.hash == "FAILED") {
+            if (it->second->hash == "FAILED") {
                 // Previously failed, don't retry
                 return;
             }
@@ -109,6 +127,7 @@ void ArtworkWindow::request(const std::string& path, int priority, int width_col
         req.timestamp = std::chrono::steady_clock::now().time_since_epoch().count();
         req.target_width = width_cols * cell_width_;
         req.target_height = height_rows * cell_height_;
+        req.force_extract = force_extract;
 
         request_queue_.push(req);
 
@@ -129,24 +148,52 @@ void ArtworkWindow::flush_requests() {
 }
 
 const DecodedArtwork* ArtworkWindow::get_decoded(const std::string& path, int width_cols, int height_rows) {
-    // Key by album directory, not individual track path
     std::string album_dir = std::filesystem::path(path).parent_path().string();
-    CacheKey key{album_dir, width_cols, height_rows};
 
     std::lock_guard<std::mutex> lock(cache_mutex_);
-    auto it = cache_.find(key);
-    if (it != cache_.end() && it->second.ready) {
+
+    // First check for per-track artwork (NowPlaying with unique artwork)
+    CacheKey track_key{path, width_cols, height_rows};
+    auto it = cache_.find(track_key);
+    util::Logger::debug("ArtworkWindow::get_decoded: track_key lookup " +
+                       std::string(it != cache_.end() && it->second ? "FOUND" : "NOT FOUND") +
+                       " for " + path.substr(path.rfind('/') + 1));
+    if (it != cache_.end() && it->second &&
+        it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
         // Update LRU
-        lru_list_.splice(lru_list_.begin(), lru_list_, it->second.lru_iter);
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second->lru_iter);
 
         // Return pointer to static thread-local to avoid dangling pointer issues
         thread_local DecodedArtwork result;
-        result.data = it->second.decoded_pixels.data();
-        result.data_size = it->second.decoded_pixels.size();
-        result.width = it->second.decoded_width;
-        result.height = it->second.decoded_height;
-        result.format = it->second.format;
-        result.hash = it->second.hash;
+        result.data = it->second->decoded_pixels.data();
+        result.data_size = it->second->decoded_pixels.size();
+        result.width = it->second->decoded_width;
+        result.height = it->second->decoded_height;
+        result.format = it->second->format;
+        result.hash = it->second->hash;
+        return &result;
+    }
+
+    // Fall back to directory-based lookup (normal albums)
+    CacheKey dir_key{album_dir, width_cols, height_rows};
+    it = cache_.find(dir_key);
+    bool dir_ready = it != cache_.end() && it->second &&
+                     it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready;
+    util::Logger::debug("ArtworkWindow::get_decoded: dir_key lookup " +
+                       std::string(it != cache_.end() && it->second ? (dir_ready ? "FOUND+READY" : "FOUND+NOT_READY") : "NOT_FOUND") +
+                       " dims=" + std::to_string(width_cols) + "x" + std::to_string(height_rows) +
+                       " album=" + album_dir.substr(album_dir.rfind('/') + 1));
+    if (dir_ready) {
+        // Update LRU
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second->lru_iter);
+
+        thread_local DecodedArtwork result;
+        result.data = it->second->decoded_pixels.data();
+        result.data_size = it->second->decoded_pixels.size();
+        result.width = it->second->decoded_width;
+        result.height = it->second->decoded_height;
+        result.format = it->second->format;
+        result.hash = it->second->hash;
         return &result;
     }
 
@@ -189,8 +236,8 @@ void ArtworkWindow::evict_until_under_limit() {
     while (total_bytes_.load() > memory_limit_bytes_ && !lru_list_.empty()) {
         auto oldest_key = lru_list_.back();
         auto it = cache_.find(oldest_key);
-        if (it != cache_.end()) {
-            size_t entry_bytes = it->second.decoded_pixels.size();
+        if (it != cache_.end() && it->second) {
+            size_t entry_bytes = it->second->decoded_pixels.size();
             bytes_freed += entry_bytes;
             total_bytes_.fetch_sub(entry_bytes);
             cache_.erase(it);
@@ -238,29 +285,97 @@ void ArtworkWindow::worker_thread() {
         // Process request - get album directory for cache key
         std::string album_dir = std::filesystem::path(req.path).parent_path().string();
 
-        // Double-check: if already in decoded cache, skip (race condition guard)
-        {
-            CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
-            std::lock_guard<std::mutex> lock(cache_mutex_);
-            auto it = cache_.find(key);
-            if (it != cache_.end() && it->second.ready) {
-                // Already decoded - skip
-                std::lock_guard<std::mutex> qlock(queue_mutex_);
-                pending_paths_.erase(pending_key);
-                continue;
-            }
-        }
         auto& global_cache = backend::ArtworkCache::instance();
 
-        // Try to get hash from directory mapping
-        std::string artwork_hash;
-        const std::string* dir_hash = global_cache.get_hash_for_dir(album_dir);
-        if (dir_hash) {
-            artwork_hash = *dir_hash;
+        // Double-check: if already in decoded cache, skip (race condition guard)
+        {
+            std::lock_guard<std::mutex> lock(cache_mutex_);
+            int w = req.target_width / cell_width_;
+            int h = req.target_height / cell_height_;
+
+            if (req.force_extract) {
+                // For force_extract (NowPlaying): only skip if per-track entry exists
+                CacheKey track_key{req.path, w, h};
+                auto it = cache_.find(track_key);
+                if (it != cache_.end() && it->second &&
+                    it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
+                    std::lock_guard<std::mutex> qlock(queue_mutex_);
+                    pending_paths_.erase(pending_key);
+                    continue;  // Per-track entry exists, skip
+                }
+                // No per-track entry - fall through to ALWAYS extract and SHA256 compare
+            } else {
+                // For AlbumBrowser: skip if directory entry exists
+                CacheKey dir_key{album_dir, w, h};
+                auto it = cache_.find(dir_key);
+                if (it != cache_.end() && it->second &&
+                    it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
+                    std::lock_guard<std::mutex> qlock(queue_mutex_);
+                    pending_paths_.erase(pending_key);
+                    continue;
+                }
+            }
         }
 
-        // Get jpeg data from global cache
+        // Get directory's cached hash
+        std::string dir_hash;
+        const std::string* dir_hash_ptr = global_cache.get_hash_for_dir(album_dir);
+        if (dir_hash_ptr) {
+            dir_hash = *dir_hash_ptr;
+        }
+
+        std::string artwork_hash;
         std::vector<uint8_t> jpeg_data;
+        bool has_unique_artwork = false;  // True if track has different artwork than directory
+
+        // Handle force_extract (NowPlaying): ALWAYS extract and SHA256 compare
+        // No caching shortcuts - ~20ms per track played is negligible
+        if (req.force_extract) {
+            auto result = backend::MetadataParser::extract_artwork_data(req.path);
+            if (!result.data.empty()) {
+                artwork_hash = result.hash;
+
+                // Compare with directory hash
+                if (artwork_hash == dir_hash && !dir_hash.empty()) {
+                    // Same hash - track uses album artwork
+                    util::Logger::debug("ArtworkWindow: [MATCH] " + artwork_hash.substr(0, 8) +
+                                       " matches directory cache");
+                } else {
+                    // Different hash (or no dir hash) - track has unique artwork
+                    has_unique_artwork = true;
+                    // Store per-track artwork in global cache
+                    global_cache.store(artwork_hash, result.data, result.mime_type, album_dir);
+                    // Store unique hash for per-track cache key lookup
+                    global_cache.mark_verified(req.path, artwork_hash);
+
+                    // Clear ALL FAILED entries for this album (any dimensions) so AlbumBrowser will retry
+                    // NowPlaying and AlbumBrowser use different dimensions, so we must clear all
+                    {
+                        std::lock_guard<std::mutex> lock(cache_mutex_);
+                        std::vector<CacheKey> to_erase;
+                        for (const auto& [key, entry] : cache_) {
+                            if (entry && key.album_dir == album_dir && entry->hash == "FAILED") {
+                                to_erase.push_back(key);
+                            }
+                        }
+                        for (const auto& key : to_erase) {
+                            cache_.erase(key);
+                            util::Logger::debug("ArtworkWindow: Cleared FAILED entry for " + album_dir +
+                                               " dims=" + std::to_string(key.width) + "x" + std::to_string(key.height));
+                        }
+                    }
+
+                    util::Logger::debug("ArtworkWindow: [UNIQUE] " + artwork_hash.substr(0, 8) +
+                                       " differs from directory cache " +
+                                       (dir_hash.empty() ? "(none)" : dir_hash.substr(0, 8)));
+                }
+            }
+        } else {
+            // Normal AlbumBrowser request - use directory hash
+            artwork_hash = dir_hash;
+        }
+
+        // Get jpeg data from global cache using the determined hash
         if (!artwork_hash.empty()) {
             const auto* cached_entry = global_cache.get(artwork_hash);
             if (cached_entry) {
@@ -269,8 +384,8 @@ void ArtworkWindow::worker_thread() {
             }
         }
 
-        // If not in cache, load from disk
-        if (jpeg_data.empty()) {
+        // If not in cache, load from disk (fallback for AlbumBrowser when cache not pre-populated)
+        if (jpeg_data.empty() && !req.force_extract) {
             auto result = backend::MetadataParser::extract_artwork_data(req.path);
             if (!result.data.empty()) {
                 jpeg_data = std::move(result.data);
@@ -286,28 +401,33 @@ void ArtworkWindow::worker_thread() {
             auto decode_result = decode_jpeg(jpeg_data, req.target_width, req.target_height);
 
             if (decode_result.valid) {
-                CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
+                // Use track_path for unique artwork (podcasts), album_dir otherwise
+                std::string cache_key_str = has_unique_artwork ? req.path : album_dir;
+                CacheKey key{cache_key_str, req.target_width / cell_width_, req.target_height / cell_height_};
 
                 std::lock_guard<std::mutex> lock(cache_mutex_);
 
-                // Add to cache
-                Entry entry;
-                entry.hash = artwork_hash;
-                entry.decoded_pixels = std::move(decode_result.pixels);
-                entry.decoded_width = decode_result.width;
-                entry.decoded_height = decode_result.height;
-                entry.format = decode_result.format;
-                entry.ready = true;
+                // Add to cache using unique_ptr (NowPlayingSlot has atomic members, non-movable)
+                auto entry = std::make_unique<NowPlayingSlot>();
+                entry->hash = artwork_hash;
+                entry->decoded_pixels = std::move(decode_result.pixels);
+                entry->decoded_width = decode_result.width;
+                entry->decoded_height = decode_result.height;
+                entry->format = decode_result.format;
+                // state starts as Empty, will be published as Ready after insertion
 
                 // Track memory
-                size_t entry_bytes = entry.decoded_pixels.size();
+                size_t entry_bytes = entry->decoded_pixels.size();
                 total_bytes_.fetch_add(entry_bytes);
 
                 // Add to LRU
                 lru_list_.push_front(key);
-                entry.lru_iter = lru_list_.begin();
+                entry->lru_iter = lru_list_.begin();
 
                 cache_[key] = std::move(entry);
+
+                // PUBLISH: Release makes all prior writes visible to readers using acquire
+                cache_[key]->state.store(NowPlayingSlotState::Ready, std::memory_order_release);
 
                 // Evict if over limit
                 evict_until_under_limit();
@@ -320,7 +440,8 @@ void ArtworkWindow::worker_thread() {
 
                 util::Logger::debug("ArtworkWindow: Decoded " + req.path.substr(req.path.rfind('/') + 1) +
                                    " (" + std::to_string(entry_bytes / 1024) + " KB), total " +
-                                   std::to_string(total_bytes_.load() / (1024 * 1024)) + " MB");
+                                   std::to_string(total_bytes_.load() / (1024 * 1024)) + " MB" +
+                                   (has_unique_artwork ? " [UNIQUE]" : ""));
             }
         } else {
             // No artwork found - cache a "failed" entry to prevent infinite retry loop
@@ -330,13 +451,14 @@ void ArtworkWindow::worker_thread() {
 
             // Check if not already cached (another worker might have added it)
             if (cache_.find(key) == cache_.end()) {
-                Entry entry;
-                entry.ready = false;  // Mark as "tried but failed"
-                entry.hash = "FAILED";  // Sentinel value
+                auto entry = std::make_unique<NowPlayingSlot>();
+                // state stays Empty - hash="FAILED" is the sentinel
+                entry->hash = "FAILED";  // Sentinel value to prevent retry
 
                 lru_list_.push_front(key);
-                entry.lru_iter = lru_list_.begin();
+                entry->lru_iter = lru_list_.begin();
                 cache_[key] = std::move(entry);
+                // No state.store(Ready) - entry stays in Empty state with FAILED hash
 
                 util::Logger::debug("ArtworkWindow: No artwork for " +
                                    req.path.substr(req.path.rfind('/') + 1) + " (cached as failed)");

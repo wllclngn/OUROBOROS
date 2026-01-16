@@ -34,7 +34,6 @@ private:
     // Filename parsing fallbacks
     static std::string extract_title_from_filename(const std::string& path);
     static std::string extract_artist_from_filename(const std::string& path);
-    static std::string extract_album_from_path(const std::string& path);
 };
 
 }  // namespace ouroboros::backend

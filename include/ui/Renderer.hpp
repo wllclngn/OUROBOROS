@@ -5,7 +5,6 @@
 #include "ui/widgets/NowPlaying.hpp"
 #include "ui/widgets/Browser.hpp"
 #include "ui/widgets/Queue.hpp"
-#include "ui/widgets/Controls.hpp"
 #include "ui/widgets/StatusBar.hpp"
 #include "ui/widgets/SearchBox.hpp"
 #include "ui/widgets/AlbumBrowser.hpp"
@@ -23,9 +22,6 @@ public:
     void handle_input_event(const InputEvent& event);
     bool should_quit() const;
     bool is_album_view_active() const { return show_album_view_; }
-
-    // DEPRECATED: Old interface, kept for compatibility
-    void set_layout(std::unique_ptr<Component> layout) { (void)layout; }
 
 private:
     std::shared_ptr<backend::SnapshotPublisher> publisher_;
@@ -45,7 +41,6 @@ private:
     std::unique_ptr<widgets::NowPlaying> header_;
     std::unique_ptr<widgets::Browser> browser_;
     std::unique_ptr<widgets::Queue> queue_;
-    std::unique_ptr<widgets::Controls> controls_;
     std::unique_ptr<widgets::StatusBar> status_bar_;
     std::unique_ptr<widgets::AlbumBrowser> album_browser_;
     std::unique_ptr<widgets::HelpOverlay> help_overlay_;

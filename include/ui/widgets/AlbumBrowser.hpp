@@ -2,15 +2,54 @@
 
 #include "ui/Component.hpp"
 #include "model/Snapshot.hpp"
+#include "ui/ImageRenderer.hpp"  // For CachedFormat
 #include <string>
 #include <vector>
+#include <array>
 #include <map>
 #include <memory>
 #include <unordered_set>
 #include <unordered_map>
 #include <chrono>
+#include <atomic>
 
 namespace ouroboros::ui::widgets {
+
+// Atomic slot states for flicker-free rendering
+enum class SlotState : uint8_t {
+    Empty,    // Slot not assigned or cleared
+    Loading,  // Request in flight
+    Ready     // Decoded and ready to render
+};
+
+// Atomic slot for album artwork - eliminates mutex contention during render
+// Memory ordering: state acts as publication flag
+// Writer: fill data, then state.store(Ready, release)
+// Reader: if (state.load(acquire) == Ready) read data
+struct AlbumBrowserSlot {
+    std::atomic<SlotState> state{SlotState::Empty};
+    std::atomic<uint64_t> generation{0};  // Bumped on reassignment, rejects stale results
+
+    // Decoded artwork data - only written during Empty->Ready transition
+    // Read-only when state is Ready (no mutex needed for reads)
+    std::vector<uint8_t> decoded_pixels;
+    int width = 0;
+    int height = 0;
+    CachedFormat format = CachedFormat::RGB;
+    std::string hash;
+    std::string album_dir;  // Which album this slot represents
+
+    // Terminal display state
+    uint32_t image_id = 0;      // Currently rendered image ID
+    int display_x = 0;          // Desired position
+    int display_y = 0;
+    int display_cols = 0;
+    int display_rows = 0;
+
+    // Track where image was actually rendered (for position-change detection)
+    int rendered_x = -1;
+    int rendered_y = -1;
+};
 
 struct AlbumGroup {
     std::string title;
@@ -70,13 +109,26 @@ private:
     bool content_changed_ = false; // Flag to force clear images on filter change
     bool prefetch_completed_ = false; // Skip redundant prefetch when viewport hasn't changed
 
-    // Track which images are currently displayed (for upload deduplication)
-    // Key: "x,y,hash_snippet" (unique per position and content)
+    // Atomic slots for flicker-free rendering (holds decoded pixel data)
+    // Slots are indexed by visible position: (row - scroll_offset) * cols + col
+    static constexpr size_t MAX_VISIBLE_SLOTS = 64;
+    std::array<AlbumBrowserSlot, MAX_VISIBLE_SLOTS> slots_;
+
+    // Slot helper methods
+    size_t get_slot_index(int visible_row, int col) const;
+    AlbumBrowserSlot* get_slot(int visible_row, int col);
+    void assign_slot(size_t slot_idx, const std::string& album_dir, int x, int y, int cols, int rows);
+    void clear_all_slots();
+
+    // Track rendered images for cleanup (key: "x,y,hash", enables delete-after-render)
     struct DisplayedImageInfo {
         std::string hash;
         uint32_t image_id;
     };
-    std::unordered_map<std::string, DisplayedImageInfo> displayed_images_;  // Changed to unordered_map for O(1) lookups
+    std::unordered_map<std::string, DisplayedImageInfo> displayed_images_;
+
+    // Last scroll offset for detecting slot reassignment
+    int last_atomic_scroll_offset_ = -1;
 };
 
 }  // namespace ouroboros::ui::widgets

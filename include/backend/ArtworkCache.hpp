@@ -3,20 +3,21 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 #include <mutex>
 #include <filesystem>
 #include <cstdint>
 
 namespace ouroboros::backend {
 
-struct ArtworkEntry {
+struct RawArtworkEntry {
     std::vector<uint8_t> data;  // Raw JPEG/PNG bytes (compressed)
     std::string mime_type;       // "image/jpeg" or "image/png"
     std::string source_dir;      // Album directory this artwork came from
     size_t ref_count = 0;        // Number of tracks referencing this artwork
 
-    ArtworkEntry() = default;
-    ArtworkEntry(std::vector<uint8_t> d, std::string mime, std::string dir, size_t refs = 0)
+    RawArtworkEntry() = default;
+    RawArtworkEntry(std::vector<uint8_t> d, std::string mime, std::string dir, size_t refs = 0)
         : data(std::move(d)), mime_type(std::move(mime)), source_dir(std::move(dir)), ref_count(refs) {}
 };
 
@@ -38,7 +39,7 @@ public:
 
     // O(1) lookup by hash
     // Returns nullptr if not found
-    const ArtworkEntry* get(const std::string& hash) const;
+    const RawArtworkEntry* get(const std::string& hash) const;
 
     // O(1) lookup by directory - returns hash or nullptr
     const std::string* get_hash_for_dir(const std::string& dir) const;
@@ -58,6 +59,14 @@ public:
     // Load cache from disk
     bool load(const std::filesystem::path& cache_path);
 
+    // Per-track artwork verification (persisted with cache)
+    // Avoids redundant SHA256 extraction after initial comparison
+    void mark_verified(const std::string& path, const std::string& hash = "");
+    bool is_verified(const std::string& path) const;
+
+    // Get hash for track (returns unique hash if set, otherwise nullptr)
+    const std::string* get_hash_for_track(const std::string& path) const;
+
     // Statistics
     size_t size() const;
     size_t memory_usage() const;  // Total bytes in cache
@@ -74,13 +83,15 @@ private:
     ArtworkCache& operator=(const ArtworkCache&) = delete;
 
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, ArtworkEntry> cache_;  // hash -> artwork
+    std::unordered_map<std::string, RawArtworkEntry> cache_;  // hash -> artwork
     std::unordered_map<std::string, std::string> dir_to_hash_;  // dir -> hash
+    std::unordered_map<std::string, std::string> track_to_hash_;  // track path -> unique hash (for podcasts/mixes)
+    std::unordered_set<std::string> verified_tracks_;  // Track paths with verified artwork hash
     bool dirty_ = false;  // Track if cache needs saving
 
     // Cache file format magic/version
     static constexpr uint64_t CACHE_MAGIC = 0x4F55524F41525431ULL;  // 'OUROART1'
-    static constexpr uint32_t CACHE_VERSION = 2;  // Bumped for source_dir field
+    static constexpr uint32_t CACHE_VERSION = 5;  // Added explicit dir_to_hash_ persistence
 };
 
 }  // namespace ouroboros::backend

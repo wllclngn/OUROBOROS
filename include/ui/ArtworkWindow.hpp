@@ -11,6 +11,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <chrono>
+#include <memory>
 #include "ui/ImageRenderer.hpp"  // For CachedFormat
 
 namespace ouroboros::ui {
@@ -32,6 +33,7 @@ struct WindowRequest {
     uint64_t timestamp;  // Tie-breaker
     int target_width;    // Decode target dimensions
     int target_height;
+    bool force_extract;  // If true, always extract to get per-track hash (for NowPlaying)
 };
 
 // Comparator: lower priority value = higher queue priority
@@ -43,13 +45,22 @@ struct WindowRequestComparator {
     }
 };
 
+// Atomic slot states for lock-free ready checks
+enum class NowPlayingSlotState : uint8_t {
+    Empty,    // Not populated or cleared
+    Loading,  // Request in flight
+    Ready     // Decoded and safe to read
+};
+
 class ArtworkWindow {
 public:
     static ArtworkWindow& instance();
 
     // Request artwork loading with priority (lower = higher priority)
     // If notify=false, call flush_requests() after batching all requests
-    void request(const std::string& path, int priority, int width_cols, int height_rows, bool notify = true);
+    // If force_extract=true, always extract to get per-track hash (for NowPlaying)
+    void request(const std::string& path, int priority, int width_cols, int height_rows,
+                 bool notify = true, bool force_extract = false);
 
     // Notify workers after batching requests (call after multiple request() calls with notify=false)
     void flush_requests();
@@ -95,21 +106,30 @@ private:
         }
     };
 
-    // Cache entry: holds both jpeg reference and decoded pixels
-    struct Entry {
+    // Cache entry: holds decoded pixels with atomic state for lock-free ready checks
+    // Memory ordering: state acts as publication flag
+    // Writer: fill data, then state.store(Ready, release)
+    // Reader: if (state.load(acquire) == Ready) read data
+    struct NowPlayingSlot {
+        std::atomic<NowPlayingSlotState> state{NowPlayingSlotState::Empty};
+        std::atomic<uint64_t> generation{0};  // Bumped on reassignment, rejects stale results
+
+        // Data fields - immutable once state == Ready
         std::string hash;                    // For ArtworkCache lookup
         std::vector<uint8_t> decoded_pixels; // RGB or PNG for terminal
         int decoded_width = 0;
         int decoded_height = 0;
         CachedFormat format = CachedFormat::RGB;
-        bool ready = false;                  // True when decoded and ready to render
+
         std::list<CacheKey>::iterator lru_iter;
     };
 
-    // Cache
-    std::unordered_map<CacheKey, Entry, CacheKeyHash> cache_;
+    // Cache - uses unique_ptr because NowPlayingSlot has atomic members (non-movable)
+    std::unordered_map<CacheKey, std::unique_ptr<NowPlayingSlot>, CacheKeyHash> cache_;
     std::list<CacheKey> lru_list_;  // Front = newest, back = oldest
     std::mutex cache_mutex_;
+
+    // NowPlaying SHA256 verification is now persisted in ArtworkCache
 
     // Memory tracking
     std::atomic<size_t> total_bytes_{0};

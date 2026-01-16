@@ -66,7 +66,6 @@ Renderer::Renderer(std::shared_ptr<backend::SnapshotPublisher> publisher)
     header_ = std::make_unique<widgets::NowPlaying>();
     browser_ = std::make_unique<widgets::Browser>();
     queue_ = std::make_unique<widgets::Queue>();
-    controls_ = std::make_unique<widgets::Controls>();
     status_bar_ = std::make_unique<widgets::StatusBar>();
     album_browser_ = std::make_unique<widgets::AlbumBrowser>();
     help_overlay_ = std::make_unique<widgets::HelpOverlay>();
@@ -491,8 +490,6 @@ void Renderer::handle_input_event(const InputEvent& event) {
         queue_->handle_input(event);
     }
 
-    // These widgets don't handle navigation, so always pass events
-    controls_->handle_input(event);
     status_bar_->handle_input(event);
 }
 
