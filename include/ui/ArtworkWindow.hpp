@@ -47,9 +47,11 @@ struct WindowRequestComparator {
 
 // Atomic slot states for lock-free ready checks
 enum class NowPlayingSlotState : uint8_t {
-    Empty,    // Not populated or cleared
-    Loading,  // Request in flight
-    Ready     // Decoded and safe to read
+    Empty,    // Never decoded
+    Loading,  // Decode in progress
+    Ready,    // Pixels in memory, can display
+    Evicted,  // Was ready, pixels freed, needs re-decode
+    Failed    // No artwork exists for this entry
 };
 
 class ArtworkWindow {

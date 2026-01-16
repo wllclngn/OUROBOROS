@@ -84,32 +84,50 @@ void ArtworkWindow::request(const std::string& path, int priority, int width_col
     // Check if already cached (including failed attempts)
     {
         std::lock_guard<std::mutex> lock(cache_mutex_);
-        auto it = cache_.find(key);
-        if (it != cache_.end() && it->second) {
-            if (it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
-                if (force_extract) {
-                    // For force_extract (NowPlaying), check if per-track entry exists
-                    CacheKey track_key{path, width_cols, height_rows};
-                    auto track_it = cache_.find(track_key);
-                    if (track_it != cache_.end() && track_it->second &&
-                        track_it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
-                        // Per-track entry exists and ready - use it
-                        lru_list_.splice(lru_list_.begin(), lru_list_, track_it->second->lru_iter);
-                        return;
-                    }
-                    // No per-track entry - fall through to queue
-                    // Worker will ALWAYS extract and SHA256 compare for force_extract
-                } else {
-                    // Normal request - already cached, skip
+
+        // For force_extract (NowPlaying), check track_key FIRST - unique artwork stored there
+        if (force_extract) {
+            CacheKey track_key{path, width_cols, height_rows};
+            auto track_it = cache_.find(track_key);
+            if (track_it != cache_.end() && track_it->second) {
+                NowPlayingSlotState state = track_it->second->state.load(std::memory_order_acquire);
+                if (state == NowPlayingSlotState::Ready) {
+                    // Per-track entry ready (UNIQUE artwork) - use it
+                    lru_list_.splice(lru_list_.begin(), lru_list_, track_it->second->lru_iter);
+                    util::Logger::debug("ArtworkWindow::request: [CACHED-UNIQUE] track_key Ready, returning");
+                    return;
+                }
+                util::Logger::debug("ArtworkWindow::request: track_key exists but state=" +
+                                   std::to_string(static_cast<int>(state)) + ", will queue");
+            } else {
+                util::Logger::debug("ArtworkWindow::request: [FORCE_EXTRACT] no track_key, will queue for SHA256 compare");
+            }
+            // force_extract: skip dir_key check, queue for extraction
+        }
+
+        // Check directory entry (but NOT for force_extract - need SHA256 comparison)
+        if (!force_extract) {
+            auto it = cache_.find(key);
+            if (it != cache_.end() && it->second) {
+                NowPlayingSlotState state = it->second->state.load(std::memory_order_acquire);
+
+                if (state == NowPlayingSlotState::Ready) {
+                    // Dir entry ready - use it for normal album browser requests
                     lru_list_.splice(lru_list_.begin(), lru_list_, it->second->lru_iter);
                     return;
                 }
-            }
-            if (it->second->hash == "FAILED") {
-                // Previously failed, don't retry
-                return;
+                if (state == NowPlayingSlotState::Evicted) {
+                    // Was evicted - needs re-decode, fall through to queue
+                    util::Logger::debug("ArtworkWindow: Re-queuing evicted entry for " +
+                                       path.substr(path.rfind('/') + 1));
+                }
+                if (state == NowPlayingSlotState::Failed) {
+                    // No artwork exists - don't retry
+                    return;
+                }
             }
         }
+        // force_extract=true falls through to queue for SHA256 comparison
     }
 
     // Check if already pending
@@ -230,20 +248,47 @@ size_t ArtworkWindow::get_entry_count() const {
 
 void ArtworkWindow::evict_until_under_limit() {
     // NOTE: Caller must hold cache_mutex_
+    // Two-tier eviction: deallocate pixels but keep entry metadata for re-decode
     size_t evicted = 0;
     size_t bytes_freed = 0;
 
     while (total_bytes_.load() > memory_limit_bytes_ && !lru_list_.empty()) {
         auto oldest_key = lru_list_.back();
         auto it = cache_.find(oldest_key);
+
+        bool did_evict = false;
+
         if (it != cache_.end() && it->second) {
-            size_t entry_bytes = it->second->decoded_pixels.size();
-            bytes_freed += entry_bytes;
-            total_bytes_.fetch_sub(entry_bytes);
-            cache_.erase(it);
-            ++evicted;
+            auto& entry = it->second;
+            NowPlayingSlotState current = entry->state.load(std::memory_order_acquire);
+
+            // Only evict Ready entries (not Empty, Loading, Evicted, or Failed)
+            if (current == NowPlayingSlotState::Ready) {
+                size_t entry_bytes = entry->decoded_pixels.size();
+                bytes_freed += entry_bytes;
+                total_bytes_.fetch_sub(entry_bytes);
+
+                // Deallocate pixels but keep entry metadata
+                entry->decoded_pixels.clear();
+                entry->decoded_pixels.shrink_to_fit();  // Actually deallocate memory
+                entry->state.store(NowPlayingSlotState::Evicted, std::memory_order_release);
+
+                ++evicted;
+                did_evict = true;
+
+                util::Logger::debug("ArtworkWindow: Evicted " + oldest_key.album_dir.substr(
+                    oldest_key.album_dir.rfind('/') + 1) + " (" +
+                    std::to_string(entry_bytes / 1024) + " KB)");
+            }
         }
+
         lru_list_.pop_back();
+
+        // If we didn't evict (entry wasn't Ready) and LRU is now empty, warn and break
+        if (!did_evict && lru_list_.empty()) {
+            util::Logger::warn("ArtworkWindow: Over limit but no Ready entries to evict");
+            break;
+        }
     }
 
     if (evicted > 0) {
@@ -299,10 +344,12 @@ void ArtworkWindow::worker_thread() {
                 auto it = cache_.find(track_key);
                 if (it != cache_.end() && it->second &&
                     it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Ready) {
+                    util::Logger::debug("ArtworkWindow::worker: [SKIP] track_key already Ready");
                     std::lock_guard<std::mutex> qlock(queue_mutex_);
                     pending_paths_.erase(pending_key);
                     continue;  // Per-track entry exists, skip
                 }
+                util::Logger::debug("ArtworkWindow::worker: [EXTRACT] force_extract, will extract and SHA256 compare");
                 // No per-track entry - fall through to ALWAYS extract and SHA256 compare
             } else {
                 // For AlbumBrowser: skip if directory entry exists
@@ -337,9 +384,10 @@ void ArtworkWindow::worker_thread() {
 
                 // Compare with directory hash
                 if (artwork_hash == dir_hash && !dir_hash.empty()) {
-                    // Same hash - track uses album artwork
-                    util::Logger::debug("ArtworkWindow: [MATCH] " + artwork_hash.substr(0, 8) +
-                                       " matches directory cache");
+                    // Same hash - track uses album artwork, will store under DIR key
+                    util::Logger::debug("ArtworkWindow::worker: [MATCH] hash=" + artwork_hash.substr(0, 8) +
+                                       " matches dir, will use DIR key for " +
+                                       req.path.substr(req.path.rfind('/') + 1));
                 } else {
                     // Different hash (or no dir hash) - track has unique artwork
                     has_unique_artwork = true;
@@ -348,20 +396,18 @@ void ArtworkWindow::worker_thread() {
                     // Store unique hash for per-track cache key lookup
                     global_cache.mark_verified(req.path, artwork_hash);
 
-                    // Clear ALL FAILED entries for this album (any dimensions) so AlbumBrowser will retry
+                    // Clear ALL Failed entries for this album (any dimensions) so AlbumBrowser will retry
                     // NowPlaying and AlbumBrowser use different dimensions, so we must clear all
                     {
                         std::lock_guard<std::mutex> lock(cache_mutex_);
-                        std::vector<CacheKey> to_erase;
-                        for (const auto& [key, entry] : cache_) {
-                            if (entry && key.album_dir == album_dir && entry->hash == "FAILED") {
-                                to_erase.push_back(key);
+                        for (auto& [key, entry] : cache_) {
+                            if (entry && key.album_dir == album_dir &&
+                                entry->state.load(std::memory_order_acquire) == NowPlayingSlotState::Failed) {
+                                // Reset to Empty so it can be re-queued and decoded
+                                entry->state.store(NowPlayingSlotState::Empty, std::memory_order_release);
+                                util::Logger::debug("ArtworkWindow: Reset Failed entry to Empty for " + album_dir +
+                                                   " dims=" + std::to_string(key.width) + "x" + std::to_string(key.height));
                             }
-                        }
-                        for (const auto& key : to_erase) {
-                            cache_.erase(key);
-                            util::Logger::debug("ArtworkWindow: Cleared FAILED entry for " + album_dir +
-                                               " dims=" + std::to_string(key.width) + "x" + std::to_string(key.height));
                         }
                     }
 
@@ -405,29 +451,61 @@ void ArtworkWindow::worker_thread() {
                 std::string cache_key_str = has_unique_artwork ? req.path : album_dir;
                 CacheKey key{cache_key_str, req.target_width / cell_width_, req.target_height / cell_height_};
 
+                util::Logger::debug(std::string("ArtworkWindow::worker: [STORE] key=") +
+                                   (has_unique_artwork ? "TRACK" : "DIR") +
+                                   " hash=" + artwork_hash.substr(0, 8) +
+                                   " path=" + req.path.substr(req.path.rfind('/') + 1));
+
                 std::lock_guard<std::mutex> lock(cache_mutex_);
 
-                // Add to cache using unique_ptr (NowPlayingSlot has atomic members, non-movable)
-                auto entry = std::make_unique<NowPlayingSlot>();
-                entry->hash = artwork_hash;
-                entry->decoded_pixels = std::move(decode_result.pixels);
-                entry->decoded_width = decode_result.width;
-                entry->decoded_height = decode_result.height;
-                entry->format = decode_result.format;
-                // state starts as Empty, will be published as Ready after insertion
+                // Check if entry already exists (might be Evicted, reuse it)
+                auto existing_it = cache_.find(key);
+                size_t entry_bytes = decode_result.pixels.size();
 
-                // Track memory
-                size_t entry_bytes = entry->decoded_pixels.size();
-                total_bytes_.fetch_add(entry_bytes);
+                if (existing_it != cache_.end() && existing_it->second) {
+                    // Reuse existing entry - just update pixels and state
+                    auto& entry = existing_it->second;
+                    entry->decoded_pixels = std::move(decode_result.pixels);
+                    entry->decoded_width = decode_result.width;
+                    entry->decoded_height = decode_result.height;
+                    entry->format = decode_result.format;
+                    entry->hash = artwork_hash;
 
-                // Add to LRU
-                lru_list_.push_front(key);
-                entry->lru_iter = lru_list_.begin();
+                    total_bytes_.fetch_add(entry_bytes);
 
-                cache_[key] = std::move(entry);
+                    // Add to front of LRU (iterator was invalidated during eviction)
+                    lru_list_.push_front(key);
+                    entry->lru_iter = lru_list_.begin();
 
-                // PUBLISH: Release makes all prior writes visible to readers using acquire
-                cache_[key]->state.store(NowPlayingSlotState::Ready, std::memory_order_release);
+                    // PUBLISH: Release makes all prior writes visible to readers
+                    entry->state.store(NowPlayingSlotState::Ready, std::memory_order_release);
+
+                    util::Logger::debug("ArtworkWindow: Refilled evicted entry for " +
+                                       req.path.substr(req.path.rfind('/') + 1) +
+                                       " (" + std::to_string(entry_bytes / 1024) + " KB)");
+                } else {
+                    // Create new entry
+                    auto entry = std::make_unique<NowPlayingSlot>();
+                    entry->hash = artwork_hash;
+                    entry->decoded_pixels = std::move(decode_result.pixels);
+                    entry->decoded_width = decode_result.width;
+                    entry->decoded_height = decode_result.height;
+                    entry->format = decode_result.format;
+
+                    // Add to LRU
+                    lru_list_.push_front(key);
+                    entry->lru_iter = lru_list_.begin();
+
+                    cache_[key] = std::move(entry);
+
+                    // PUBLISH: Release makes all prior writes visible to readers
+                    cache_[key]->state.store(NowPlayingSlotState::Ready, std::memory_order_release);
+                }
+
+                // Track memory for new entry (already added for refilled)
+                if (existing_it == cache_.end()) {
+                    total_bytes_.fetch_add(entry_bytes);
+                }
 
                 // Evict if over limit
                 evict_until_under_limit();
@@ -444,24 +522,32 @@ void ArtworkWindow::worker_thread() {
                                    (has_unique_artwork ? " [UNIQUE]" : ""));
             }
         } else {
-            // No artwork found - cache a "failed" entry to prevent infinite retry loop
+            // No artwork found - cache a Failed entry to prevent infinite retry loop
             CacheKey key{album_dir, req.target_width / cell_width_, req.target_height / cell_height_};
 
             std::lock_guard<std::mutex> lock(cache_mutex_);
 
             // Check if not already cached (another worker might have added it)
-            if (cache_.find(key) == cache_.end()) {
+            auto existing_it = cache_.find(key);
+            if (existing_it == cache_.end()) {
                 auto entry = std::make_unique<NowPlayingSlot>();
-                // state stays Empty - hash="FAILED" is the sentinel
-                entry->hash = "FAILED";  // Sentinel value to prevent retry
 
                 lru_list_.push_front(key);
                 entry->lru_iter = lru_list_.begin();
                 cache_[key] = std::move(entry);
-                // No state.store(Ready) - entry stays in Empty state with FAILED hash
+
+                // PUBLISH: Set Failed state to prevent retry
+                cache_[key]->state.store(NowPlayingSlotState::Failed, std::memory_order_release);
 
                 util::Logger::debug("ArtworkWindow: No artwork for " +
-                                   req.path.substr(req.path.rfind('/') + 1) + " (cached as failed)");
+                                   req.path.substr(req.path.rfind('/') + 1) + " (cached as Failed)");
+            } else if (existing_it->second &&
+                       existing_it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Evicted) {
+                // Entry was evicted but still no artwork - mark as Failed
+                existing_it->second->state.store(NowPlayingSlotState::Failed, std::memory_order_release);
+
+                util::Logger::debug("ArtworkWindow: No artwork for evicted entry " +
+                                   req.path.substr(req.path.rfind('/') + 1) + " (marked Failed)");
             }
         }
 

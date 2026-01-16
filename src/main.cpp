@@ -362,12 +362,10 @@ int main() {
 
             if (artwork_window.has_updates()) {
                 artwork_window.clear_updates();
-                // Only trigger render if album view is active (visible artwork changed)
-                // Prefetched artwork for queue/browser doesn't need immediate render
-                if (renderer.is_album_view_active()) {
-                    needs_render = true;
-                    artwork_updated = true;
-                }
+                // Always trigger render when artwork updates - NowPlaying and AlbumBrowser both need it
+                // Priority < 1000 means visible artwork (NowPlaying priority=0, visible albums < 1000)
+                needs_render = true;
+                artwork_updated = true;
             }
 
             // Force continuous rendering while library is scanning (for loading animation)

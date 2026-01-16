@@ -15,11 +15,18 @@ namespace ouroboros::collectors {
 
 PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher> publisher)
     : publisher_(publisher) {
-    events::EventBus::instance().subscribe(events::Event::Type::PlayPause, 
+    events::EventBus::instance().subscribe(events::Event::Type::PlayPause,
         [this](const events::Event&) {
             paused_ = !paused_;
         });
-        
+
+    // Subscribe to ClearQueue for immediate stop
+    events::EventBus::instance().subscribe(events::Event::Type::ClearQueue,
+        [this](const events::Event&) {
+            clear_requested_.store(true, std::memory_order_release);
+            util::Logger::debug("PlaybackCollector: Clear requested (atomic flag set)");
+        });
+
     // Initialize global audio context
     if (!audio_context_.init()) {
         util::Logger::error("Failed to initialize PipeWire context!");
@@ -157,6 +164,12 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 break;
             }
 
+            // Check if clear requested (Ctrl+d)
+            if (clear_requested_.load(std::memory_order_acquire)) {
+                util::Logger::debug("PlaybackCollector: Clear detected in main loop - breaking");
+                break;
+            }
+
             // Check if paused
             if (paused_) {
                 output.pause(true);
@@ -237,7 +250,8 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             const int channels = decoder->get_channels();
             bool write_error = false;
 
-            while (frames_remaining > 0 && !stop_token.stop_requested()) {
+            while (frames_remaining > 0 && !stop_token.stop_requested() &&
+                   !clear_requested_.load(std::memory_order_acquire)) {
                 // Calculate offset in buffer
                 const float* data_ptr = buffer.data() + (frames_written_total * channels);
 
@@ -252,6 +266,12 @@ void PlaybackCollector::run(std::stop_token stop_token) {
 
                 frames_written_total += written;
                 frames_remaining -= written;
+            }
+
+            // Check if clear was requested during write
+            if (clear_requested_.load(std::memory_order_acquire)) {
+                util::Logger::debug("PlaybackCollector: Clear detected in write loop - breaking");
+                break;
             }
 
             if (write_error) {
@@ -287,7 +307,13 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         }
         
         util::Logger::debug("PlaybackCollector: Loop finished. Closing output...");
-        
+
+        // Reset clear flag (it was consumed)
+        if (clear_requested_.load(std::memory_order_acquire)) {
+            clear_requested_.store(false, std::memory_order_release);
+            util::Logger::debug("PlaybackCollector: Clear flag reset");
+        }
+
         // Handle track finish
         if (track_finished) {
              publisher_->update([&](model::Snapshot& s) {

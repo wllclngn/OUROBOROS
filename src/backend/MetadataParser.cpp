@@ -7,6 +7,8 @@
 #include <sndfile.h>
 #include <cstring>
 #include <vector>
+#include <unistd.h>
+#include <cstdlib>
 #include "util/Logger.hpp"
 
 /*
@@ -262,17 +264,60 @@ model::AudioFormat MetadataParser::detect_format(const std::string& path) {
     return model::AudioFormat::Unknown;
 }
 
+// Extract embedded artwork using ffmpeg CLI (fallback for iTunes-encoded files)
+static ArtworkExtractionResult extract_artwork_ffmpeg(const std::string& path) {
+    // Create temp file for artwork
+    char temp_path[] = "/tmp/ouroboros_artwork_XXXXXX.jpg";
+    int fd = mkstemps(temp_path, 4);
+    if (fd < 0) return {{}, "", ""};
+    close(fd);
+
+    // Build ffmpeg command to extract artwork
+    std::string cmd = "ffmpeg -y -i \"" + path + "\" -an -vcodec copy \"" + temp_path + "\" 2>/dev/null";
+    int ret = system(cmd.c_str());
+
+    if (ret != 0) {
+        unlink(temp_path);
+        return {{}, "", ""};
+    }
+
+    // Read extracted artwork
+    std::ifstream file(temp_path, std::ios::binary);
+    if (!file) {
+        unlink(temp_path);
+        return {{}, "", ""};
+    }
+
+    std::vector<uint8_t> data((std::istreambuf_iterator<char>(file)),
+                               std::istreambuf_iterator<char>());
+    file.close();
+    unlink(temp_path);
+
+    if (data.empty()) return {{}, "", ""};
+
+    std::string hash = util::ArtworkHasher::hash_artwork(data);
+    ouroboros::util::Logger::info("Extracted artwork via ffmpeg from " +
+        std::filesystem::path(path).filename().string() +
+        " (" + std::to_string(data.size()) + " bytes)");
+
+    return {std::move(data), "image/jpeg", hash};
+}
+
 // Extract embedded artwork from MP3 (ID3v2 APIC frame)
 static ArtworkExtractionResult extract_mp3_embedded_artwork(const std::string& path) {
     mpg123_handle* mh = mpg123_new(nullptr, nullptr);
-    if (!mh) return {{}, "", ""};
+    if (!mh) {
+        ouroboros::util::Logger::debug("mpg123_new failed");
+        return extract_artwork_ffmpeg(path);  // Fallback to ffmpeg
+    }
 
     // Enable picture extraction
     mpg123_param(mh, MPG123_ADD_FLAGS, MPG123_PICTURE, 0);
 
     if (mpg123_open(mh, path.c_str()) != MPG123_OK) {
+        ouroboros::util::Logger::debug("mpg123_open failed for: " + path.substr(path.rfind('/') + 1));
         mpg123_delete(mh);
-        return {{}, "", ""};
+        return extract_artwork_ffmpeg(path);  // Fallback to ffmpeg
     }
 
     // Scan to parse ID3 tags
@@ -280,7 +325,11 @@ static ArtworkExtractionResult extract_mp3_embedded_artwork(const std::string& p
 
     mpg123_id3v1* v1;
     mpg123_id3v2* v2;
-    if (mpg123_id3(mh, &v1, &v2) == MPG123_OK && v2 && v2->pictures > 0) {
+    int id3_result = mpg123_id3(mh, &v1, &v2);
+    ouroboros::util::Logger::debug("mpg123_id3 result=" + std::to_string(id3_result) +
+                                   " v2=" + (v2 ? "yes" : "no") +
+                                   " pictures=" + (v2 ? std::to_string(v2->pictures) : "0"));
+    if (id3_result == MPG123_OK && v2 && v2->pictures > 0) {
         // Look for front cover (type 3), or take first picture
         const mpg123_picture* best = nullptr;
         for (size_t i = 0; i < v2->pictures; ++i) {
@@ -308,7 +357,10 @@ static ArtworkExtractionResult extract_mp3_embedded_artwork(const std::string& p
 
     mpg123_close(mh);
     mpg123_delete(mh);
-    return {{}, "", ""};
+
+    // mpg123 found no pictures - try ffmpeg as fallback (handles iTunes-encoded files)
+    ouroboros::util::Logger::debug("mpg123 found no pictures, trying ffmpeg fallback");
+    return extract_artwork_ffmpeg(path);
 }
 
 ArtworkExtractionResult MetadataParser::extract_artwork_data(const std::string& path) {

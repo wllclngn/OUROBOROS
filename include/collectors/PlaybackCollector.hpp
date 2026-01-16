@@ -18,6 +18,7 @@ public:
 private:
     std::shared_ptr<backend::SnapshotPublisher> publisher_;
     std::atomic<bool> paused_{false};
+    std::atomic<bool> clear_requested_{false};  // Set by ClearQueue event, checked in write loop
     
     // Persistent Audio Context
     audio::PipeWireContext audio_context_;
