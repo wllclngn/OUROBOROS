@@ -282,11 +282,17 @@ void ArtworkWindow::evict_until_under_limit() {
             }
         }
 
-        lru_list_.pop_back();
-
-        // If we didn't evict (entry wasn't Ready) and LRU is now empty, warn and break
-        if (!did_evict && lru_list_.empty()) {
-            util::Logger::warn("ArtworkWindow: Over limit but no Ready entries to evict");
+        // Only pop from LRU when we actually evicted a Ready entry
+        if (did_evict) {
+            lru_list_.pop_back();
+        } else {
+            // Entry wasn't Ready - can't free more memory, stop evicting
+            util::Logger::debug("ArtworkWindow::evict: oldest entry not Ready (state=" +
+                               std::to_string(static_cast<int>(it->second ?
+                                   it->second->state.load(std::memory_order_acquire) :
+                                   NowPlayingSlotState::Empty)) +
+                               "), stopping eviction. total=" +
+                               std::to_string(total_bytes_.load() / (1024 * 1024)) + " MB");
             break;
         }
     }
@@ -453,6 +459,8 @@ void ArtworkWindow::worker_thread() {
 
                 util::Logger::debug(std::string("ArtworkWindow::worker: [STORE] key=") +
                                    (has_unique_artwork ? "TRACK" : "DIR") +
+                                   " dims=" + std::to_string(req.target_width / cell_width_) + "x" +
+                                   std::to_string(req.target_height / cell_height_) +
                                    " hash=" + artwork_hash.substr(0, 8) +
                                    " path=" + req.path.substr(req.path.rfind('/') + 1));
 
