@@ -45,7 +45,6 @@ sort_ignore_bracket_prefix = true
 [keybinds]
 # Playback controls
 play = "space"
-pause = "p"
 next = "n"
 prev = "N"
 
@@ -56,24 +55,40 @@ quit = "q"
 volume_up = "+"
 volume_down = "-"
 
-# Seek in song (left/right arrows also work)
-seek_forward = "l"
-seek_backward = "h"
+# Seek in song
+seek_forward = "right"
+seek_backward = "left"
 
-# Tab navigation (number keys)
-tab_queue = "1"
-tab_browser = "2"
-tab_now_playing = "3"
-
-# Display toggles
-toggle_header = "H"
-toggle_controls = "C"
-toggle_browser = "B"
-toggle_queue = "Q"
-
-# Modes
-shuffle_toggle = "S"
+# Repeat mode cycle (off -> one -> all)
 repeat_cycle = "R"
+
+# Toggle album art grid view
+toggle_album_view = "ctrl+a"
+
+# Clear play queue
+clear_queue = "ctrl+d"
+
+# Search (filter albums/tracks)
+search = "ctrl+f"
+
+# Help overlay
+help = "?"
+
+# Switch focus between Library and Queue
+tab = "tab"
+
+# Navigation (vim-style hjkl default, or use "up"/"down"/"left"/"right" for arrows)
+nav_up = "k"
+nav_down = "j"
+nav_left = "h"
+nav_right = "l"
+
+# Select + navigate (multi-select in track browser)
+nav_select_up = "K"
+nav_select_down = "J"
+
+# Confirm selection / add to queue
+select = "enter"
 
 [performance]
 # Maximum artwork decoder threads (0 = auto-detect CPU cores)

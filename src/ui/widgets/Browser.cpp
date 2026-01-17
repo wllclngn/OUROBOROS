@@ -1,5 +1,6 @@
 #include "ui/widgets/Browser.hpp"
 #include "ui/Formatting.hpp"
+#include "ui/InputEvent.hpp"
 #include "config/Theme.hpp"
 #include "events/EventBus.hpp"
 #include <algorithm>
@@ -359,16 +360,16 @@ void Browser::handle_input(const InputEvent& event) {
          }
     }
 
-    // Support both arrow keys AND j/k character keys
-    if (event.key_name == "up" || event.key == 'k') {
+    // Navigation (from TOML: nav_up, nav_down)
+    if (matches_keybind(event, "nav_up")) {
         if (selected_index_ > 0) selected_index_--;
     }
-    else if (event.key_name == "down" || event.key == 'j') {
-        selected_index_++; 
+    else if (matches_keybind(event, "nav_down")) {
+        selected_index_++;
         if (selected_index_ >= total_items) selected_index_ = std::max(0, total_items - 1);
     }
-    // Shift+j (uppercase J): Move down AND toggle selection
-    else if (event.key == 'J') {
+    // Move down AND toggle selection (from TOML: nav_select_down)
+    else if (matches_keybind(event, "nav_select_down")) {
         if (selected_index_ < total_items) {
              if (selected_index_ < (int)filtered_indices_.size()) {
                  toggle_selection(filtered_indices_[selected_index_]);
@@ -376,14 +377,14 @@ void Browser::handle_input(const InputEvent& event) {
              selected_index_++;
         }
     }
-    // Shift+k (uppercase K): Move up AND toggle selection
-    else if (event.key == 'K') {
+    // Move up AND toggle selection (from TOML: nav_select_up)
+    else if (matches_keybind(event, "nav_select_up")) {
         if (selected_index_ < (int)filtered_indices_.size()) {
             toggle_selection(filtered_indices_[selected_index_]);
         }
         if (selected_index_ > 0) selected_index_--;
     }
-    else if (event.key_name == "enter" || event.key == '\n' || event.key == '\r') {
+    else if (matches_keybind(event, "select")) {
         if (!g_current_snapshot || g_current_snapshot->library->tracks.empty()) {
             return;
         }

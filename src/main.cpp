@@ -106,6 +106,22 @@ int main() {
         // Create snapshot publisher (lock-free, thread-safe, double-buffered)
         auto publisher = std::make_shared<ouroboros::backend::SnapshotPublisher>();
 
+        // Apply config values to initial snapshot (volume, shuffle, repeat)
+        publisher->update([&config](ouroboros::model::Snapshot& snap) {
+            snap.player.volume_percent = config.default_volume;
+            snap.player.shuffle_enabled = config.shuffle;
+            if (config.repeat == "one") {
+                snap.player.repeat_mode = ouroboros::model::RepeatMode::One;
+            } else if (config.repeat == "all") {
+                snap.player.repeat_mode = ouroboros::model::RepeatMode::All;
+            } else {
+                snap.player.repeat_mode = ouroboros::model::RepeatMode::Off;
+            }
+            ouroboros::util::Logger::info("Config: Applied startup settings - volume=" +
+                std::to_string(snap.player.volume_percent) + ", shuffle=" +
+                (snap.player.shuffle_enabled ? "true" : "false") + ", repeat=" + config.repeat);
+        });
+
         // Create collectors in separate threads (pass config to LibraryCollector)
         ouroboros::collectors::LibraryCollector lib_collector(publisher, config);
         ouroboros::collectors::PlaybackCollector pb_collector(publisher);

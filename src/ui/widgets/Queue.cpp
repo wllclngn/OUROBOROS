@@ -1,6 +1,7 @@
 #include "ui/widgets/Queue.hpp"
 #include "ui/Formatting.hpp"
 #include "ui/VisualBlocks.hpp"
+#include "ui/InputEvent.hpp"
 #include "config/Theme.hpp"
 #include <algorithm>
 #include <sstream>
@@ -150,10 +151,11 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 }
 
 void Queue::handle_input(const InputEvent& event) {
-    if (event.key_name == "up" || event.key == 'k') {
+    // Navigation (from TOML: nav_up, nav_down)
+    if (matches_keybind(event, "nav_up")) {
         if (scroll_offset_ > 0) scroll_offset_--;
     }
-    else if (event.key_name == "down" || event.key == 'j') {
+    else if (matches_keybind(event, "nav_down")) {
         scroll_offset_++;
     }
 }

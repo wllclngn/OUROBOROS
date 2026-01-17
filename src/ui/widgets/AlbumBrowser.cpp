@@ -2,6 +2,7 @@
 #include "ui/Formatting.hpp"
 #include "ui/ImageRenderer.hpp"
 #include "ui/ArtworkWindow.hpp"
+#include "ui/InputEvent.hpp"
 #include "backend/MetadataParser.hpp"
 #include "backend/Config.hpp"
 #include "config/Theme.hpp"
@@ -527,17 +528,17 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
     // Track old selection for change detection
     int old_selected = selected_index_;
 
-    // Grid navigation: hjkl or arrow keys
-    if (event.key_name == "right" || event.key == 'l') {
+    // Grid navigation (from TOML: nav_right, nav_left, nav_down, nav_up)
+    if (matches_keybind(event, "nav_right")) {
         if (selected_index_ < total_albums - 1) selected_index_++;
     }
-    else if (event.key_name == "left" || event.key == 'h') {
+    else if (matches_keybind(event, "nav_left")) {
         if (selected_index_ > 0) selected_index_--;
     }
-    else if (event.key_name == "down" || event.key == 'j') {
+    else if (matches_keybind(event, "nav_down")) {
         if (selected_index_ + cols_ < total_albums) selected_index_ += cols_;
     }
-    else if (event.key_name == "up" || event.key == 'k') {
+    else if (matches_keybind(event, "nav_up")) {
         if (selected_index_ - cols_ >= 0) selected_index_ -= cols_;
     }
 
@@ -551,7 +552,7 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
         ArtworkWindow::instance().reset();
     }
 
-    if (event.key_name == "enter" || event.key == '\n' || event.key == '\r') {
+    if (matches_keybind(event, "select")) {
         // Add all tracks in album to queue (using safe shared_ptr pattern from Browser)
         if (!g_current_snapshot || g_current_snapshot->library->tracks.empty()) {
             return;

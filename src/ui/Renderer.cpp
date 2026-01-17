@@ -3,6 +3,7 @@
 #include "ui/Formatting.hpp"
 #include "ui/ImageRenderer.hpp"
 #include "ui/FlexLayout.hpp"
+#include "ui/InputEvent.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
 #include <algorithm>
@@ -337,8 +338,8 @@ void Renderer::handle_input_event(const InputEvent& event) {
     // Check if current widget is capturing text input
     bool input_captured = (focus_ == Focus::Search);
 
-    // Global quit - check both 'q' and 'Q'
-    if (!input_captured && (event.key == 'q' || event.key == 'Q')) {
+    // Global quit (from TOML: quit)
+    if (!input_captured && matches_keybind(event, "quit")) {
         ouroboros::util::Logger::info("=== QUIT KEY PRESSED ===");
         should_quit_ = true;
         return;
@@ -347,31 +348,32 @@ void Renderer::handle_input_event(const InputEvent& event) {
     ouroboros::util::Logger::debug("handle_input: Publishing event...");
     auto& bus = events::EventBus::instance();
 
-    // Play/Pause
-    if (!input_captured && (event.key_name == "space" || event.key == ' ')) {
+    // Play/Pause (from TOML: play)
+    if (!input_captured && matches_keybind(event, "play")) {
         events::Event evt;
         evt.type = events::Event::Type::PlayPause;
         bus.publish(evt);
         return;
     }
 
-    // Next/Previous track
-    if (!input_captured && event.key == 'n') {
+    // Next track (from TOML: next)
+    if (!input_captured && matches_keybind(event, "next")) {
         events::Event evt;
         evt.type = events::Event::Type::NextTrack;
         bus.publish(evt);
         return;
     }
 
-    if (!input_captured && event.key == 'p') {
+    // Previous track (from TOML: prev)
+    if (!input_captured && matches_keybind(event, "prev")) {
         events::Event evt;
         evt.type = events::Event::Type::PrevTrack;
         bus.publish(evt);
         return;
     }
 
-    // Seeking
-    if (!input_captured && event.key_name == "right") {
+    // Seek forward (from TOML: seek_forward)
+    if (!input_captured && matches_keybind(event, "seek_forward")) {
         events::Event evt;
         evt.type = events::Event::Type::SeekForward;
         evt.seek_seconds = 5;
@@ -379,7 +381,8 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    if (!input_captured && event.key_name == "left") {
+    // Seek backward (from TOML: seek_backward)
+    if (!input_captured && matches_keybind(event, "seek_backward")) {
         events::Event evt;
         evt.type = events::Event::Type::SeekBackward;
         evt.seek_seconds = 5;
@@ -387,8 +390,8 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    // Volume: +/- keys
-    if (!input_captured && (event.key == '+' || event.key == '=')) {
+    // Volume up (from TOML: volume_up)
+    if (!input_captured && matches_keybind(event, "volume_up")) {
         events::Event evt;
         evt.type = events::Event::Type::VolumeUp;
         evt.volume_delta = 5;
@@ -396,7 +399,8 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    if (!input_captured && (event.key == '-' || event.key == '_')) {
+    // Volume down (from TOML: volume_down)
+    if (!input_captured && matches_keybind(event, "volume_down")) {
         events::Event evt;
         evt.type = events::Event::Type::VolumeDown;
         evt.volume_delta = 5;
@@ -404,16 +408,16 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    // Repeat: 'r' key to toggle repeat mode
-    if (!input_captured && (event.key == 'r' || event.key == 'R')) {
+    // Repeat cycle (from TOML: repeat_cycle)
+    if (!input_captured && matches_keybind(event, "repeat_cycle")) {
         events::Event evt;
         evt.type = events::Event::Type::RepeatToggle;
         bus.publish(evt);
         return;
     }
 
-    // Ctrl+a: Toggle album view (Ctrl+a = ASCII 1)
-    if (event.key == 1) {
+    // Toggle album view (from TOML: toggle_album_view)
+    if (matches_keybind(event, "toggle_album_view")) {
         // If closing album view, clear all Kitty graphics
         if (show_album_view_) {
             auto& img_renderer = ImageRenderer::instance();
@@ -425,35 +429,35 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    // Ctrl+d: Clear queue (Ctrl+d = ASCII 4)
-    if (event.key == 4) {
+    // Clear queue (from TOML: clear_queue)
+    if (matches_keybind(event, "clear_queue")) {
         events::Event evt;
         evt.type = events::Event::Type::ClearQueue;
         bus.publish(evt);
         return;
     }
 
-    // Ctrl+f: Start Search (Ctrl+f = ASCII 6)
-    if (event.key == 6) {
+    // Search (from TOML: search)
+    if (matches_keybind(event, "search")) {
         focus_ = Focus::Search;
         global_search_box_->set_visible(true);
         return;
     }
 
-    // ?: Toggle help overlay
-    if (!input_captured && event.key == '?') {
+    // Help overlay (from TOML: help)
+    if (!input_captured && matches_keybind(event, "help")) {
         help_overlay_->set_visible(!help_overlay_->is_visible());
         return;
     }
 
-    // Tab: Switch focus between Browser and Queue
-    if (!input_captured && (event.key_name == "tab" || event.key == '\t' || event.key == 9)) {
+    // Tab: Switch focus between Browser and Queue (from TOML: tab)
+    if (!input_captured && matches_keybind(event, "tab")) {
         focus_ = (focus_ == Focus::Browser) ? Focus::Queue : Focus::Browser;
         return;
     }
 
-    // If help overlay is visible, close it on any key press except '?'
-    if (help_overlay_->is_visible() && event.key != '?') {
+    // If help overlay is visible, close it on any key press except help key
+    if (help_overlay_->is_visible() && !matches_keybind(event, "help")) {
         help_overlay_->set_visible(false);
         return;
     }

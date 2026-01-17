@@ -199,37 +199,10 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "sort_ignore_bracket_prefix = " << (cfg.sort_ignore_bracket_prefix ? "true" : "false") << "\n\n";
 
     file << "[keybinds]\n";
-    file << "# Playback controls\n";
-    file << "play = \"" << (cfg.keybinds.count("play") ? cfg.keybinds.at("play") : "space") << "\"\n";
-    file << "pause = \"" << (cfg.keybinds.count("pause") ? cfg.keybinds.at("pause") : "p") << "\"\n";
-    file << "next = \"" << (cfg.keybinds.count("next") ? cfg.keybinds.at("next") : "n") << "\"\n";
-    file << "prev = \"" << (cfg.keybinds.count("prev") ? cfg.keybinds.at("prev") : "N") << "\"\n\n";
-
-    file << "# Quit\n";
-    file << "quit = \"" << (cfg.keybinds.count("quit") ? cfg.keybinds.at("quit") : "q") << "\"\n\n";
-
-    file << "# Volume control\n";
-    file << "volume_up = \"" << (cfg.keybinds.count("volume_up") ? cfg.keybinds.at("volume_up") : "+") << "\"\n";
-    file << "volume_down = \"" << (cfg.keybinds.count("volume_down") ? cfg.keybinds.at("volume_down") : "-") << "\"\n\n";
-
-    file << "# Seek in song\n";
-    file << "seek_forward = \"" << (cfg.keybinds.count("seek_forward") ? cfg.keybinds.at("seek_forward") : "j") << "\"\n";
-    file << "seek_backward = \"" << (cfg.keybinds.count("seek_backward") ? cfg.keybinds.at("seek_backward") : "k") << "\"\n\n";
-
-    file << "# Navigation\n";
-    file << "tab_queue = \"" << (cfg.keybinds.count("tab_queue") ? cfg.keybinds.at("tab_queue") : "1") << "\"\n";
-    file << "tab_browser = \"" << (cfg.keybinds.count("tab_browser") ? cfg.keybinds.at("tab_browser") : "2") << "\"\n";
-    file << "tab_now_playing = \"" << (cfg.keybinds.count("tab_now_playing") ? cfg.keybinds.at("tab_now_playing") : "3") << "\"\n\n";
-
-    file << "# Display toggles\n";
-    file << "toggle_header = \"" << (cfg.keybinds.count("toggle_header") ? cfg.keybinds.at("toggle_header") : "H") << "\"\n";
-    file << "toggle_controls = \"" << (cfg.keybinds.count("toggle_controls") ? cfg.keybinds.at("toggle_controls") : "C") << "\"\n";
-    file << "toggle_browser = \"" << (cfg.keybinds.count("toggle_browser") ? cfg.keybinds.at("toggle_browser") : "B") << "\"\n";
-    file << "toggle_queue = \"" << (cfg.keybinds.count("toggle_queue") ? cfg.keybinds.at("toggle_queue") : "Q") << "\"\n\n";
-
-    file << "# Modes\n";
-    file << "shuffle_toggle = \"" << (cfg.keybinds.count("shuffle_toggle") ? cfg.keybinds.at("shuffle_toggle") : "S") << "\"\n";
-    file << "repeat_cycle = \"" << (cfg.keybinds.count("repeat_cycle") ? cfg.keybinds.at("repeat_cycle") : "R") << "\"\n\n";
+    for (const auto& [key, value] : cfg.keybinds) {
+        file << key << " = \"" << value << "\"\n";
+    }
+    file << "\n";
 
     file << "[library]\n";
     file << "# Music library directories (array format)\n";
@@ -268,10 +241,7 @@ Config ConfigLoader::create_default_config() {
     if (home) {
         cfg.music_directories.emplace_back(std::filesystem::path(home) / "Music");
     }
-    cfg.keybinds["play"] = "space";
-    cfg.keybinds["pause"] = "p";
-    cfg.keybinds["next"] = "n";
-    cfg.keybinds["quit"] = "q";
+    // Keybinds are loaded from TOML - no hardcoded defaults here
     return cfg;
 }
 
