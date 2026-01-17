@@ -1,4 +1,4 @@
-.TH OUROBOROS 1 "December 2025" "v1.0 Moria" "User Commands"
+.TH OUROBOROS 1 "January 2026" "v1.0 Moria" "User Commands"
 .SH NAME
 ouroboros \- offline, metadata-driven music player for modern Linux terminals
 .SH SYNOPSIS
@@ -92,6 +92,23 @@ Enable album artwork display. Default: true
 Customize keybindings. See
 .B KEYBINDINGS
 section.
+
+.TP
+.B [performance]
+.RS
+.TP
+.B artwork_max_workers
+Maximum decoder threads (0 = auto-detect CPU cores). Default: 0
+.TP
+.B artwork_prefetch_items
+Items to prefetch beyond viewport. Default: 100
+.TP
+.B artwork_spawn_threshold
+Queue depth before spawning workers. Default: 10
+.TP
+.B artwork_memory_limit_mb
+Memory limit for decoded artwork (triggers LRU eviction). Default: 3072
+.RE
 
 .SH KEYBINDINGS
 .SS Navigation
@@ -275,6 +292,29 @@ getdents64 on directory mtimes only. ~200ms for directory scan.
 .B TIER 2: O(changed files)
 Parallel metadata extraction with inode/mtime filtering. 500ms for 50 changed files.
 
+.SS Smart Rendering System
+.TP
+.B 5-Phase Pipeline
+Slot Assignment -> Populate -> Lock-Free Render -> Orphan Cleanup -> Prefetch.
+Eliminates flicker by rendering new images before deleting old ones.
+.TP
+.B Scroll Debouncing
+35ms debounce prevents request spam during fast scroll. 150ms prefetch delay waits for idle.
+.TP
+.B Big Jump Detection
+Velocity-based: (distance >= 8 AND velocity > 10 rows/sec) OR distance > 25 rows.
+Triggers cache reset to prevent stale artwork loading.
+.TP
+.B Atomic Slot System
+64-slot array with std::atomic<SlotState> and generation tokens. Lock-free render phase.
+
+.SS Compilation Grouping
+Automatic detection and merging of scattered albums (soundtracks, compilations).
+Uses title occurrence counting to identify albums that appear multiple times.
+All entries with matching titles are merged by title only, ignoring artist.
+This handles true compilations where every track has a different artist.
+Dual-sort strategy: TimSort by artist/year, then stable_sort to group scattered albums by title.
+
 .SH ALGORITHMS
 .SS TimSort
 Adaptive sorting algorithm (Python/Java standard). O(n) best case for pre-sorted data,
@@ -439,15 +479,15 @@ See project LICENSE file for copyright and licensing information.
 .SH VERSION
 v1.0 "Moria" Performance Release
 .br
-December 2025
+January 2026
 
 .SH TECHNICAL DETAILS
 .SS Code Statistics
-10,822 lines of production C++23 (8,103 implementation + 2,719 headers)
+13,112 lines of production C++23 (10,135 implementation + 2,977 headers)
 .br
 47 source files, 50 header files
 .br
-4 audio decoders, 4 image protocols, 8 UI widgets
+4 audio decoders, 4 image protocols, 9 UI widgets
 .br
 Custom test framework with zero external dependencies
 

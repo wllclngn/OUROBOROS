@@ -348,11 +348,15 @@ uint32_t ImageRenderer::render_image(
     int render_rows = height_rows;
     size_t render_size = data_size;
 
-    if (visible_rows > 0 && visible_rows < height_rows && format == CachedFormat::RGB) {
-        render_rows = visible_rows;
-        int crop_h = visible_rows * cell_height_;
-        if (crop_h > data_height) crop_h = data_height;
-        render_size = data_width * crop_h * 3;
+    if (visible_rows > 0 && visible_rows < height_rows) {
+        render_rows = visible_rows;  // Applies to ALL formats (Kitty uses r= parameter)
+
+        // Only crop raw pixel data for RGB (PNG is already encoded)
+        if (format == CachedFormat::RGB) {
+            int crop_h = visible_rows * cell_height_;
+            if (crop_h > data_height) crop_h = data_height;
+            render_size = data_width * crop_h * 3;
+        }
     }
 
     if (protocol_ == ImageProtocol::Kitty) {

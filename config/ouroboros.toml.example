@@ -19,7 +19,7 @@ repeat = "all"
 # Layout mode: "default", "queue", "browser"
 layout = "default"
 
-# Theme: "dark", "light", "monokai"
+# Theme: "dark", "light", "monokai" (Note: only affects internal styling)
 theme = "dark"
 
 # Enable album art display
@@ -29,13 +29,18 @@ enable_album_art = true
 album_grid_columns = 4
 
 # Sort albums by year instead of alphabetically (within each artist)
-sort_albums_by_year = false
+# When true: albums sorted by release year (numeric, earliest first)
+# When false: albums sorted alphabetically by title
+sort_albums_by_year = true
 
 # Ignore 'The ' prefix when sorting artists (e.g., 'The Beatles' sorts as 'Beatles')
 sort_ignore_the_prefix = true
 
 # Ignore '[' prefix when sorting artists (e.g., '[Unknown]' sorts as 'Unknown]')
 sort_ignore_bracket_prefix = true
+
+# Note: Scattered albums (soundtracks, compilations with same title across artists)
+# are automatically detected and grouped together regardless of these settings
 
 [keybinds]
 # Playback controls
@@ -51,34 +56,34 @@ quit = "q"
 volume_up = "+"
 volume_down = "-"
 
-# Seek in song
-seek_forward = "j"
-seek_backward = "k"
+# Seek in song (left/right arrows also work)
+seek_forward = "l"
+seek_backward = "h"
 
-# Tab navigation
-tab_queue = "q"
-tab_browser = "b"
-tab_now_playing = "n"
+# Tab navigation (number keys)
+tab_queue = "1"
+tab_browser = "2"
+tab_now_playing = "3"
 
 # Display toggles
 toggle_header = "H"
 toggle_controls = "C"
 toggle_browser = "B"
 toggle_queue = "Q"
-toggle_spectrogram = "G"
 
 # Modes
 shuffle_toggle = "S"
 repeat_cycle = "R"
 
-[theme.dark]
-background = "#1e1e1e"
-foreground = "#d4d4d4"
-current_track = "#ff7f50"
-highlight = "#0e639c"
+[performance]
+# Maximum artwork decoder threads (0 = auto-detect CPU cores)
+artwork_max_workers = 0
 
-[theme.light]
-background = "#ffffff"
-foreground = "#000000"
-current_track = "#ff7f50"
-highlight = "#0099ff"
+# Items to prefetch ahead/behind viewport (reduces visible loading)
+artwork_prefetch_items = 100
+
+# Minimum queue size before spawning additional workers
+artwork_spawn_threshold = 10
+
+# Maximum memory for decoded artwork in MB (triggers LRU eviction when exceeded)
+artwork_memory_limit_mb = 3072

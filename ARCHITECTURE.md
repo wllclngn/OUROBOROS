@@ -12,10 +12,15 @@ This document provides a comprehensive technical deep-dive into OUROBOROS's arch
 4. [Advanced Algorithms](#advanced-algorithms)
 5. [Kernel-Level Optimizations](#kernel-level-optimizations)
 6. [Artwork System](#artwork-system)
-7. [Unicode Support](#unicode-support)
-8. [Performance Characteristics](#performance-characteristics)
-9. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
-10. [Project Structure](#project-structure)
+7. [5-Phase Rendering Pipeline](#5-phase-rendering-pipeline)
+8. [Smart Scroll Optimization](#smart-scroll-optimization)
+9. [Atomic Slot System](#atomic-slot-system)
+10. [ArtworkWindow Coordinator](#artworkwindow-coordinator)
+11. [Scattered Album Detection & Merging](#scattered-album-detection--merging)
+12. [Unicode Support](#unicode-support)
+13. [Performance Characteristics](#performance-characteristics)
+14. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
+15. [Project Structure](#project-structure)
 
 ---
 
@@ -457,6 +462,458 @@ Shared memory eliminates Base64 encoding overhead and reduces terminal I/O by 33
 
 ---
 
+## 5-Phase Rendering Pipeline
+
+**File**: `src/ui/widgets/AlbumBrowser.cpp`
+
+The album grid uses a 5-phase rendering pipeline that eliminates flicker during scrolling by ensuring new images render before old ones are deleted.
+
+### Phase Overview
+
+```
+Phase 1: Slot Assignment + Request    → Assign visible albums to atomic slots, queue artwork requests
+Phase 2: Populate Slots               → Copy decoded pixels from ArtworkWindow to slots (mutex brief)
+Phase 3: Lock-Free Render             → Render from slots atomically, no mutex during draw
+Phase 4: Orphan Cleanup               → Delete images no longer on screen (AFTER all renders)
+Phase 5: Prefetch                     → Queue artwork for items just outside viewport (when idle)
+```
+
+### Phase 1: Slot Assignment + Request
+
+For each visible album grid position:
+1. Calculate slot index: `visible_row * cols + col`
+2. Assign album to slot (bumps generation token if album changed)
+3. Request artwork from ArtworkWindow with Manhattan distance priority
+
+```cpp
+int distance = std::abs(row - selected_row) + std::abs(col - selected_col);
+artwork_window.request(track_path, distance, cols, rows, false);  // batch
+```
+
+Requests are batched, then `flush_requests()` wakes worker threads.
+
+### Phase 2: Populate Slots
+
+The **only** place that takes the ArtworkWindow mutex:
+
+```cpp
+const auto* artwork = artwork_window.get_decoded(path, cols, rows);
+if (!artwork) continue;
+
+// Copy to slot (atomic publish pattern)
+slot.decoded_pixels.assign(artwork->data, artwork->data + artwork->data_size);
+slot.width = artwork->width;
+slot.height = artwork->height;
+slot.state.store(SlotState::Ready, std::memory_order_release);  // PUBLISH
+```
+
+The `release` store publishes all prior writes to readers using `acquire` loads.
+
+### Phase 3: Lock-Free Render
+
+Reads slots atomically - no mutex during actual terminal rendering:
+
+```cpp
+SlotState state = slot.state.load(std::memory_order_acquire);
+if (state != SlotState::Ready) continue;
+
+// Safe to read slot data - state is Ready
+uint32_t image_id = img_renderer.render_image(slot.decoded_pixels.data(), ...);
+```
+
+Renders in radial order (sorted by Manhattan distance from selection).
+
+### Phase 4: Orphan Cleanup
+
+**Key to no-flash**: Delete old images **after** new ones render.
+
+```cpp
+for (const auto& [key, info] : displayed_images_) {
+    if (new_displayed_images.find(key) == new_displayed_images.end()) {
+        img_renderer.delete_image_by_id(info.image_id);
+    }
+}
+```
+
+### Phase 5: Prefetch
+
+Triggered after 150ms idle (no scroll activity):
+
+```cpp
+if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
+    // Queue albums above and below viewport with low priority (priority + 1000)
+    for (int r = start_row - prefetch_rows; r < start_row; ++r)
+        artwork_window.request(path, distance + 1000, cols, rows, false);
+}
+```
+
+Low-priority prefetch items don't trigger re-renders when complete.
+
+---
+
+## Smart Scroll Optimization
+
+**File**: `include/ui/widgets/AlbumBrowser.hpp`
+
+### Constants
+
+```cpp
+static constexpr auto SCROLL_DEBOUNCE_MS = std::chrono::milliseconds(35);
+static constexpr auto PREFETCH_DELAY_MS = std::chrono::milliseconds(150);
+static constexpr int BIG_JUMP_ROWS = 10;      // Velocity threshold
+static constexpr int HUGE_JUMP_ROWS = 25;     // Distance threshold (always triggers)
+static constexpr auto BIG_JUMP_TIME_LIMIT = std::chrono::milliseconds(2000);
+```
+
+### Scroll Debouncing
+
+Prevents per-frame request spam during fast scrolling:
+
+```cpp
+if (!force_render && (now - last_request_time_) < SCROLL_DEBOUNCE_MS) {
+    return;  // Skip artwork requests this frame
+}
+```
+
+### Big Jump Detection
+
+Uses **velocity + distance formula** to detect fast scrolling vs. slow navigation:
+
+```cpp
+// On scroll stop:
+int distance = std::abs(scroll_offset_ - scroll_start_offset_);
+double time_seconds = elapsed_ms / 1000.0;
+double velocity = distance / time_seconds;  // rows per second
+
+// Big jump if: (distance >= 8 AND velocity > 10) OR distance > 25
+bool is_big_jump = (distance >= 8 && velocity > 10.0) || (distance > HUGE_JUMP_ROWS);
+```
+
+On big jump detection:
+1. Clear ArtworkWindow request queue (`artwork_window.reset()`)
+2. Delete all displayed images
+3. Clear all atomic slots
+4. Force re-render
+
+This prevents stale artwork from loading after user has scrolled past.
+
+### Prefetch Delay
+
+Waits 150ms after scroll stops before prefetching:
+
+```cpp
+if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
+    // Queue 20 rows above and below viewport
+}
+```
+
+---
+
+## Atomic Slot System
+
+**File**: `include/ui/widgets/AlbumBrowser.hpp`
+
+### Slot State Machine
+
+```cpp
+enum class SlotState : uint8_t {
+    Empty,    // Slot not assigned or cleared
+    Loading,  // Request in flight (currently unused - direct to Ready)
+    Ready     // Decoded and ready to render
+};
+```
+
+### Slot Structure
+
+```cpp
+struct AlbumBrowserSlot {
+    std::atomic<SlotState> state{SlotState::Empty};
+    std::atomic<uint64_t> generation{0};  // Bumped on reassignment
+
+    // Data fields (only written during Empty→Ready transition)
+    std::vector<uint8_t> decoded_pixels;
+    int width, height;
+    CachedFormat format;
+    std::string hash;
+    std::string album_dir;
+
+    // Terminal display state
+    uint32_t image_id;
+    int display_x, display_y, display_cols, display_rows;
+};
+```
+
+### Memory Ordering
+
+**Writer** (populate phase):
+```cpp
+slot.decoded_pixels.assign(...);  // Write data
+slot.width = artwork->width;
+slot.state.store(SlotState::Ready, std::memory_order_release);  // PUBLISH
+```
+
+**Reader** (render phase):
+```cpp
+SlotState state = slot.state.load(std::memory_order_acquire);  // SUBSCRIBE
+if (state == SlotState::Ready) {
+    // All data writes are visible here
+    render(slot.decoded_pixels.data(), slot.width, ...);
+}
+```
+
+The `release`/`acquire` pair establishes a happens-before relationship.
+
+### Generation Tokens
+
+Prevent stale results when slot is reassigned to different album:
+
+```cpp
+void assign_slot(size_t slot_idx, const std::string& album_dir, ...) {
+    if (slot.album_dir != album_dir) {
+        slot.generation.fetch_add(1, std::memory_order_release);
+        slot.album_dir = album_dir;
+        slot.state.store(SlotState::Empty, std::memory_order_release);
+        // Clear data but don't delete image - orphan cleanup handles it
+    }
+}
+```
+
+### Slot Array
+
+Fixed-size array avoids allocation during scroll:
+
+```cpp
+static constexpr size_t MAX_VISIBLE_SLOTS = 64;
+std::array<AlbumBrowserSlot, MAX_VISIBLE_SLOTS> slots_;
+
+size_t get_slot_index(int visible_row, int col) const {
+    return static_cast<size_t>(visible_row * cols_ + col);
+}
+```
+
+---
+
+## ArtworkWindow Coordinator
+
+**File**: `src/ui/ArtworkWindow.cpp`
+
+Coordinates async artwork loading with request batching and priority queue.
+
+### Architecture
+
+```
+AlbumBrowser → request() → Priority Queue → Worker Threads → ArtworkCache
+                              ↓                    ↓
+                         flush_requests()     get_decoded()
+                              ↓                    ↓
+                         notify_all()        Slot Population
+```
+
+### Request Batching
+
+Requests are queued without waking workers until `flush_requests()`:
+
+```cpp
+void request(const std::string& path, int priority, int w, int h, bool notify) {
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        request_queue_.push(WindowRequest{path, priority, ...});
+    }
+    if (notify) queue_cv_.notify_one();  // Only wake on explicit notify
+}
+
+void flush_requests() {
+    queue_cv_.notify_all();  // Wake all workers at once
+}
+```
+
+### Priority Queue
+
+Manhattan distance determines priority (lower = higher priority):
+
+```cpp
+struct WindowRequest {
+    std::string path;
+    int priority;      // Manhattan distance from selection
+    int64_t timestamp; // Tiebreaker for equal priorities
+    int target_width, target_height;
+    bool force_extract;
+};
+
+// Priority comparator: lower priority value = process first
+struct RequestComparator {
+    bool operator()(const WindowRequest& a, const WindowRequest& b) const {
+        if (a.priority != b.priority) return a.priority > b.priority;
+        return a.timestamp > b.timestamp;  // Earlier requests first
+    }
+};
+
+std::priority_queue<WindowRequest, std::vector<WindowRequest>, RequestComparator> request_queue_;
+```
+
+### Worker Threads
+
+Fixed thread pool processes requests:
+
+```cpp
+static constexpr size_t NUM_WORKERS = 4;  // Or hardware_concurrency
+std::vector<std::thread> workers_;
+
+void worker_thread() {
+    while (!should_stop_) {
+        WindowRequest req;
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex_);
+            queue_cv_.wait_for(lock, WORKER_TIMEOUT, [this] {
+                return !request_queue_.empty() || should_stop_;
+            });
+            if (should_stop_ || request_queue_.empty()) continue;
+            req = request_queue_.top();
+            request_queue_.pop();
+        }
+        // Process: extract/load JPEG → decode → resize → store in cache
+    }
+}
+```
+
+### Update Notification
+
+Workers signal when visible artwork is ready:
+
+```cpp
+// Worker: only signal for visible items (priority < 1000)
+if (req.priority < 1000) {
+    has_updates_.store(true);
+}
+
+// AlbumBrowser: check for updates each frame
+if (artwork_window.has_updates()) {
+    artwork_window.clear_updates();
+    force_render = true;  // Trigger slot population + render
+}
+```
+
+### LRU Cache with Viewport Protection
+
+**Memory limit**: Configurable (default 3GB), evicts when exceeded:
+
+```cpp
+size_t memory_limit_bytes_ = config.get_artwork_memory_limit_mb() * 1024 * 1024;
+
+void evict_until_under_limit() {
+    while (total_bytes_.load() > memory_limit_bytes_ && !lru_list_.empty()) {
+        auto oldest_key = lru_list_.back();
+        auto& entry = cache_[oldest_key];
+
+        if (entry->state == NowPlayingSlotState::Ready) {
+            entry->decoded_pixels.clear();
+            entry->decoded_pixels.shrink_to_fit();  // Deallocate
+            entry->state.store(NowPlayingSlotState::Evicted);
+            total_bytes_.fetch_sub(entry_bytes);
+        }
+        lru_list_.pop_back();
+    }
+}
+```
+
+**Viewport protection**: Visible items move to front of LRU on access:
+
+```cpp
+const DecodedArtwork* get_decoded(const std::string& path, ...) {
+    auto it = cache_.find(key);
+    if (it != cache_.end() && it->second->state == Ready) {
+        lru_list_.splice(lru_list_.begin(), lru_list_, it->second->lru_iter);
+        return &result;
+    }
+}
+```
+
+---
+
+## Scattered Album Detection & Merging
+
+**File**: `src/ui/widgets/AlbumBrowser.cpp`
+
+### Problem
+
+Soundtracks and compilations often have tracks from multiple artists:
+- "Guardians of the Galaxy" has tracks by multiple artists
+- "FACT Mixes" may span multiple years with same artist
+
+### Detection: Title Occurrence Counting
+
+```cpp
+std::unordered_map<std::string, int> title_count;
+for (const auto& album : albums_) {
+    title_count[album.normalized_title]++;
+}
+
+// Albums with title appearing more than once are "scattered"
+bool is_scattered = title_count[album.normalized_title] > 1;
+```
+
+### Merging: By Title Only
+
+Scattered albums are merged by **title only**, ignoring artist. This handles true compilations (soundtracks, Various Artists) where every track has a different artist.
+
+```cpp
+std::unordered_map<std::string, size_t> merge_map;  // title → index
+std::vector<AlbumGroup> merged_albums;
+
+for (auto& album : albums_) {
+    if (is_scattered) {
+        std::string merge_key = album.normalized_title;  // Title only
+        auto it = merge_map.find(merge_key);
+
+        if (it != merge_map.end()) {
+            // Merge track indices into existing entry
+            merged_albums[it->second].track_indices.insert(...);
+            // Keep earliest year
+            if (album.year < existing.year) existing.year = album.year;
+        } else {
+            merge_map[merge_key] = merged_albums.size();
+            merged_albums.push_back(std::move(album));
+        }
+    } else {
+        merged_albums.push_back(std::move(album));
+    }
+}
+```
+
+### Dual-Sort Strategy
+
+1. **TimSort** first: Artist → Year → Title (primary sort)
+2. **stable_sort** second: Group scattered albums by title instead of artist
+
+```cpp
+// First: TimSort by artist/year/title
+ouroboros::util::timsort(albums_, [](const AlbumGroup& a, const AlbumGroup& b) {
+    int cmp = case_insensitive_compare(a.artist, b.artist);
+    if (cmp != 0) return cmp < 0;
+    if (sort_by_year) {
+        if (year_to_int(a.year) != year_to_int(b.year))
+            return year_to_int(a.year) < year_to_int(b.year);
+    }
+    return case_insensitive_compare(a.title, b.title) < 0;
+});
+
+// Second: stable_sort to group scattered albums by title
+std::stable_sort(albums_.begin(), albums_.end(), [&](const AlbumGroup& a, const AlbumGroup& b) {
+    bool a_scattered = title_count[a.normalized_title] > 1;
+    bool b_scattered = title_count[b.normalized_title] > 1;
+
+    // Scattered albums sort by title, others by artist
+    std::string key_a = a_scattered ? a.normalized_title : a.artist;
+    std::string key_b = b_scattered ? b.normalized_title : b.artist;
+
+    return case_insensitive_compare(key_a, key_b) < 0;
+});
+```
+
+This groups all "Guardians of the Galaxy" tracks together while keeping regular albums sorted by artist.
+
+---
+
 ## Unicode Support
 
 **File**: `include/util/UnicodeUtils.hpp`
@@ -573,7 +1030,7 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 
 ```
 ouroboros/
-├── src/                      # 47 implementation files (8,103 lines)
+├── src/                      # 47 implementation files (~10,135 lines)
 │   ├── main.cpp              # Entry point, event loop
 │   ├── audio/                # 4 decoders + PipeWire output
 │   ├── backend/              # Library, queue, metadata, config, snapshot publisher
@@ -581,9 +1038,9 @@ ouroboros/
 │   ├── config/               # Theme and keybind management
 │   ├── events/               # EventBus (publish-subscribe)
 │   ├── model/                # Snapshot, Track, PlayerState data models
-│   ├── ui/                   # Terminal, Canvas, Renderer, widgets, FlexLayout
+│   ├── ui/                   # Terminal, Canvas, Renderer, widgets, FlexLayout, ArtworkWindow
 │   └── util/                 # TimSort, BoyerMoore, DirectoryScanner, Logger, ImageDecoderPool
-├── include/                  # 50 header files (2,719 lines) mirroring src/
+├── include/                  # 50 header files (~2,977 lines) mirroring src/
 ├── tests/                    # New C++ test framework
 │   ├── framework/            # SimpleTest.hpp (custom test runner)
 │   ├── unit/                 # TimSort, BoyerMoore, ArtworkHasher tests
@@ -597,7 +1054,7 @@ ouroboros/
 
 ### Code Statistics
 
-- **Total Lines**: ~10,822 (8,103 implementation + 2,719 headers)
+- **Total Lines**: ~13,112 (10,135 implementation + 2,977 headers)
 - **Source Files**: 47 `.cpp` files
 - **Header Files**: 50 `.hpp` files
 - **Audio Decoders**: 4 (MP3, FLAC, OGG, WAV)

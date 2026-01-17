@@ -16,6 +16,7 @@
 #include <vector>
 #include <numeric>
 #include <set>
+#include <unordered_map>
 
 namespace ouroboros::ui::widgets {
 
@@ -234,6 +235,101 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
         // Fall back to case-insensitive title comparison
         return util::case_insensitive_compare(a.title, b.title) < 0;
     });
+
+    // Count title occurrences to identify scattered albums (soundtracks, compilations)
+    std::unordered_map<std::string, int> title_count;
+    for (const auto& album : albums_) {
+        title_count[album.normalized_title]++;
+    }
+
+    // Remember which titles were scattered BEFORE merge (for sorting later)
+    std::unordered_set<std::string> was_scattered;
+    for (const auto& [title, count] : title_count) {
+        if (count > 1) {
+            was_scattered.insert(title);
+        }
+    }
+
+    // Merge scattered album entries by title only (ignoring artist/year)
+    // This consolidates soundtracks like "Tony Hawk's Pro Skater 4" with 35 different artists into one entry
+    std::unordered_map<std::string, size_t> merge_map;  // title -> index in new vector
+    std::vector<AlbumGroup> merged_albums;
+    merged_albums.reserve(albums_.size());
+
+    for (auto& album : albums_) {
+        bool is_scattered = was_scattered.count(album.normalized_title) > 0;
+
+        if (is_scattered) {
+            // For scattered albums (compilations, soundtracks), merge by title only
+            std::string merge_key = album.normalized_title;
+            auto merge_it = merge_map.find(merge_key);
+
+            if (merge_it != merge_map.end()) {
+                // Merge into existing entry
+                auto& existing = merged_albums[merge_it->second];
+                existing.track_indices.insert(existing.track_indices.end(),
+                    album.track_indices.begin(), album.track_indices.end());
+                // Keep earliest year
+                if (album.year < existing.year) {
+                    existing.year = album.year;
+                }
+            } else {
+                // New entry
+                merge_map[merge_key] = merged_albums.size();
+                merged_albums.push_back(std::move(album));
+            }
+        } else {
+            // Non-scattered albums pass through unchanged
+            merged_albums.push_back(std::move(album));
+        }
+    }
+
+    size_t albums_before = albums_.size();
+    albums_ = std::move(merged_albums);
+    ouroboros::util::Logger::info("AlbumBrowser: Merged scattered albums: " +
+        std::to_string(albums_before) + " -> " + std::to_string(albums_.size()));
+
+    // Sort tracks within merged compilations by track number
+    for (auto& album : albums_) {
+        if (was_scattered.count(album.normalized_title) > 0) {
+            std::sort(album.track_indices.begin(), album.track_indices.end(),
+                [&snap](int a, int b) {
+                    return snap.library->tracks[a].track_number <
+                           snap.library->tracks[b].track_number;
+                });
+        }
+    }
+
+    // Log merge statistics
+    ouroboros::util::Logger::info("AlbumBrowser: " + std::to_string(was_scattered.size()) + " scattered titles merged by title");
+
+    // Stable sort: scattered albums by title, others by artist
+    // This places compilations/soundtracks in alphabetical order by title
+    std::stable_sort(albums_.begin(), albums_.end(),
+        [&](const AlbumGroup& a, const AlbumGroup& b) {
+            bool a_scattered = was_scattered.count(a.normalized_title) > 0;
+            bool b_scattered = was_scattered.count(b.normalized_title) > 0;
+
+            std::string key_a = a_scattered ? a.normalized_title : get_artist_sort_key(a.artist);
+            std::string key_b = b_scattered ? b.normalized_title : get_artist_sort_key(b.artist);
+
+            int cmp = util::case_insensitive_compare(key_a, key_b);
+            if (cmp != 0) return cmp < 0;
+
+            // Tiebreaker: year
+            int ya = year_to_int(a.year);
+            int yb = year_to_int(b.year);
+            return ya < yb;
+        });
+
+    // Debug: Log first 100 albums after sort to verify grouping
+    ouroboros::util::Logger::debug("AlbumBrowser: Post-sort sample (first 100):");
+    for (size_t i = 0; i < std::min(albums_.size(), size_t(100)); ++i) {
+        const auto& a = albums_[i];
+        bool scattered = was_scattered.count(a.normalized_title) > 0;
+        std::string key = scattered ? a.normalized_title : get_artist_sort_key(a.artist);
+        ouroboros::util::Logger::debug("  [" + std::to_string(i) + "] key='" + key + "' year='" + a.year + "' artist='" + a.artist + "' title='" + a.title + "'" + (scattered ? " [COMPILATION]" : ""));
+    }
 
     // Initial update of filtered indices (matches all)
     update_filtered_albums();

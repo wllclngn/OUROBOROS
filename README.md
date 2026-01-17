@@ -1,6 +1,6 @@
 # OUROBOROS, The Eternal Player
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, ~10,800 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, ~13,100 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
 
@@ -22,15 +22,21 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Hardware-Aware Parallelism**: Metadata extraction with 4-16 thread pool (hardware_concurrency)
 - **Three-Tier Cache Validation**: O(1) tree hash → O(dirs) dirty detection → O(files) incremental parsing
 - **Real-World Performance**: 10K track library scans in <500ms (warm start: 95ms)
+- **Compilation/Soundtrack Grouping**: Automatic detection and merging of scattered albums (multi-disc sets, soundtracks) via title occurrence counting and same-artist merging
 
 ### Content-Addressed Artwork
 - **SHA-256 Deduplication**: Custom NIST FIPS 180-4 implementation (100 tracks → 1 cached JPEG, 99% space savings)
 - **Dual-Hash System**: SHA-256 for content addressing + FNV-1a with adaptive sampling for O(1) runtime lookups
-- **Multi-Level Caching**: Disk → memory → decoded pixels (memory-pressure eviction with configurable limit)
-- **Radial Rendering**: Distance-based artwork prioritization from cursor position (loads visible items first, then expands outward)
-- **Async Decoding Pool**: Parallel image processing with sliding window prefetch (20 items ahead/behind viewport)
+- **Multi-Level Caching**: Disk → memory → decoded pixels (memory-pressure eviction with configurable 3GB limit)
 - **High-Quality Filtering**: Mitchell-Netrevalli image resizing for photographic content (superior to bilinear/bicubic)
 - **Smart Cache Management**: Generation token invalidation, viewport protection, surgical deletion
+
+### Smart Rendering System
+- **5-Phase Rendering Pipeline**: Slot Assignment → Populate → Lock-Free Render → Orphan Cleanup → Prefetch (eliminates flicker during scroll)
+- **Radial Rendering**: Manhattan distance prioritization from cursor (loads visible items first, expands outward)
+- **Scroll Debouncing**: 35ms debounce prevents request spam during fast scroll, 150ms prefetch delay waits for idle
+- **Big Jump Detection**: Velocity-based detection (`dist >= 8 && vel > 10 r/s`) OR distance threshold (`dist > 25` rows) triggers cache reset
+- **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
 
 ### Production-Grade Algorithms
 - **TimSort**: O(n) best-case sorting exploits natural runs in music libraries (adaptive, stable, galloping merges)
@@ -39,6 +45,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 
 ### Lock-Free Concurrency
 - **Zero-Deadlock Architecture**: Atomic double-buffering with immutable snapshots (acquire/release memory ordering)
+- **Atomic Slot System**: 64-slot array with `std::atomic<SlotState>` and generation tokens for stale rejection (lock-free render phase)
 - **UI Never Blocks**: Lock-free reads (<1μs) guarantee smooth 30 FPS rendering on all threads
 - **4+ Background Threads**: LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers
 - **Thread-Safe Patterns**: Atomic operations with acquire/release semantics, RAII mutex discipline, zero raw locks
@@ -50,7 +57,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
 
 ### Engineering Optimizations
-- **~10,800 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
+- **~13,100 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
@@ -301,10 +308,12 @@ Built with:
 
 ## Technical Highlights
 
-- **10,822 lines** of production C++23
+- **13,112 lines** of production C++23
+- **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
 - **Production algorithms** (TimSort, Boyer-Moore-Horspool, SHA-256)
+- **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
 - **Multi-tier caching** (O(1) → O(dirs) → O(files))
 - **Hardware-aware parallelism** (thread pools, async decoding)
 - **Full Unicode support** (ICU normalization, 150+ languages)
