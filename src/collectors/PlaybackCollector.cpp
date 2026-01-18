@@ -307,11 +307,14 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 break;
             }
             
-            // Update position (throttled)
-            if (decoder->get_position_frames() % (decoder->get_sample_rate() / 10) < BUFFER_FRAMES) {
-                 publisher_->update([&](model::Snapshot& s) {
+            // Update position (10Hz for smooth time display)
+            static auto last_position_update = std::chrono::steady_clock::now();
+            auto now = std::chrono::steady_clock::now();
+            if (now - last_position_update >= std::chrono::milliseconds(100)) {
+                publisher_->update([&](model::Snapshot& s) {
                     s.player.playback_position_ms = decoder->get_position_ms();
                 });
+                last_position_update = now;
             }
         }
         
