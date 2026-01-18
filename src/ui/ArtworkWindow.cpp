@@ -286,18 +286,14 @@ void ArtworkWindow::evict_until_under_limit() {
             }
         }
 
-        // Only pop from LRU when we actually evicted a Ready entry
-        if (did_evict) {
-            lru_list_.pop_back();
-        } else {
-            // Entry wasn't Ready - can't free more memory, stop evicting
-            util::Logger::debug("ArtworkWindow::evict: oldest entry not Ready (state=" +
-                               std::to_string(static_cast<int>(it->second ?
-                                   it->second->state.load(std::memory_order_acquire) :
-                                   NowPlayingSlotState::Empty)) +
-                               "), stopping eviction. total=" +
-                               std::to_string(total_bytes_.load() / (1024 * 1024)) + " MB");
-            break;
+        // Always pop from LRU - either we evicted it, or it's stale/not Ready
+        lru_list_.pop_back();
+
+        if (!did_evict && it != cache_.end() && it->second) {
+            // Entry wasn't Ready - no memory freed, continue trying next entry
+            util::Logger::debug("ArtworkWindow::evict: skipped non-Ready entry (state=" +
+                               std::to_string(static_cast<int>(
+                                   it->second->state.load(std::memory_order_acquire))) + ")");
         }
     }
 
@@ -552,8 +548,8 @@ void ArtworkWindow::worker_thread() {
             if (existing_it == cache_.end()) {
                 auto entry = std::make_unique<NowPlayingSlot>();
 
-                lru_list_.push_front(key);
-                entry->lru_iter = lru_list_.begin();
+                // DON'T add Failed entries to LRU - they have no pixels to evict
+                // lru_iter left default/invalid since it's never used for Failed entries
                 cache_[key] = std::move(entry);
 
                 // PUBLISH: Set Failed state to prevent retry
