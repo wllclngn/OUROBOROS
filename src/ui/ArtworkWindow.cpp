@@ -99,10 +99,8 @@ void ArtworkWindow::request(const std::string& path, int priority, int width_col
                 }
                 util::Logger::debug("ArtworkWindow::request: track_key exists but state=" +
                                    std::to_string(static_cast<int>(state)) + ", will queue");
-            } else {
-                util::Logger::debug("ArtworkWindow::request: [FORCE_EXTRACT] no track_key, will queue for SHA256 compare");
             }
-            // force_extract: skip dir_key check, queue for extraction
+            // force_extract: skip dir_key check, queue for extraction (verified_tracks_ checked below)
         }
 
         // Check directory entry (but NOT for force_extract - need SHA256 comparison)
@@ -130,10 +128,16 @@ void ArtworkWindow::request(const std::string& path, int priority, int width_col
         // force_extract=true falls through to queue for SHA256 comparison
     }
 
-    // Check if already pending
+    // Check if already pending or verified
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         std::string pending_key = path + ":" + std::to_string(width_cols) + "x" + std::to_string(height_rows);
+
+        // For force_extract: check if already verified to match album artwork
+        if (force_extract && verified_tracks_.count(pending_key)) {
+            return;  // Already verified to use album artwork
+        }
+
         if (pending_paths_.count(pending_key)) {
             return;  // Already queued
         }
@@ -391,6 +395,14 @@ void ArtworkWindow::worker_thread() {
                 // Compare with directory hash
                 if (artwork_hash == dir_hash && !dir_hash.empty()) {
                     // Same hash - track uses album artwork, will store under DIR key
+                    // Mark verified to prevent repeated extraction on future requests
+                    {
+                        std::lock_guard<std::mutex> qlock(queue_mutex_);
+                        int w = req.target_width / cell_width_;
+                        int h = req.target_height / cell_height_;
+                        std::string verified_key = req.path + ":" + std::to_string(w) + "x" + std::to_string(h);
+                        verified_tracks_.insert(verified_key);
+                    }
                     util::Logger::debug("ArtworkWindow::worker: [MATCH] hash=" + artwork_hash.substr(0, 8) +
                                        " matches dir, will use DIR key for " +
                                        req.path.substr(req.path.rfind('/') + 1));

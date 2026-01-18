@@ -140,6 +140,7 @@ private:
     // Request queue
     std::priority_queue<WindowRequest, std::vector<WindowRequest>, WindowRequestComparator> request_queue_;
     std::unordered_set<std::string> pending_paths_;  // Deduplication
+    std::unordered_set<std::string> verified_tracks_;  // Tracks verified to match album artwork (prevents re-extraction)
     std::mutex queue_mutex_;
     std::condition_variable queue_cv_;
 

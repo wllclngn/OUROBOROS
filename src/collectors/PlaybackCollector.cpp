@@ -237,6 +237,22 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 }
             }
             
+            // Update position BEFORE blocking write (10Hz for smooth time display)
+            // Placed here so PipeWire buffer stalls don't delay position updates
+            static auto last_position_update = std::chrono::steady_clock::now();
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_position_update).count();
+            if (elapsed >= 100) {
+                // if (elapsed > 500) {
+                //     util::Logger::debug("PlaybackCollector: Position update delayed by " +
+                //                        std::to_string(elapsed) + "ms (possible PipeWire stall)");
+                // }
+                publisher_->update([&](model::Snapshot& s) {
+                    s.player.playback_position_ms = decoder->get_position_ms();
+                });
+                last_position_update = now;
+            }
+
             // Clear buffer
             std::fill(buffer.begin(), buffer.end(), 0.0f);
 
@@ -286,11 +302,11 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             if (write_error) {
                 publisher_->update([&](model::Snapshot& s) {
                     s.alerts.push_back({
-                        "error", 
-                        "Audio output failed. Skipping track.", 
+                        "error",
+                        "Audio output failed. Skipping track.",
                         std::chrono::steady_clock::now()
                     });
-                    
+
                     // Advance queue to avoid infinite retry loop
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
                     new_queue->current_index++;
@@ -302,19 +318,9 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                     }
                     s.queue = new_queue;
                 });
-                
+
                 std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Prevent CPU spin
                 break;
-            }
-            
-            // Update position (10Hz for smooth time display)
-            static auto last_position_update = std::chrono::steady_clock::now();
-            auto now = std::chrono::steady_clock::now();
-            if (now - last_position_update >= std::chrono::milliseconds(100)) {
-                publisher_->update([&](model::Snapshot& s) {
-                    s.player.playback_position_ms = decoder->get_position_ms();
-                });
-                last_position_update = now;
             }
         }
         
