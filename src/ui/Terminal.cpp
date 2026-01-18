@@ -1,6 +1,5 @@
 #include "ui/Terminal.hpp"
 #include "util/Logger.hpp"
-#include <iostream>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <termios.h>

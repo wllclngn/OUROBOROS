@@ -1,6 +1,5 @@
 #include "ui/ImageRenderer.hpp"
 #include "ui/Terminal.hpp"
-#include <iostream>
 #include <sstream>
 #include <fstream>
 #include <cstring>

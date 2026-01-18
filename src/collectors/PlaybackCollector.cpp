@@ -15,21 +15,30 @@ namespace ouroboros::collectors {
 
 PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher> publisher)
     : publisher_(publisher) {
-    events::EventBus::instance().subscribe(events::Event::Type::PlayPause,
+    auto& bus = events::EventBus::instance();
+
+    subscriptions_.push_back(bus.subscribe(events::Event::Type::PlayPause,
         [this](const events::Event&) {
             paused_ = !paused_;
-        });
+        }));
 
     // Subscribe to ClearQueue for immediate stop
-    events::EventBus::instance().subscribe(events::Event::Type::ClearQueue,
+    subscriptions_.push_back(bus.subscribe(events::Event::Type::ClearQueue,
         [this](const events::Event&) {
             clear_requested_.store(true, std::memory_order_release);
             util::Logger::debug("PlaybackCollector: Clear requested (atomic flag set)");
-        });
+        }));
 
     // Initialize global audio context
     if (!audio_context_.init()) {
         util::Logger::error("Failed to initialize PipeWire context!");
+    }
+}
+
+PlaybackCollector::~PlaybackCollector() {
+    auto& bus = events::EventBus::instance();
+    for (auto id : subscriptions_) {
+        bus.unsubscribe(id);
     }
 }
 

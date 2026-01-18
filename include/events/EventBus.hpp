@@ -37,19 +37,26 @@ struct Event {
 class EventBus {
 public:
     using Handler = std::function<void(const Event&)>;
+    using SubscriptionId = uint64_t;
 
     static EventBus& instance() {
         static EventBus instance;
         return instance;
     }
 
-    void subscribe(Event::Type type, Handler handler);
+    SubscriptionId subscribe(Event::Type type, Handler handler);
+    void unsubscribe(SubscriptionId id);
     void publish(const Event& event);
 
 private:
     EventBus() = default;
-    std::map<Event::Type, std::vector<Handler>> subscribers_;
+    struct Subscription {
+        SubscriptionId id;
+        Handler handler;
+    };
+    std::map<Event::Type, std::vector<Subscription>> subscribers_;
     std::mutex mutex_;
+    SubscriptionId next_id_ = 1;
 };
 
 }  // namespace ouroboros::events

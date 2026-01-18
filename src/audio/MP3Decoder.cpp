@@ -7,7 +7,7 @@ namespace audio {
 
 MP3Decoder::MP3Decoder() {
     ouroboros::util::Logger::debug("MP3Decoder: Constructor called");
-    mpg123_init();
+    // Note: mpg123_init() called once globally in MetadataParser.cpp
     handle_ = mpg123_new(nullptr, nullptr);
 
     // CRITICAL: Suppress libmpg123 console output (warnings/errors to stderr)
@@ -25,7 +25,7 @@ MP3Decoder::~MP3Decoder() {
         mpg123_delete(handle_);
         handle_ = nullptr;
     }
-    mpg123_exit();
+    // Note: mpg123_exit() called once globally in MetadataParser.cpp
 }
 
 bool MP3Decoder::open(const std::string& filepath) {

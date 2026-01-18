@@ -1,6 +1,5 @@
 #include "audio/PipeWireContext.hpp"
 #include <pipewire/pipewire.h>
-#include <iostream>
 #include "util/Logger.hpp"
 
 namespace audio {

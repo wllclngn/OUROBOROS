@@ -4,7 +4,6 @@
 #include "util/Logger.hpp"
 #include "util/DirectoryScanner.hpp"
 #include <fstream>
-#include <iostream>
 #include <unordered_map>
 #include <unordered_set>
 #include <sys/stat.h>  // For stat() to get inode

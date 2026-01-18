@@ -1,6 +1,5 @@
 #include "ui/Formatting.hpp"
 #include <algorithm>
-#include <iostream>
 #include <wchar.h>
 
 namespace ouroboros::ui {

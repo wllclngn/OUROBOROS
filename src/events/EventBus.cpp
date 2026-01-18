@@ -1,13 +1,27 @@
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
+#include <algorithm>
 
 namespace ouroboros::events {
 
-void EventBus::subscribe(Event::Type type, Handler handler) {
+EventBus::SubscriptionId EventBus::subscribe(Event::Type type, Handler handler) {
     ouroboros::util::Logger::debug("EventBus: Subscribing to event type");
 
     std::lock_guard<std::mutex> lock(mutex_);
-    subscribers_[type].push_back(handler);
+    SubscriptionId id = next_id_++;
+    subscribers_[type].push_back({id, std::move(handler)});
+    return id;
+}
+
+void EventBus::unsubscribe(SubscriptionId id) {
+    ouroboros::util::Logger::debug("EventBus: Unsubscribing id " + std::to_string(id));
+
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto& [type, subs] : subscribers_) {
+        auto it = std::remove_if(subs.begin(), subs.end(),
+            [id](const Subscription& s) { return s.id == id; });
+        subs.erase(it, subs.end());
+    }
 }
 
 void EventBus::publish(const Event& event) {
@@ -19,10 +33,12 @@ void EventBus::publish(const Event& event) {
         std::lock_guard<std::mutex> lock(mutex_);
         auto it = subscribers_.find(event.type);
         if (it != subscribers_.end()) {
-            handlers = it->second;
+            for (const auto& sub : it->second) {
+                handlers.push_back(sub.handler);
+            }
         }
     }
-    
+
     // Execute handlers outside the lock
     for (const auto& handler : handlers) {
         handler(event);
