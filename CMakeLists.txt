@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros LANGUAGES CXX)
+project(ouroboros VERSION 1.7.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -19,6 +19,12 @@ pkg_check_modules(SPA REQUIRED libspa-0.2)
 pkg_check_modules(MPG123 REQUIRED libmpg123)
 pkg_check_modules(SNDFILE REQUIRED sndfile)
 pkg_check_modules(VORBISFILE REQUIRED vorbisfile)
+
+# M4A/AAC support via FFmpeg
+pkg_check_modules(AVFORMAT REQUIRED libavformat)
+pkg_check_modules(AVCODEC REQUIRED libavcodec)
+pkg_check_modules(AVUTIL REQUIRED libavutil)
+pkg_check_modules(SWRESAMPLE REQUIRED libswresample)
 
 # Unicode support for search normalization
 pkg_check_modules(ICU_UC REQUIRED icu-uc)
@@ -86,6 +92,7 @@ add_executable(ouroboros
     src/audio/MP3Decoder.cpp
     src/audio/FLACDecoder.cpp
     src/audio/OGGDecoder.cpp
+    src/audio/M4ADecoder.cpp
     src/audio/PipeWireOutput.cpp
     src/audio/PipeWireContext.cpp
 )
@@ -99,6 +106,10 @@ target_include_directories(ouroboros PUBLIC
     ${VORBISFILE_INCLUDE_DIRS}
     ${ICU_UC_INCLUDE_DIRS}
     ${ICU_I18N_INCLUDE_DIRS}
+    ${AVFORMAT_INCLUDE_DIRS}
+    ${AVCODEC_INCLUDE_DIRS}
+    ${AVUTIL_INCLUDE_DIRS}
+    ${SWRESAMPLE_INCLUDE_DIRS}
 )
 target_compile_options(ouroboros PRIVATE -Wall -Wextra -Werror)
 if(OUROBOROS_DEBUG_LOG)
@@ -112,6 +123,10 @@ target_link_libraries(ouroboros PRIVATE
     ${VORBISFILE_LIBRARIES}
     ${ICU_UC_LIBRARIES}
     ${ICU_I18N_LIBRARIES}
+    ${AVFORMAT_LIBRARIES}
+    ${AVCODEC_LIBRARIES}
+    ${AVUTIL_LIBRARIES}
+    ${SWRESAMPLE_LIBRARIES}
     ssl
     crypto
 )

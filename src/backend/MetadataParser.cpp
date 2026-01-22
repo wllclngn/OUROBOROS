@@ -11,6 +11,12 @@
 #include <cstdlib>
 #include "util/Logger.hpp"
 
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/dict.h>
+}
+
 /*
  * METADATA PARSING with libsndfile
  *
@@ -75,6 +81,8 @@ model::Track MetadataParser::parse_file(const std::string& path) {
     bool parsed = false;
     if (track.format == model::AudioFormat::MP3) {
         parsed = parse_mp3(path, track);
+    } else if (track.format == model::AudioFormat::M4A) {
+        parsed = parse_m4a(path, track);
     } else {
         parsed = parse_sndfile(path, track);
     }
@@ -252,6 +260,98 @@ bool MetadataParser::parse_sndfile(const std::string& path, model::Track& track)
     return true;
 }
 
+bool MetadataParser::parse_m4a(const std::string& path, model::Track& track) {
+    ouroboros::util::Logger::debug("MetadataParser: Parsing M4A file with FFmpeg: " + path);
+
+    AVFormatContext* fmt_ctx = nullptr;
+    int ret = avformat_open_input(&fmt_ctx, path.c_str(), nullptr, nullptr);
+    if (ret < 0) {
+        char errbuf[256];
+        av_strerror(ret, errbuf, sizeof(errbuf));
+        ouroboros::util::Logger::error("MetadataParser: Failed to open M4A file: " + std::string(errbuf));
+        return false;
+    }
+
+    ret = avformat_find_stream_info(fmt_ctx, nullptr);
+    if (ret < 0) {
+        ouroboros::util::Logger::error("MetadataParser: Failed to find stream info for M4A");
+        avformat_close_input(&fmt_ctx);
+        return false;
+    }
+
+    // Find audio stream
+    int audio_stream_idx = -1;
+    for (unsigned i = 0; i < fmt_ctx->nb_streams; i++) {
+        if (fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            audio_stream_idx = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if (audio_stream_idx < 0) {
+        ouroboros::util::Logger::error("MetadataParser: No audio stream found in M4A file");
+        avformat_close_input(&fmt_ctx);
+        return false;
+    }
+
+    AVStream* audio_stream = fmt_ctx->streams[audio_stream_idx];
+    AVCodecParameters* codecpar = audio_stream->codecpar;
+
+    // Extract audio parameters
+    track.sample_rate = codecpar->sample_rate;
+    track.channels = codecpar->ch_layout.nb_channels;
+    track.bit_depth = codecpar->bits_per_raw_sample > 0 ? codecpar->bits_per_raw_sample : 16;
+    track.bitrate = static_cast<int>(codecpar->bit_rate / 1000);  // Convert to kbps
+
+    // Calculate duration
+    if (fmt_ctx->duration != AV_NOPTS_VALUE) {
+        double duration_sec = fmt_ctx->duration / static_cast<double>(AV_TIME_BASE);
+        track.duration_ms = static_cast<int>(duration_sec * 1000);
+    } else if (audio_stream->duration != AV_NOPTS_VALUE) {
+        double duration_sec = audio_stream->duration * av_q2d(audio_stream->time_base);
+        track.duration_ms = static_cast<int>(duration_sec * 1000);
+    }
+
+    // Extract metadata from format context
+    AVDictionaryEntry* tag = nullptr;
+
+    tag = av_dict_get(fmt_ctx->metadata, "title", nullptr, 0);
+    if (tag && tag->value) track.title = trim(tag->value);
+
+    tag = av_dict_get(fmt_ctx->metadata, "artist", nullptr, 0);
+    if (tag && tag->value) track.artist = trim(tag->value);
+
+    tag = av_dict_get(fmt_ctx->metadata, "album", nullptr, 0);
+    if (tag && tag->value) track.album = trim(tag->value);
+
+    tag = av_dict_get(fmt_ctx->metadata, "genre", nullptr, 0);
+    if (tag && tag->value) track.genre = trim(tag->value);
+
+    tag = av_dict_get(fmt_ctx->metadata, "date", nullptr, 0);
+    if (tag && tag->value) track.date = trim(tag->value);
+
+    tag = av_dict_get(fmt_ctx->metadata, "track", nullptr, 0);
+    if (tag && tag->value) {
+        std::string track_str = trim(tag->value);
+        try {
+            // Handle "1/12" format
+            size_t slash_pos = track_str.find('/');
+            if (slash_pos != std::string::npos) {
+                track_str = track_str.substr(0, slash_pos);
+            }
+            track.track_number = std::stoi(track_str);
+        } catch (...) {
+            // Track number parsing failed, leave as 0
+        }
+    }
+
+    ouroboros::util::Logger::info("MetadataParser: Parsed M4A - " + track.title +
+        " by " + track.artist + " (" + std::to_string(track.duration_ms / 1000) + "s)");
+
+    avformat_close_input(&fmt_ctx);
+    return true;
+}
+
 model::AudioFormat MetadataParser::detect_format(const std::string& path) {
     std::string ext = std::filesystem::path(path).extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -260,7 +360,8 @@ model::AudioFormat MetadataParser::detect_format(const std::string& path) {
     if (ext == ".flac") return model::AudioFormat::FLAC;
     if (ext == ".ogg" || ext == ".opus") return model::AudioFormat::OGG;
     if (ext == ".wav") return model::AudioFormat::WAV;
-    
+    if (ext == ".m4a" || ext == ".aac" || ext == ".mp4") return model::AudioFormat::M4A;
+
     return model::AudioFormat::Unknown;
 }
 

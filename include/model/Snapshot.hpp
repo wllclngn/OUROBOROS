@@ -25,6 +25,7 @@ enum class AudioFormat {
     FLAC,
     OGG,
     WAV,
+    M4A,
 };
 
 struct Track {

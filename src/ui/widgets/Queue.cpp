@@ -59,9 +59,28 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         // Resolve track index to actual Track via Library
         int track_idx = track_indices[i];
         if (track_idx < 0 || track_idx >= static_cast<int>(snap.library->tracks.size())) {
-            ouroboros::util::Logger::error("Queue::render: Invalid track_idx=" + std::to_string(track_idx) +
-                " at queue position " + std::to_string(i) + ", library size=" +
-                std::to_string(snap.library->tracks.size()));
+            // DIAGNOSTIC: Enhanced logging for corruption detection
+            ouroboros::util::Logger::error("Queue::render: CORRUPTION DETECTED - Invalid track_idx=" +
+                std::to_string(track_idx) + " (0x" +
+                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(track_idx) +
+                ") at queue position " + std::to_string(i) +
+                ", library size=" + std::to_string(snap.library->tracks.size()) +
+                ", queue size=" + std::to_string(track_indices.size()) +
+                ", current_index=" + std::to_string(snap.queue->current_index));
+
+            // DIAGNOSTIC: Dump entire queue contents for analysis
+            std::string queue_dump = "Queue contents: [";
+            for (size_t j = 0; j < track_indices.size() && j < 10; ++j) {
+                if (j > 0) queue_dump += ", ";
+                queue_dump += std::to_string(track_indices[j]);
+                if (track_indices[j] < 0 || track_indices[j] >= static_cast<int>(snap.library->tracks.size())) {
+                    queue_dump += "(!)";
+                }
+            }
+            if (track_indices.size() > 10) queue_dump += ", ...";
+            queue_dump += "]";
+            ouroboros::util::Logger::error("Queue::render: " + queue_dump);
+
             continue;  // Skip invalid indices
         }
         const auto& track = snap.library->tracks[track_idx];

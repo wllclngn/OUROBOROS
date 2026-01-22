@@ -2,6 +2,7 @@
 #include "audio/MP3Decoder.hpp"
 #include "audio/FLACDecoder.hpp"
 #include "audio/OGGDecoder.hpp"
+#include "audio/M4ADecoder.hpp"
 #include "audio/PipeWireOutput.hpp"
 #include "backend/MetadataParser.hpp"
 #include "util/Logger.hpp"
@@ -73,25 +74,49 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         // Get track index from queue, then resolve to actual Track via Library
         int track_index = snap.queue->track_indices[snap.queue->current_index];
         if (track_index < 0 || track_index >= static_cast<int>(snap.library->tracks.size())) {
-            util::Logger::debug("PlaybackCollector: Track index out of bounds (idx=" +
-                std::to_string(track_index) + ", lib_size=" +
-                std::to_string(snap.library->tracks.size()) + ")");
+            // DIAGNOSTIC: Enhanced logging for corruption detection
+            util::Logger::error("PlaybackCollector: CORRUPTION DETECTED - Track index out of bounds (idx=" +
+                std::to_string(track_index) + " (0x" +
+                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(track_index) +
+                "), lib_size=" + std::to_string(snap.library->tracks.size()) +
+                ", queue_size=" + std::to_string(snap.queue->track_indices.size()) +
+                ", current_index=" + std::to_string(snap.queue->current_index) + ")");
+
+            // DIAGNOSTIC: Dump first 10 queue entries
+            std::string queue_dump = "Queue contents: [";
+            for (size_t j = 0; j < snap.queue->track_indices.size() && j < 10; ++j) {
+                if (j > 0) queue_dump += ", ";
+                queue_dump += std::to_string(snap.queue->track_indices[j]);
+            }
+            if (snap.queue->track_indices.size() > 10) queue_dump += ", ...";
+            queue_dump += "]";
+            util::Logger::error("PlaybackCollector: " + queue_dump);
+
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
         const auto& track = snap.library->tracks[track_index];
         util::Logger::debug("PlaybackCollector: Starting track: " + track.title);
+
+        // DIAGNOSTIC: Log track details for debugging empty-metadata tracks
+        util::Logger::debug("PlaybackCollector: Track details - path=" + track.path +
+            ", is_valid=" + std::string(track.is_valid ? "true" : "false") +
+            ", format=" + std::to_string(static_cast<int>(track.format)) +
+            ", error=" + track.error_message);
+
         size_t starting_index = snap.queue->current_index;
-        
+
         // VALIDATION: Check if track is valid before attempting playback
         if (!track.is_valid) {
+            util::Logger::warn("PlaybackCollector: SKIPPING invalid track - path=" + track.path +
+                ", error=" + track.error_message);
             publisher_->update([&](model::Snapshot& s) {
                 s.alerts.push_back({
                     "error",
                     "Cannot play: " + track.title + " - " + track.error_message,
                     std::chrono::steady_clock::now()
                 });
-                
+
                 // Advance queue (COW)
                 auto new_queue = std::make_shared<model::QueueState>(*s.queue);
                 new_queue->current_index++;
@@ -378,7 +403,10 @@ std::unique_ptr<audio::AudioDecoder> PlaybackCollector::create_decoder_for_track
             
         case model::AudioFormat::OGG:
             return std::make_unique<audio::OGGDecoder>();
-            
+
+        case model::AudioFormat::M4A:
+            return std::make_unique<audio::M4ADecoder>();
+
         default:
             return nullptr;
     }
@@ -390,6 +418,7 @@ std::string PlaybackCollector::format_to_string(model::AudioFormat format) {
         case model::AudioFormat::FLAC: return "FLAC";
         case model::AudioFormat::OGG: return "OGG/Vorbis";
         case model::AudioFormat::WAV: return "WAV";
+        case model::AudioFormat::M4A: return "M4A/AAC";
         default: return "Unknown";
     }
 }

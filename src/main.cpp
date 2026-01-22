@@ -183,10 +183,34 @@ int main() {
 
                     // Copy-On-Write Queue - store INDEX not full Track
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
+
+                    // DIAGNOSTIC: Log state before push
+                    size_t size_before = new_queue->track_indices.size();
+
                     new_queue->track_indices.push_back(evt.index);
 
+                    // DIAGNOSTIC: Verify what was just added
+                    int just_added = new_queue->track_indices.back();
+                    if (just_added != evt.index) {
+                        ouroboros::util::Logger::error("CORRUPTION DETECTED: pushed " + std::to_string(evt.index) +
+                            " but back() is " + std::to_string(just_added) + " (0x" +
+                            ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(just_added) + ")");
+                    }
+
+                    // DIAGNOSTIC: Verify entire queue integrity
+                    int lib_size = static_cast<int>(snap.library->tracks.size());
+                    for (size_t i = 0; i < new_queue->track_indices.size(); ++i) {
+                        int idx = new_queue->track_indices[i];
+                        if (idx < 0 || idx >= lib_size) {
+                            ouroboros::util::Logger::error("CORRUPTION DETECTED: queue[" + std::to_string(i) +
+                                "] = " + std::to_string(idx) + " (0x" +
+                                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(idx) +
+                                ") is out of bounds (lib_size=" + std::to_string(lib_size) + ")");
+                        }
+                    }
+
                     ouroboros::util::Logger::debug("AddTrackToQueue: Queue size before: " +
-                        std::to_string(snap.queue->track_indices.size()) +
+                        std::to_string(size_before) +
                         ", after: " + std::to_string(new_queue->track_indices.size()));
 
                     // If queue was empty, start playing
