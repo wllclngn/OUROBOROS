@@ -20,8 +20,11 @@ Config ConfigLoader::load_config() {
         cfg = load_from_file(config_file);
     } else {
         cfg = create_default_config();
+        // Write default config to disk so users can customize it
+        save_config(cfg, config_file);
+        ouroboros::util::Logger::info("Config: Created default config at " + config_file.string());
     }
-    
+
     // Update global singleton
     Config::instance() = cfg;
     return cfg;
@@ -258,6 +261,12 @@ Config ConfigLoader::create_default_config() {
     cfg.keybinds["search"] = "ctrl+f";
     cfg.keybinds["help"] = "?";
     cfg.keybinds["tab"] = "tab";
+    // Navigation keybinds (used by Browser, Queue, AlbumBrowser)
+    cfg.keybinds["nav_up"] = "k";
+    cfg.keybinds["nav_down"] = "j";
+    cfg.keybinds["nav_select_up"] = "K";
+    cfg.keybinds["nav_select_down"] = "J";
+    cfg.keybinds["select"] = "enter";
 
     return cfg;
 }
