@@ -46,7 +46,7 @@ sort_ignore_bracket_prefix = true
 # Playback controls
 play = "space"
 next = "n"
-prev = "N"
+prev = "p"
 
 # Quit
 quit = "q"

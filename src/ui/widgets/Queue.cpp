@@ -23,15 +23,29 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         return;
     }
 
-    const auto& track_indices = snap.queue->track_indices;
+    // Two Stacks: Build display list (history + current + future)
+    // Display in ADD order: history first, then current, then future
+    std::vector<std::pair<int, bool>> display_tracks; // (track_index, is_current)
+
+    // History (played tracks, oldest first)
+    for (int idx : snap.queue->history) {
+        display_tracks.emplace_back(idx, false);
+    }
+    // Current track
+    if (snap.queue->current.has_value()) {
+        display_tracks.emplace_back(*snap.queue->current, true);
+    }
+    // Future (upcoming tracks, in add order - front is next)
+    for (int idx : snap.queue->future) {
+        display_tracks.emplace_back(idx, false);
+    }
 
     // Draw border and title (highlight when focused)
-    std::string title = "QUEUE [" + std::to_string(track_indices.size()) + " TRACKS]";
+    std::string title = "QUEUE [" + std::to_string(display_tracks.size()) + " TRACKS]";
     auto content_rect = draw_box_border(canvas, rect, title, Style{}, is_focused);
 
     // Empty queue
-    if (track_indices.empty()) {
-        ouroboros::util::Logger::debug("Queue: Queue is empty");
+    if (display_tracks.empty()) {
         return;  // Keep UI clean - no placeholder text
     }
 
@@ -42,8 +56,8 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     }
 
     // Bounds checking for scroll
-    if (scroll_offset_ >= static_cast<int>(track_indices.size())) {
-        scroll_offset_ = std::max(0, static_cast<int>(track_indices.size()) - 1);
+    if (scroll_offset_ >= static_cast<int>(display_tracks.size())) {
+        scroll_offset_ = std::max(0, static_cast<int>(display_tracks.size()) - 1);
     }
     if (scroll_offset_ < 0) {
         scroll_offset_ = 0;
@@ -53,38 +67,17 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     int y = content_rect.y;
     int available_lines = content_rect.height;
 
-    int end_index = std::min(static_cast<int>(track_indices.size()), scroll_offset_ + available_lines);
+    int end_index = std::min(static_cast<int>(display_tracks.size()), scroll_offset_ + available_lines);
 
     for (int i = scroll_offset_; i < end_index; ++i) {
-        // Resolve track index to actual Track via Library
-        int track_idx = track_indices[i];
+        const auto& [track_idx, is_current] = display_tracks[i];
+
+        // Bounds check
         if (track_idx < 0 || track_idx >= static_cast<int>(snap.library->tracks.size())) {
-            // DIAGNOSTIC: Enhanced logging for corruption detection
-            ouroboros::util::Logger::error("Queue::render: CORRUPTION DETECTED - Invalid track_idx=" +
-                std::to_string(track_idx) + " (0x" +
-                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(track_idx) +
-                ") at queue position " + std::to_string(i) +
-                ", library size=" + std::to_string(snap.library->tracks.size()) +
-                ", queue size=" + std::to_string(track_indices.size()) +
-                ", current_index=" + std::to_string(snap.queue->current_index));
-
-            // DIAGNOSTIC: Dump entire queue contents for analysis
-            std::string queue_dump = "Queue contents: [";
-            for (size_t j = 0; j < track_indices.size() && j < 10; ++j) {
-                if (j > 0) queue_dump += ", ";
-                queue_dump += std::to_string(track_indices[j]);
-                if (track_indices[j] < 0 || track_indices[j] >= static_cast<int>(snap.library->tracks.size())) {
-                    queue_dump += "(!)";
-                }
-            }
-            if (track_indices.size() > 10) queue_dump += ", ...";
-            queue_dump += "]";
-            ouroboros::util::Logger::error("Queue::render: " + queue_dump);
-
-            continue;  // Skip invalid indices
+            ouroboros::util::Logger::error("Queue::render: Invalid track_idx=" + std::to_string(track_idx));
+            continue;
         }
         const auto& track = snap.library->tracks[track_idx];
-        bool is_current = (static_cast<size_t>(i) == snap.queue->current_index);
 
         // Match Browser formatting: Artist Album: TrackNum Title
         if (is_current) {

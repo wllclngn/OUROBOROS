@@ -249,7 +249,7 @@ Config ConfigLoader::create_default_config() {
     cfg.keybinds["quit"] = "q";
     cfg.keybinds["play"] = "space";
     cfg.keybinds["next"] = "n";
-    cfg.keybinds["prev"] = "N";
+    cfg.keybinds["prev"] = "p";
     cfg.keybinds["volume_up"] = "+";
     cfg.keybinds["volume_down"] = "-";
     cfg.keybinds["seek_forward"] = "right";

@@ -15,27 +15,6 @@
 
 namespace ouroboros::collectors {
 
-namespace {
-    // Pick random unplayed index for shuffle mode using getrandom() directly
-    std::optional<size_t> pick_shuffle_next(const model::QueueState& queue) {
-        std::vector<size_t> candidates;
-        for (size_t i = 0; i < queue.track_indices.size(); i++) {
-            if (queue.played_indices.find(i) == queue.played_indices.end()) {
-                candidates.push_back(i);
-            }
-        }
-        if (candidates.empty()) return std::nullopt;
-
-        // Get random bytes directly from kernel CSPRNG
-        uint64_t rand_val;
-        getrandom(&rand_val, sizeof(rand_val), 0);
-
-        // Convert to index in range [0, candidates.size())
-        size_t idx = rand_val % candidates.size();
-        return candidates[idx];
-    }
-}
-
 PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher> publisher)
     : publisher_(publisher) {
     auto& bus = events::EventBus::instance();
@@ -79,41 +58,25 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         // Working with shared pointers now
         const auto& snap = *snap_ptr;
 
-        if (snap.queue->track_indices.empty() || snap.queue->current_index >= snap.queue->track_indices.size()) {
+        // Two Stacks: Check if nothing is currently playing
+        if (!snap.queue->current.has_value()) {
             if (!last_queue_empty_logged) {
-                util::Logger::debug("PlaybackCollector: Queue empty or index out of bounds (size=" +
-                    std::to_string(snap.queue->track_indices.size()) + ", idx=" +
-                    std::to_string(snap.queue->current_index) + ")");
+                util::Logger::debug("PlaybackCollector: No current track (queue empty or stopped)");
                 last_queue_empty_logged = true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
-        
-        // Reset flag since we have a valid queue
+
+        // Reset flag since we have a valid current track
         last_queue_empty_logged = false;
 
-        // Get track index from queue, then resolve to actual Track via Library
-        int track_index = snap.queue->track_indices[snap.queue->current_index];
+        // Two Stacks: Get current track index directly
+        int track_index = *snap.queue->current;
         if (track_index < 0 || track_index >= static_cast<int>(snap.library->tracks.size())) {
-            // DIAGNOSTIC: Enhanced logging for corruption detection
-            util::Logger::error("PlaybackCollector: CORRUPTION DETECTED - Track index out of bounds (idx=" +
-                std::to_string(track_index) + " (0x" +
-                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(track_index) +
-                "), lib_size=" + std::to_string(snap.library->tracks.size()) +
-                ", queue_size=" + std::to_string(snap.queue->track_indices.size()) +
-                ", current_index=" + std::to_string(snap.queue->current_index) + ")");
-
-            // DIAGNOSTIC: Dump first 10 queue entries
-            std::string queue_dump = "Queue contents: [";
-            for (size_t j = 0; j < snap.queue->track_indices.size() && j < 10; ++j) {
-                if (j > 0) queue_dump += ", ";
-                queue_dump += std::to_string(snap.queue->track_indices[j]);
-            }
-            if (snap.queue->track_indices.size() > 10) queue_dump += ", ...";
-            queue_dump += "]";
-            util::Logger::error("PlaybackCollector: " + queue_dump);
-
+            util::Logger::error("PlaybackCollector: Track index out of bounds (idx=" +
+                std::to_string(track_index) + ", lib_size=" +
+                std::to_string(snap.library->tracks.size()) + ")");
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
@@ -126,7 +89,8 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             ", format=" + std::to_string(static_cast<int>(track.format)) +
             ", error=" + track.error_message);
 
-        size_t starting_index = snap.queue->current_index;
+        // Two Stacks: Store current track for change detection
+        int starting_track = track_index;
 
         // VALIDATION: Check if track is valid before attempting playback
         if (!track.is_valid) {
@@ -139,17 +103,25 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                     std::chrono::steady_clock::now()
                 });
 
-                // Advance queue (COW) - shuffle-aware
+                // Two Stacks: Advance to next track
                 auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                if (s.player.shuffle_enabled) {
-                    new_queue->played_indices.insert(new_queue->current_index);
-                    auto next = pick_shuffle_next(*new_queue);
-                    new_queue->current_index = next.value_or(0);
-                } else {
-                    new_queue->current_index++;
-                    if (new_queue->current_index >= new_queue->track_indices.size()) {
-                        new_queue->current_index = 0;
+                if (new_queue->current.has_value()) {
+                    new_queue->history.push_back(*new_queue->current);
+                }
+                if (!new_queue->future.empty()) {
+                    if (s.player.shuffle_enabled) {
+                        uint64_t rand_val;
+                        getrandom(&rand_val, sizeof(rand_val), 0);
+                        size_t idx = rand_val % new_queue->future.size();
+                        new_queue->current = new_queue->future[idx];
+                        new_queue->future.erase(new_queue->future.begin() + idx);
+                    } else {
+                        // Linear: pop from FRONT (FIFO order)
+                        new_queue->current = new_queue->future.front();
+                        new_queue->future.erase(new_queue->future.begin());
                     }
+                } else {
+                    new_queue->current = std::nullopt;
                 }
                 s.queue = new_queue;
             });
@@ -280,9 +252,9 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                     last_reported_volume = current_volume;
                 }
                 
-                // Check if track changed
-                if (current_snap_ptr->queue->current_index != starting_index ||
-                    current_snap_ptr->queue->track_indices.empty()) {
+                // Two Stacks: Check if current track changed
+                if (!current_snap_ptr->queue->current.has_value() ||
+                    *current_snap_ptr->queue->current != starting_track) {
                     // Track changed by user
                     util::Logger::debug("PlaybackCollector: Detected track change. Breaking loop.");
                     track_finished = false; // Not finished naturally
@@ -360,27 +332,34 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                         std::chrono::steady_clock::now()
                     });
 
-                    // Advance queue to avoid infinite retry loop - shuffle-aware
+                    // Two Stacks: Advance to next track
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                    if (s.player.shuffle_enabled) {
-                        new_queue->played_indices.insert(new_queue->current_index);
-                        auto next = pick_shuffle_next(*new_queue);
-                        if (next.has_value()) {
-                            new_queue->current_index = *next;
+                    if (new_queue->current.has_value()) {
+                        new_queue->history.push_back(*new_queue->current);
+                    }
+                    if (!new_queue->future.empty()) {
+                        if (s.player.shuffle_enabled) {
+                            uint64_t rand_val;
+                            getrandom(&rand_val, sizeof(rand_val), 0);
+                            size_t idx = rand_val % new_queue->future.size();
+                            new_queue->current = new_queue->future[idx];
+                            new_queue->future.erase(new_queue->future.begin() + idx);
                         } else {
-                            new_queue->current_index = 0;
-                            if (s.player.repeat_mode != model::RepeatMode::All) {
-                                s.player.state = model::PlaybackState::Stopped;
-                            }
+                            // Linear: pop from FRONT (FIFO)
+                            new_queue->current = new_queue->future.front();
+                            new_queue->future.erase(new_queue->future.begin());
+                        }
+                    } else if (s.player.repeat_mode == model::RepeatMode::All) {
+                        // Repeat All: recycle history (maintain add order)
+                        new_queue->future = new_queue->history;
+                        new_queue->history.clear();
+                        if (!new_queue->future.empty()) {
+                            new_queue->current = new_queue->future.front();
+                            new_queue->future.erase(new_queue->future.begin());
                         }
                     } else {
-                        new_queue->current_index++;
-                        if (new_queue->current_index >= new_queue->track_indices.size()) {
-                            new_queue->current_index = 0;
-                            if (s.player.repeat_mode != model::RepeatMode::All) {
-                                s.player.state = model::PlaybackState::Stopped;
-                            }
-                        }
+                        new_queue->current = std::nullopt;
+                        s.player.state = model::PlaybackState::Stopped;
                     }
                     s.queue = new_queue;
                 });
@@ -389,7 +368,7 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 break;
             }
         }
-        
+
         util::Logger::debug("PlaybackCollector: Loop finished. Closing output...");
 
         // Reset clear flag (it was consumed)
@@ -398,51 +377,58 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             util::Logger::debug("PlaybackCollector: Clear flag reset");
         }
 
-        // Handle track finish
+        // Handle track finish (Two Stacks auto-advance)
         if (track_finished) {
-             publisher_->update([&](model::Snapshot& s) {
+            publisher_->update([&](model::Snapshot& s) {
                 if (s.player.repeat_mode == model::RepeatMode::One) {
-                     // Will restart loop next iteration because index didn't change
-                     s.player.playback_position_ms = 0;
+                    // Repeat One: just reset position, keep same current
+                    s.player.playback_position_ms = 0;
                 } else {
-                    // Advance queue
+                    // Two Stacks: advance to next track
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
 
-                    if (s.player.shuffle_enabled) {
-                        // Shuffle mode: mark current as played, pick random unplayed
-                        new_queue->played_indices.insert(new_queue->current_index);
+                    // Push current to history
+                    if (new_queue->current.has_value()) {
+                        new_queue->history.push_back(*new_queue->current);
+                    }
 
-                        auto next = pick_shuffle_next(*new_queue);
-
-                        if (next.has_value()) {
-                            new_queue->current_index = *next;
+                    if (!new_queue->future.empty()) {
+                        if (s.player.shuffle_enabled) {
+                            // Shuffle: CSPRNG pick random from future
+                            uint64_t rand_val;
+                            getrandom(&rand_val, sizeof(rand_val), 0);
+                            size_t idx = rand_val % new_queue->future.size();
+                            new_queue->current = new_queue->future[idx];
+                            new_queue->future.erase(new_queue->future.begin() + idx);
                         } else {
-                            // All tracks played - reset cycle
-                            new_queue->played_indices.clear();
-                            if (s.player.repeat_mode == model::RepeatMode::All) {
-                                next = pick_shuffle_next(*new_queue);
-                                new_queue->current_index = next.value_or(0);
+                            // Linear: pop from FRONT (FIFO)
+                            new_queue->current = new_queue->future.front();
+                            new_queue->future.erase(new_queue->future.begin());
+                        }
+                    } else if (s.player.repeat_mode == model::RepeatMode::All) {
+                        // Repeat All: recycle history (maintain add order)
+                        new_queue->future = new_queue->history;
+                        new_queue->history.clear();
+                        if (!new_queue->future.empty()) {
+                            if (s.player.shuffle_enabled) {
+                                uint64_t rand_val;
+                                getrandom(&rand_val, sizeof(rand_val), 0);
+                                size_t idx = rand_val % new_queue->future.size();
+                                new_queue->current = new_queue->future[idx];
+                                new_queue->future.erase(new_queue->future.begin() + idx);
                             } else {
-                                s.player.state = model::PlaybackState::Stopped;
-                                new_queue->current_index = 0;
+                                new_queue->current = new_queue->future.front();
+                                new_queue->future.erase(new_queue->future.begin());
                             }
                         }
                     } else {
-                        // Linear mode
-                        new_queue->current_index++;
-
-                        if (new_queue->current_index >= new_queue->track_indices.size()) {
-                            if (s.player.repeat_mode == model::RepeatMode::All) {
-                                 new_queue->current_index = 0;
-                            } else {
-                                s.player.state = model::PlaybackState::Stopped;
-                                new_queue->current_index = 0;
-                            }
-                        }
+                        // End of queue, stop
+                        new_queue->current = std::nullopt;
+                        s.player.state = model::PlaybackState::Stopped;
                     }
                     s.queue = new_queue;
                 }
-             });
+            });
         }
         
         // Cleanup

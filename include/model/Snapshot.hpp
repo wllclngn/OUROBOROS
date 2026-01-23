@@ -4,7 +4,6 @@
 #include <vector>
 #include <chrono>
 #include <optional>
-#include <unordered_set>
 
 namespace ouroboros::model {
 
@@ -87,9 +86,13 @@ struct LibraryState {
 };
 
 struct QueueState {
-    std::vector<int> track_indices;  // Indices into LibraryState::tracks, not full Track copies
-    size_t current_index = 0;
-    std::unordered_set<size_t> played_indices;  // Tracks played this shuffle cycle
+    std::vector<int> history;      // Played tracks (oldest at front)
+    std::optional<int> current;    // Currently playing (library index)
+    std::vector<int> future;       // Upcoming tracks (next at back)
+
+    // Convenience methods
+    bool empty() const { return !current.has_value() && future.empty(); }
+    size_t total_size() const { return history.size() + (current.has_value() ? 1 : 0) + future.size(); }
 
     bool operator==(const QueueState&) const = default;
 };

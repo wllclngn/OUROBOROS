@@ -53,26 +53,6 @@ static void signal_handler(int) {
     write(STDOUT_FILENO, show_cursor, 6);
 }
 
-namespace {
-    // Pick random unplayed index for shuffle mode using getrandom() directly
-    std::optional<size_t> pick_shuffle_next(const ouroboros::model::QueueState& queue) {
-        std::vector<size_t> candidates;
-        for (size_t i = 0; i < queue.track_indices.size(); i++) {
-            if (queue.played_indices.find(i) == queue.played_indices.end()) {
-                candidates.push_back(i);
-            }
-        }
-        if (candidates.empty()) return std::nullopt;
-
-        // Get random bytes directly from kernel CSPRNG
-        uint64_t rand_val;
-        getrandom(&rand_val, sizeof(rand_val), 0);
-
-        // Convert to index in range [0, candidates.size())
-        size_t idx = rand_val % candidates.size();
-        return candidates[idx];
-    }
-}
 
 int main() {
     // Set locale for proper Unicode handling (required for wcwidth)
@@ -177,7 +157,7 @@ int main() {
         
         // ========== QUEUE MANAGEMENT ==========
         
-        // Add track to queue
+        // Add track to queue (Two Stacks: push to future)
         event_bus.subscribe(ouroboros::events::Event::Type::AddTrackToQueue,
             [publisher](const ouroboros::events::Event& evt) {
                 publisher->update([evt](ouroboros::model::Snapshot& snap) {
@@ -187,7 +167,7 @@ int main() {
                         return;
                     }
 
-                    // Defensive: Bounds check with detailed logging
+                    // Defensive: Bounds check
                     if (evt.index < 0 || evt.index >= static_cast<int>(snap.library->tracks.size())) {
                         ouroboros::util::Logger::error("AddTrackToQueue: Index out of bounds! index=" +
                             std::to_string(evt.index) + ", library size=" +
@@ -196,8 +176,6 @@ int main() {
                     }
 
                     const auto& track = snap.library->tracks[evt.index];
-                    ouroboros::util::Logger::debug("AddTrackToQueue: Adding index " + std::to_string(evt.index) +
-                        " (title: " + track.title + ")");
 
                     // Defensive: Check queue exists
                     if (!snap.queue) {
@@ -205,160 +183,133 @@ int main() {
                         snap.queue = std::make_shared<ouroboros::model::QueueState>();
                     }
 
-                    // Copy-On-Write Queue - store INDEX not full Track
+                    // Copy-On-Write: Two Stacks model
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
 
-                    // DIAGNOSTIC: Log state before push
-                    size_t size_before = new_queue->track_indices.size();
+                    // Add to future stack (next track at back)
+                    new_queue->future.push_back(evt.index);
 
-                    new_queue->track_indices.push_back(evt.index);
-
-                    // DIAGNOSTIC: Verify what was just added
-                    int just_added = new_queue->track_indices.back();
-                    if (just_added != evt.index) {
-                        ouroboros::util::Logger::error("CORRUPTION DETECTED: pushed " + std::to_string(evt.index) +
-                            " but back() is " + std::to_string(just_added) + " (0x" +
-                            ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(just_added) + ")");
-                    }
-
-                    // DIAGNOSTIC: Verify entire queue integrity
-                    int lib_size = static_cast<int>(snap.library->tracks.size());
-                    for (size_t i = 0; i < new_queue->track_indices.size(); ++i) {
-                        int idx = new_queue->track_indices[i];
-                        if (idx < 0 || idx >= lib_size) {
-                            ouroboros::util::Logger::error("CORRUPTION DETECTED: queue[" + std::to_string(i) +
-                                "] = " + std::to_string(idx) + " (0x" +
-                                ([](int v) { char buf[16]; snprintf(buf, sizeof(buf), "%x", v); return std::string(buf); })(idx) +
-                                ") is out of bounds (lib_size=" + std::to_string(lib_size) + ")");
-                        }
-                    }
-
-                    ouroboros::util::Logger::debug("AddTrackToQueue: Queue size before: " +
-                        std::to_string(size_before) +
-                        ", after: " + std::to_string(new_queue->track_indices.size()));
-
-                    // If queue was empty, start playing
-                    if (new_queue->track_indices.size() == 1) {
-                        new_queue->current_index = 0;
-                        // Set player.current_track_index for immediate UI update (NowPlaying artwork)
+                    // If nothing playing, start playback immediately
+                    if (!new_queue->current.has_value()) {
+                        new_queue->current = new_queue->future.back();
+                        new_queue->future.pop_back();
                         snap.player.current_track_index = evt.index;
-                        ouroboros::util::Logger::debug("AddTrackToQueue: Queue was empty, set current_index=0, track_index=" + std::to_string(evt.index));
+                        ouroboros::util::Logger::debug("AddTrackToQueue: Started playback with track " +
+                            std::to_string(evt.index));
                     }
 
                     snap.queue = new_queue;
                     ouroboros::util::Logger::info("Added to queue: " + track.title +
-                        " [Queue now has " + std::to_string(new_queue->track_indices.size()) +
-                        " tracks, current_index=" + std::to_string(new_queue->current_index) + "]");
+                        " [Queue: " + std::to_string(new_queue->history.size()) + " played, " +
+                        (new_queue->current.has_value() ? "1 current, " : "0 current, ") +
+                        std::to_string(new_queue->future.size()) + " upcoming]");
                 });
             });
         
-        // Next track (shuffle-aware)
+        // Next track (Two Stacks: push current to history, pop from future)
         event_bus.subscribe(ouroboros::events::Event::Type::NextTrack,
             [publisher](const ouroboros::events::Event&) {
                 publisher->update([](ouroboros::model::Snapshot& snap) {
-                    if (snap.queue->track_indices.empty()) {
-                        ouroboros::util::Logger::warn("NextTrack: Queue is empty, cannot advance");
-                        return;
+                    auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
+
+                    // Push current to history
+                    if (new_queue->current.has_value()) {
+                        new_queue->history.push_back(*new_queue->current);
                     }
 
-                    auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
-                    size_t old_index = new_queue->current_index;
-
-                    if (snap.player.shuffle_enabled) {
-                        // Shuffle mode: mark current as played, pick random unplayed
-                        new_queue->played_indices.insert(new_queue->current_index);
-
-                        auto next = pick_shuffle_next(*new_queue);
-                        if (next.has_value()) {
-                            new_queue->current_index = *next;
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("NextTrack (shuffle): Advanced from index " +
-                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                                " (played " + std::to_string(new_queue->played_indices.size()) + "/" +
-                                std::to_string(new_queue->track_indices.size()) + ")");
+                    if (!new_queue->future.empty()) {
+                        if (snap.player.shuffle_enabled) {
+                            // Shuffle: CSPRNG pick random from future
+                            uint64_t rand_val;
+                            getrandom(&rand_val, sizeof(rand_val), 0);
+                            size_t idx = rand_val % new_queue->future.size();
+                            new_queue->current = new_queue->future[idx];
+                            new_queue->future.erase(new_queue->future.begin() + idx);
+                            ouroboros::util::Logger::info("NextTrack (shuffle): Random pick, " +
+                                std::to_string(new_queue->future.size()) + " remaining in future");
                         } else {
-                            // All tracks played - reset cycle
-                            new_queue->played_indices.clear();
-                            next = pick_shuffle_next(*new_queue);
-                            new_queue->current_index = next.value_or(0);
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("NextTrack (shuffle): Cycle complete, reset. New index: " +
-                                std::to_string(new_queue->current_index));
+                            // Linear: pop from FRONT of future (FIFO order)
+                            new_queue->current = new_queue->future.front();
+                            new_queue->future.erase(new_queue->future.begin());
+                            ouroboros::util::Logger::info("NextTrack: Advanced to next, " +
+                                std::to_string(new_queue->future.size()) + " remaining");
+                        }
+                    } else if (snap.player.repeat_mode == ouroboros::model::RepeatMode::All) {
+                        // Repeat All: recycle history back to future (maintain add order)
+                        new_queue->future = new_queue->history;
+                        new_queue->history.clear();
+                        if (!new_queue->future.empty()) {
+                            if (snap.player.shuffle_enabled) {
+                                uint64_t rand_val;
+                                getrandom(&rand_val, sizeof(rand_val), 0);
+                                size_t idx = rand_val % new_queue->future.size();
+                                new_queue->current = new_queue->future[idx];
+                                new_queue->future.erase(new_queue->future.begin() + idx);
+                            } else {
+                                new_queue->current = new_queue->future.front();
+                                new_queue->future.erase(new_queue->future.begin());
+                            }
+                            ouroboros::util::Logger::info("NextTrack: Repeat All - recycled " +
+                                std::to_string(new_queue->future.size() + 1) + " tracks");
                         }
                     } else {
-                        // Linear mode
-                        if (new_queue->current_index + 1 < new_queue->track_indices.size()) {
-                            new_queue->current_index++;
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("NextTrack: Advanced from index " +
-                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                                " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
-                        } else {
-                            ouroboros::util::Logger::warn("NextTrack: Already at last track (index " +
-                                std::to_string(new_queue->current_index) + " of " +
-                                std::to_string(new_queue->track_indices.size()) + "), cannot advance");
-                        }
+                        // No more tracks, stop
+                        new_queue->current = std::nullopt;
+                        snap.player.state = ouroboros::model::PlaybackState::Stopped;
+                        ouroboros::util::Logger::info("NextTrack: End of queue, stopped");
                     }
+
+                    snap.queue = new_queue;
                 });
             });
         
-        // Previous track (shuffle-aware: same as Next in shuffle mode)
+        // Previous track (Two Stacks: ALWAYS deterministic - pop from history)
         event_bus.subscribe(ouroboros::events::Event::Type::PrevTrack,
             [publisher](const ouroboros::events::Event&) {
-                 publisher->update([](ouroboros::model::Snapshot& snap) {
-                    if (snap.queue->track_indices.empty()) {
-                        ouroboros::util::Logger::warn("PrevTrack: Queue is empty, cannot go back");
-                        return;
-                    }
-
+                ouroboros::util::Logger::info("PrevTrack: Event received");
+                publisher->update([](ouroboros::model::Snapshot& snap) {
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
-                    size_t old_index = new_queue->current_index;
 
-                    if (snap.player.shuffle_enabled) {
-                        // Shuffle mode: same as Next - pick random unplayed
-                        new_queue->played_indices.insert(new_queue->current_index);
+                    ouroboros::util::Logger::info("PrevTrack: history=" +
+                        std::to_string(new_queue->history.size()) + ", current=" +
+                        (new_queue->current.has_value() ? std::to_string(*new_queue->current) : "none") +
+                        ", future=" + std::to_string(new_queue->future.size()));
 
-                        auto next = pick_shuffle_next(*new_queue);
-                        if (next.has_value()) {
-                            new_queue->current_index = *next;
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("PrevTrack (shuffle): Picked random from index " +
-                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                                " (played " + std::to_string(new_queue->played_indices.size()) + "/" +
-                                std::to_string(new_queue->track_indices.size()) + ")");
-                        } else {
-                            // All tracks played - reset cycle
-                            new_queue->played_indices.clear();
-                            next = pick_shuffle_next(*new_queue);
-                            new_queue->current_index = next.value_or(0);
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("PrevTrack (shuffle): Cycle complete, reset. New index: " +
-                                std::to_string(new_queue->current_index));
-                        }
-                    } else {
-                        // Linear mode
-                        if (new_queue->current_index > 0) {
-                            new_queue->current_index--;
-                            snap.queue = new_queue;
-                            ouroboros::util::Logger::info("PrevTrack: Went back from index " +
-                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                                " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
-                        } else {
-                            ouroboros::util::Logger::warn("PrevTrack: Already at first track (index 0), cannot go back");
-                        }
+                    // Push current to FRONT of future (so it becomes "next" if we go forward again)
+                    if (new_queue->current.has_value()) {
+                        new_queue->future.insert(new_queue->future.begin(), *new_queue->current);
                     }
+
+                    if (!new_queue->history.empty()) {
+                        // Pop from history - ALWAYS deterministic, even in shuffle
+                        new_queue->current = new_queue->history.back();
+                        new_queue->history.pop_back();
+                        ouroboros::util::Logger::info("PrevTrack: Back to previous track " +
+                            std::to_string(*new_queue->current) + ", " +
+                            std::to_string(new_queue->history.size()) + " remaining in history");
+                    } else {
+                        // At beginning - restore current from future
+                        if (!new_queue->future.empty()) {
+                            new_queue->current = new_queue->future.front();
+                            new_queue->future.erase(new_queue->future.begin());
+                        }
+                        ouroboros::util::Logger::warn("PrevTrack: At beginning of history");
+                    }
+
+                    snap.queue = new_queue;
                 });
             });
 
-        // Clear queue
+        // Clear queue (Two Stacks: reset all stacks)
         event_bus.subscribe(ouroboros::events::Event::Type::ClearQueue,
             [publisher](const ouroboros::events::Event&) {
                 publisher->update([](ouroboros::model::Snapshot& snap) {
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>();
-                    new_queue->track_indices.clear();
-                    new_queue->current_index = 0;
+                    // All vectors default empty, current defaults to nullopt
                     snap.queue = new_queue;
-                    ouroboros::util::Logger::info("ClearQueue: Queue cleared");
+                    snap.player.state = ouroboros::model::PlaybackState::Stopped;
+                    snap.player.current_track_index = std::nullopt;
+                    ouroboros::util::Logger::info("ClearQueue: Queue cleared, playback stopped");
                 });
             });
         
@@ -436,18 +387,14 @@ int main() {
                  });
             });
 
-        // Shuffle Toggle
+        // Shuffle Toggle (Two Stacks: history IS the play order, no reset needed)
         event_bus.subscribe(ouroboros::events::Event::Type::ShuffleToggle,
             [publisher](const ouroboros::events::Event&) {
-                 publisher->update([](ouroboros::model::Snapshot& snap) {
+                publisher->update([](ouroboros::model::Snapshot& snap) {
                     snap.player.shuffle_enabled = !snap.player.shuffle_enabled;
-                    // Clear played indices when toggling shuffle
-                    if (snap.queue) {
-                        auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
-                        new_queue->played_indices.clear();
-                        snap.queue = new_queue;
-                    }
-                 });
+                    ouroboros::util::Logger::info("Shuffle: " +
+                        std::string(snap.player.shuffle_enabled ? "ON" : "OFF"));
+                });
             });
 
         ouroboros::util::Logger::info("EventBus configured");

@@ -8,7 +8,6 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg) with full metadata extraction
 - **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
 - **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
-- **CSPRNG Shuffle**: Linux `getrandom()` syscall for cryptographically secure shuffle (ChaCha20-based, no C++ `<random>`)
 
 ### Terminal Graphics & UI
 - **Terminal Support**: Kitty, WezTerm, Konsole, Ghostty, xterm, mlterm, iTerm2. As of December 2025, Kitty is recommended for its performance.
@@ -62,6 +61,14 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
+
+### Two Stacks Queue System
+- **Proper Previous/Next Navigation**: Previous always returns to the actual previous track, even in shuffle mode
+- **Three-Part State**: `history` (played tracks) + `current` (now playing) + `future` (upcoming tracks)
+- **Deterministic Back-Navigation**: History stack preserves exact play order for reliable Previous behavior
+- **Shuffle-Aware Next**: CSPRNG random selection from future stack via Linux `getrandom()` syscall
+- **Repeat All Support**: Seamlessly recycles history back to future when queue exhausted
+- **FIFO Queue Order**: Tracks play in the order they were added (first-in, first-out)
 
 ## Screenshots
 

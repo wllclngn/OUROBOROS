@@ -334,6 +334,9 @@ void Renderer::handle_input() {
 }
 
 void Renderer::handle_input_event(const InputEvent& event) {
+    ouroboros::util::Logger::debug("handle_input_event: key=" + std::to_string(event.key) +
+        " (char='" + std::string(1, static_cast<char>(event.key)) + "') name=" + event.key_name);
+
     // Check if current widget is capturing text input
     bool input_captured = (focus_ == Focus::Search);
 
@@ -343,8 +346,6 @@ void Renderer::handle_input_event(const InputEvent& event) {
         should_quit_ = true;
         return;
     }
-
-    ouroboros::util::Logger::debug("handle_input: Publishing event...");
     auto& bus = events::EventBus::instance();
 
     // Play/Pause (from TOML: play)
@@ -357,6 +358,7 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Next track (from TOML: next)
     if (!input_captured && matches_keybind(event, "next")) {
+        ouroboros::util::Logger::info("Renderer: NextTrack keybind matched");
         events::Event evt;
         evt.type = events::Event::Type::NextTrack;
         bus.publish(evt);
@@ -365,6 +367,7 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Previous track (from TOML: prev)
     if (!input_captured && matches_keybind(event, "prev")) {
+        ouroboros::util::Logger::info("Renderer: PrevTrack keybind matched");
         events::Event evt;
         evt.type = events::Event::Type::PrevTrack;
         bus.publish(evt);
