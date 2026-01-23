@@ -8,6 +8,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg) with full metadata extraction
 - **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
 - **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
+- **CSPRNG Shuffle**: Linux `getrandom()` syscall for cryptographically secure shuffle (ChaCha20-based, no C++ `<random>`)
 
 ### Terminal Graphics & UI
 - **Terminal Support**: Kitty, WezTerm, Konsole, Ghostty, xterm, mlterm, iTerm2. As of December 2025, Kitty is recommended for its performance.
