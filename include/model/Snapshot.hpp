@@ -4,6 +4,7 @@
 #include <vector>
 #include <chrono>
 #include <optional>
+#include <unordered_set>
 
 namespace ouroboros::model {
 
@@ -88,6 +89,7 @@ struct LibraryState {
 struct QueueState {
     std::vector<int> track_indices;  // Indices into LibraryState::tracks, not full Track copies
     size_t current_index = 0;
+    std::unordered_set<size_t> played_indices;  // Tracks played this shuffle cycle
 
     bool operator==(const QueueState&) const = default;
 };

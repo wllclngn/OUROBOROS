@@ -241,7 +241,24 @@ Config ConfigLoader::create_default_config() {
     if (home) {
         cfg.music_directories.emplace_back(std::filesystem::path(home) / "Music");
     }
-    // Keybinds are loaded from TOML - no hardcoded defaults here
+
+    // Default keybinds (can be overridden by TOML config)
+    cfg.keybinds["quit"] = "q";
+    cfg.keybinds["play"] = "space";
+    cfg.keybinds["next"] = "n";
+    cfg.keybinds["prev"] = "N";
+    cfg.keybinds["volume_up"] = "+";
+    cfg.keybinds["volume_down"] = "-";
+    cfg.keybinds["seek_forward"] = "right";
+    cfg.keybinds["seek_backward"] = "left";
+    cfg.keybinds["repeat_cycle"] = "r";
+    cfg.keybinds["shuffle_toggle"] = "s";
+    cfg.keybinds["toggle_album_view"] = "ctrl+a";
+    cfg.keybinds["clear_queue"] = "ctrl+d";
+    cfg.keybinds["search"] = "ctrl+f";
+    cfg.keybinds["help"] = "?";
+    cfg.keybinds["tab"] = "tab";
+
     return cfg;
 }
 

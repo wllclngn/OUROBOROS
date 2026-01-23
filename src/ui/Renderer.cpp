@@ -67,7 +67,6 @@ Renderer::Renderer(std::shared_ptr<backend::SnapshotPublisher> publisher)
     header_ = std::make_unique<widgets::NowPlaying>();
     browser_ = std::make_unique<widgets::Browser>();
     queue_ = std::make_unique<widgets::Queue>();
-    status_bar_ = std::make_unique<widgets::StatusBar>();
     album_browser_ = std::make_unique<widgets::AlbumBrowser>();
     help_overlay_ = std::make_unique<widgets::HelpOverlay>();
     global_search_box_ = std::make_unique<widgets::SearchBox>();
@@ -416,6 +415,14 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
+    // Shuffle toggle (from TOML: shuffle_toggle)
+    if (!input_captured && matches_keybind(event, "shuffle_toggle")) {
+        events::Event evt;
+        evt.type = events::Event::Type::ShuffleToggle;
+        bus.publish(evt);
+        return;
+    }
+
     // Toggle album view (from TOML: toggle_album_view)
     if (matches_keybind(event, "toggle_album_view")) {
         // If closing album view, clear all Kitty graphics
@@ -493,8 +500,6 @@ void Renderer::handle_input_event(const InputEvent& event) {
         // Queue has focus
         queue_->handle_input(event);
     }
-
-    status_bar_->handle_input(event);
 }
 
 bool Renderer::should_quit() const {

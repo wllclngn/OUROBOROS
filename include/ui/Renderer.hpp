@@ -5,7 +5,6 @@
 #include "ui/widgets/NowPlaying.hpp"
 #include "ui/widgets/Browser.hpp"
 #include "ui/widgets/Queue.hpp"
-#include "ui/widgets/StatusBar.hpp"
 #include "ui/widgets/SearchBox.hpp"
 #include "ui/widgets/AlbumBrowser.hpp"
 #include "ui/widgets/HelpOverlay.hpp"
@@ -35,13 +34,11 @@ private:
     LayoutRect browser_rect_;
     LayoutRect header_rect_;
     LayoutRect queue_rect_;
-    LayoutRect status_rect_;
 
     // Widgets
     std::unique_ptr<widgets::NowPlaying> header_;
     std::unique_ptr<widgets::Browser> browser_;
     std::unique_ptr<widgets::Queue> queue_;
-    std::unique_ptr<widgets::StatusBar> status_bar_;
     std::unique_ptr<widgets::AlbumBrowser> album_browser_;
     std::unique_ptr<widgets::HelpOverlay> help_overlay_;
 

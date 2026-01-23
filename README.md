@@ -5,7 +5,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 **Key Features:**
 
 ### Audio System
-- **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis with full metadata extraction
+- **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg) with full metadata extraction
 - **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
 - **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
 
@@ -120,7 +120,7 @@ sudo cmake --install build
 - **Compiler**: GCC 13+ or Clang 16+ with C++23 support
 - **Build System**: CMake 3.20+, Make
 - **Audio Output**: PipeWire (`libpipewire-0.3`, `libspa-0.2`)
-- **Audio Codecs**: libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG)
+- **Audio Codecs**: libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG), FFmpeg (M4A/AAC)
 - **Unicode**: ICU (`icu-uc`, `icu-i18n`) for case-insensitive sorting and diacritic normalization
 - **Crypto**: OpenSSL (SHA-256 for content-addressed artwork storage)
 - **Image Support**: stb_image, stb_image_resize2 (auto-downloaded by CMake)
@@ -128,13 +128,13 @@ sudo cmake --install build
 ### Install Dependencies: Arch Linux
 
 ```bash
-sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis openssl icu
+sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis ffmpeg openssl icu
 ```
 
 ### Install Dependencies: Debian Linux
 
 ```bash
-sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libssl-dev cmake
+sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libavformat-dev libavcodec-dev libswresample-dev libssl-dev cmake
 ```
 
 ### Run Without Installing
@@ -234,6 +234,7 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 - **Queue**: `Enter` (add to queue), `Ctrl+d` (clear queue), `Tab` (switch focus)
 - **Search**: `Ctrl+f` (toggle search box)
 - **Volume**: `+`/`-` (adjust ±5%)
+- **Modes**: `r` (cycle repeat), `s` (toggle shuffle)
 - **Views**: `Ctrl+a` (toggle album grid)
 - **Help**: `?` (toggle help overlay), `q` (quit)
 
@@ -302,6 +303,7 @@ Built with:
 - **libmpg123** - MP3 decoding
 - **libsndfile** - FLAC/WAV decoding
 - **libvorbisfile** - OGG/Vorbis decoding
+- **FFmpeg** (`libavformat`, `libavcodec`, `libswresample`) - M4A/AAC decoding
 - **stb_image** - Image loading (public domain)
 - **stb_image_resize2** - Image resizing (public domain)
 - **OpenSSL** - SHA-256 hashing for artwork cache
@@ -318,6 +320,18 @@ Built with:
 - **Hardware-aware parallelism** (thread pools, async decoding)
 - **Full Unicode support** (ICU normalization, 150+ languages)
 - **30 FPS rendering** with sub-millisecond snapshot reads
+
+## Security
+
+### Cryptographically Secure Shuffle
+
+OUROBOROS uses the Linux `getrandom()` syscall directly for shuffle randomness, providing cryptographically secure pseudo-random number generation (CSPRNG). This ensures:
+
+- **Unpredictable shuffle order** - Cannot be guessed or predicted
+- **Proper entropy** - Each random pick reads directly from the kernel's CSPRNG (ChaCha20-based with BLAKE2s on kernel 5.17+)
+- **No weak fallbacks** - Direct syscall, no `/dev/urandom` file descriptors, no C++ `<random>` library
+
+While shuffle randomness doesn't require cryptographic strength, using CSPRNG is best practice and demonstrates security-conscious design with zero performance cost.
 
 ## Technical Documentation
 

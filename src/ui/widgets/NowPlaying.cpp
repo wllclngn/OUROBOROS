@@ -249,6 +249,13 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         case model::RepeatMode::All:  repeat_str = "ALL"; break;
     }
     draw_status_part(repeat_str, Style{});
+
+    // Separator bullet
+    draw_status_part(" • ", Style{Color::Cyan, Color::Default, Attribute::Dim});
+
+    // Shuffle mode
+    draw_status_part("SHUFFLE: ", Style{});
+    draw_status_part(snap.player.shuffle_enabled ? "ON" : "OFF", Style{});
 }
 
 void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*force_render*/) {

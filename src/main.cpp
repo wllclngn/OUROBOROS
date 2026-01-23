@@ -22,6 +22,9 @@
 #include <unistd.h>
 #include <poll.h>
 #include <filesystem>
+#include <sys/random.h>
+#include <optional>
+#include <vector>
 
 using namespace std::chrono_literals;
 
@@ -48,6 +51,27 @@ static void signal_handler(int) {
     // Full cleanup happens when main loop exits normally
     const char* show_cursor = "\033[?25h";
     write(STDOUT_FILENO, show_cursor, 6);
+}
+
+namespace {
+    // Pick random unplayed index for shuffle mode using getrandom() directly
+    std::optional<size_t> pick_shuffle_next(const ouroboros::model::QueueState& queue) {
+        std::vector<size_t> candidates;
+        for (size_t i = 0; i < queue.track_indices.size(); i++) {
+            if (queue.played_indices.find(i) == queue.played_indices.end()) {
+                candidates.push_back(i);
+            }
+        }
+        if (candidates.empty()) return std::nullopt;
+
+        // Get random bytes directly from kernel CSPRNG
+        uint64_t rand_val;
+        getrandom(&rand_val, sizeof(rand_val), 0);
+
+        // Convert to index in range [0, candidates.size())
+        size_t idx = rand_val % candidates.size();
+        return candidates[idx];
+    }
 }
 
 int main() {
@@ -228,7 +252,7 @@ int main() {
                 });
             });
         
-        // Next track
+        // Next track (shuffle-aware)
         event_bus.subscribe(ouroboros::events::Event::Type::NextTrack,
             [publisher](const ouroboros::events::Event&) {
                 publisher->update([](ouroboros::model::Snapshot& snap) {
@@ -240,21 +264,45 @@ int main() {
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
                     size_t old_index = new_queue->current_index;
 
-                    if (new_queue->current_index + 1 < new_queue->track_indices.size()) {
-                        new_queue->current_index++;
-                        snap.queue = new_queue;
-                        ouroboros::util::Logger::info("NextTrack: Advanced from index " +
-                            std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                            " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
+                    if (snap.player.shuffle_enabled) {
+                        // Shuffle mode: mark current as played, pick random unplayed
+                        new_queue->played_indices.insert(new_queue->current_index);
+
+                        auto next = pick_shuffle_next(*new_queue);
+                        if (next.has_value()) {
+                            new_queue->current_index = *next;
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("NextTrack (shuffle): Advanced from index " +
+                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
+                                " (played " + std::to_string(new_queue->played_indices.size()) + "/" +
+                                std::to_string(new_queue->track_indices.size()) + ")");
+                        } else {
+                            // All tracks played - reset cycle
+                            new_queue->played_indices.clear();
+                            next = pick_shuffle_next(*new_queue);
+                            new_queue->current_index = next.value_or(0);
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("NextTrack (shuffle): Cycle complete, reset. New index: " +
+                                std::to_string(new_queue->current_index));
+                        }
                     } else {
-                        ouroboros::util::Logger::warn("NextTrack: Already at last track (index " +
-                            std::to_string(new_queue->current_index) + " of " +
-                            std::to_string(new_queue->track_indices.size()) + "), cannot advance");
+                        // Linear mode
+                        if (new_queue->current_index + 1 < new_queue->track_indices.size()) {
+                            new_queue->current_index++;
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("NextTrack: Advanced from index " +
+                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
+                                " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
+                        } else {
+                            ouroboros::util::Logger::warn("NextTrack: Already at last track (index " +
+                                std::to_string(new_queue->current_index) + " of " +
+                                std::to_string(new_queue->track_indices.size()) + "), cannot advance");
+                        }
                     }
                 });
             });
         
-        // Previous track
+        // Previous track (shuffle-aware: same as Next in shuffle mode)
         event_bus.subscribe(ouroboros::events::Event::Type::PrevTrack,
             [publisher](const ouroboros::events::Event&) {
                  publisher->update([](ouroboros::model::Snapshot& snap) {
@@ -266,14 +314,38 @@ int main() {
                     auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
                     size_t old_index = new_queue->current_index;
 
-                    if (new_queue->current_index > 0) {
-                        new_queue->current_index--;
-                        snap.queue = new_queue;
-                        ouroboros::util::Logger::info("PrevTrack: Went back from index " +
-                            std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
-                            " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
+                    if (snap.player.shuffle_enabled) {
+                        // Shuffle mode: same as Next - pick random unplayed
+                        new_queue->played_indices.insert(new_queue->current_index);
+
+                        auto next = pick_shuffle_next(*new_queue);
+                        if (next.has_value()) {
+                            new_queue->current_index = *next;
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("PrevTrack (shuffle): Picked random from index " +
+                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
+                                " (played " + std::to_string(new_queue->played_indices.size()) + "/" +
+                                std::to_string(new_queue->track_indices.size()) + ")");
+                        } else {
+                            // All tracks played - reset cycle
+                            new_queue->played_indices.clear();
+                            next = pick_shuffle_next(*new_queue);
+                            new_queue->current_index = next.value_or(0);
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("PrevTrack (shuffle): Cycle complete, reset. New index: " +
+                                std::to_string(new_queue->current_index));
+                        }
                     } else {
-                        ouroboros::util::Logger::warn("PrevTrack: Already at first track (index 0), cannot go back");
+                        // Linear mode
+                        if (new_queue->current_index > 0) {
+                            new_queue->current_index--;
+                            snap.queue = new_queue;
+                            ouroboros::util::Logger::info("PrevTrack: Went back from index " +
+                                std::to_string(old_index) + " to " + std::to_string(new_queue->current_index) +
+                                " (queue size: " + std::to_string(new_queue->track_indices.size()) + ")");
+                        } else {
+                            ouroboros::util::Logger::warn("PrevTrack: Already at first track (index 0), cannot go back");
+                        }
                     }
                 });
             });
@@ -363,7 +435,21 @@ int main() {
                     }
                  });
             });
-        
+
+        // Shuffle Toggle
+        event_bus.subscribe(ouroboros::events::Event::Type::ShuffleToggle,
+            [publisher](const ouroboros::events::Event&) {
+                 publisher->update([](ouroboros::model::Snapshot& snap) {
+                    snap.player.shuffle_enabled = !snap.player.shuffle_enabled;
+                    // Clear played indices when toggling shuffle
+                    if (snap.queue) {
+                        auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
+                        new_queue->played_indices.clear();
+                        snap.queue = new_queue;
+                    }
+                 });
+            });
+
         ouroboros::util::Logger::info("EventBus configured");
 
         // Create renderer (widgets are created internally)

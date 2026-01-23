@@ -26,6 +26,7 @@ struct Event {
         VolumeUp,
         VolumeDown,
         RepeatToggle,
+        ShuffleToggle,
     };
     Type type;
     int index = -1;           // For track selection

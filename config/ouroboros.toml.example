@@ -60,7 +60,10 @@ seek_forward = "right"
 seek_backward = "left"
 
 # Repeat mode cycle (off -> one -> all)
-repeat_cycle = "R"
+repeat_cycle = "r"
+
+# Shuffle toggle (on/off)
+shuffle_toggle = "s"
 
 # Toggle album art grid view
 toggle_album_view = "ctrl+a"

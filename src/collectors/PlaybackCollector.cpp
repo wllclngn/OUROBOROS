@@ -11,8 +11,30 @@
 #include <memory>
 #include <filesystem>
 #include <cmath>
+#include <sys/random.h>
 
 namespace ouroboros::collectors {
+
+namespace {
+    // Pick random unplayed index for shuffle mode using getrandom() directly
+    std::optional<size_t> pick_shuffle_next(const model::QueueState& queue) {
+        std::vector<size_t> candidates;
+        for (size_t i = 0; i < queue.track_indices.size(); i++) {
+            if (queue.played_indices.find(i) == queue.played_indices.end()) {
+                candidates.push_back(i);
+            }
+        }
+        if (candidates.empty()) return std::nullopt;
+
+        // Get random bytes directly from kernel CSPRNG
+        uint64_t rand_val;
+        getrandom(&rand_val, sizeof(rand_val), 0);
+
+        // Convert to index in range [0, candidates.size())
+        size_t idx = rand_val % candidates.size();
+        return candidates[idx];
+    }
+}
 
 PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher> publisher)
     : publisher_(publisher) {
@@ -117,11 +139,17 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                     std::chrono::steady_clock::now()
                 });
 
-                // Advance queue (COW)
+                // Advance queue (COW) - shuffle-aware
                 auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                new_queue->current_index++;
-                if (new_queue->current_index >= new_queue->track_indices.size()) {
-                    new_queue->current_index = 0;
+                if (s.player.shuffle_enabled) {
+                    new_queue->played_indices.insert(new_queue->current_index);
+                    auto next = pick_shuffle_next(*new_queue);
+                    new_queue->current_index = next.value_or(0);
+                } else {
+                    new_queue->current_index++;
+                    if (new_queue->current_index >= new_queue->track_indices.size()) {
+                        new_queue->current_index = 0;
+                    }
                 }
                 s.queue = new_queue;
             });
@@ -332,13 +360,26 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                         std::chrono::steady_clock::now()
                     });
 
-                    // Advance queue to avoid infinite retry loop
+                    // Advance queue to avoid infinite retry loop - shuffle-aware
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                    new_queue->current_index++;
-                    if (new_queue->current_index >= new_queue->track_indices.size()) {
-                        new_queue->current_index = 0; // Wrap or stop
-                        if (s.player.repeat_mode != model::RepeatMode::All) {
-                            s.player.state = model::PlaybackState::Stopped;
+                    if (s.player.shuffle_enabled) {
+                        new_queue->played_indices.insert(new_queue->current_index);
+                        auto next = pick_shuffle_next(*new_queue);
+                        if (next.has_value()) {
+                            new_queue->current_index = *next;
+                        } else {
+                            new_queue->current_index = 0;
+                            if (s.player.repeat_mode != model::RepeatMode::All) {
+                                s.player.state = model::PlaybackState::Stopped;
+                            }
+                        }
+                    } else {
+                        new_queue->current_index++;
+                        if (new_queue->current_index >= new_queue->track_indices.size()) {
+                            new_queue->current_index = 0;
+                            if (s.player.repeat_mode != model::RepeatMode::All) {
+                                s.player.state = model::PlaybackState::Stopped;
+                            }
                         }
                     }
                     s.queue = new_queue;
@@ -366,14 +407,37 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 } else {
                     // Advance queue
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                    new_queue->current_index++;
 
-                    if (new_queue->current_index >= new_queue->track_indices.size()) {
-                        if (s.player.repeat_mode == model::RepeatMode::All) {
-                             new_queue->current_index = 0;
+                    if (s.player.shuffle_enabled) {
+                        // Shuffle mode: mark current as played, pick random unplayed
+                        new_queue->played_indices.insert(new_queue->current_index);
+
+                        auto next = pick_shuffle_next(*new_queue);
+
+                        if (next.has_value()) {
+                            new_queue->current_index = *next;
                         } else {
-                            s.player.state = model::PlaybackState::Stopped;
-                            new_queue->current_index = 0;
+                            // All tracks played - reset cycle
+                            new_queue->played_indices.clear();
+                            if (s.player.repeat_mode == model::RepeatMode::All) {
+                                next = pick_shuffle_next(*new_queue);
+                                new_queue->current_index = next.value_or(0);
+                            } else {
+                                s.player.state = model::PlaybackState::Stopped;
+                                new_queue->current_index = 0;
+                            }
+                        }
+                    } else {
+                        // Linear mode
+                        new_queue->current_index++;
+
+                        if (new_queue->current_index >= new_queue->track_indices.size()) {
+                            if (s.player.repeat_mode == model::RepeatMode::All) {
+                                 new_queue->current_index = 0;
+                            } else {
+                                s.player.state = model::PlaybackState::Stopped;
+                                new_queue->current_index = 0;
+                            }
                         }
                     }
                     s.queue = new_queue;

@@ -1,9 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 1.7.1 LANGUAGES CXX)
+project(ouroboros VERSION 1.8.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Force full rebuild on every configure (touch timestamp file)
+string(TIMESTAMP BUILD_TIME "%Y-%m-%d %H:%M:%S")
+file(WRITE "${CMAKE_BINARY_DIR}/build_timestamp.txt" "${BUILD_TIME}\n")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -73,7 +77,6 @@ add_executable(ouroboros
     src/ui/widgets/Browser.cpp
     src/ui/widgets/Queue.cpp
     src/ui/widgets/NowPlaying.cpp
-    src/ui/widgets/StatusBar.cpp
     src/ui/widgets/SearchBox.cpp
     src/ui/widgets/AlbumBrowser.cpp
     src/ui/widgets/HelpOverlay.cpp
@@ -96,6 +99,12 @@ add_executable(ouroboros
     src/audio/PipeWireOutput.cpp
     src/audio/PipeWireContext.cpp
 )
+
+# Force full rebuild on configure - all sources depend on CMakeLists.txt and timestamp
+file(GLOB_RECURSE ALL_CPP_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp")
+set_source_files_properties(${ALL_CPP_SOURCES} PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_LIST_FILE};${CMAKE_BINARY_DIR}/build_timestamp.txt")
+
 target_include_directories(ouroboros PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor
