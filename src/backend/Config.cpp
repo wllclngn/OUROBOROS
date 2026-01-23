@@ -264,6 +264,8 @@ Config ConfigLoader::create_default_config() {
     // Navigation keybinds (used by Browser, Queue, AlbumBrowser)
     cfg.keybinds["nav_up"] = "k";
     cfg.keybinds["nav_down"] = "j";
+    cfg.keybinds["nav_left"] = "h";
+    cfg.keybinds["nav_right"] = "l";
     cfg.keybinds["nav_select_up"] = "K";
     cfg.keybinds["nav_select_down"] = "J";
     cfg.keybinds["select"] = "enter";
