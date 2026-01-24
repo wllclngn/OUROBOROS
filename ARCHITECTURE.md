@@ -19,8 +19,9 @@ This document provides a comprehensive technical deep-dive into OUROBOROS's arch
 11. [Scattered Album Detection & Merging](#scattered-album-detection--merging)
 12. [Unicode Support](#unicode-support)
 13. [Performance Characteristics](#performance-characteristics)
-14. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
-15. [Project Structure](#project-structure)
+14. [Security](#security)
+15. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
+16. [Project Structure](#project-structure)
 
 ---
 
@@ -95,7 +96,7 @@ OUROBOROS runs 4+ threads concurrently:
 **Immutable State**: Each `Snapshot` is a point-in-time view containing:
 - `PlayerState` (playback position, volume, repeat mode)
 - `LibraryState` (tracks, albums, artists)
-- `QueueState` (current queue, index)
+- `QueueState` (Two Stacks: history/current/future for deterministic Previous)
 - `UIState` (focus, search query, viewport)
 
 **Double Buffering**: Front buffer for reads, back buffer for atomic swap publishing
@@ -137,14 +138,14 @@ if (future.wait_for(0s) == std::future_status::ready) {
 ### Architecture Overview
 
 ```
-File → Format Detection → Decoder (MP3/FLAC/OGG/WAV) → PCM Float Buffer → PipeWire → Speakers
-         ↓                     ↓                              ↓
-    Extension + Magic       Per-track sample rate       Format negotiation
+File → Format Detection → Decoder (MP3/FLAC/OGG/WAV/M4A) → PCM Float Buffer → PipeWire → Speakers
+         ↓                      ↓                               ↓
+    Extension + Magic        Per-track sample rate        Format negotiation
 ```
 
 ### Format Detection
 
-1. **Extension-based**: Check file extension (`.mp3`, `.flac`, `.ogg`, `.wav`)
+1. **Extension-based**: Check file extension (`.mp3`, `.flac`, `.ogg`, `.wav`, `.m4a`)
 2. **Magic Bytes**: Verify file headers to prevent misclassification
 3. **Decoder Selection**: Polymorphic `AudioDecoder` base class
 
@@ -171,6 +172,12 @@ File → Format Detection → Decoder (MP3/FLAC/OGG/WAV) → PCM Float Buffer �
 - Uses libsndfile
 - Uncompressed PCM
 - Fast decoding (no decompression)
+
+**M4ADecoder** (`src/audio/M4ADecoder.cpp`):
+- Uses FFmpeg (libavformat, libavcodec, libswresample)
+- AAC/ALAC support in MP4 container
+- iTunes-style metadata extraction
+- Accurate seeking via FFmpeg's timestamp API
 
 ### PipeWire Integration
 
@@ -976,6 +983,20 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 
 ---
 
+## Security
+
+### Cryptographically Secure Shuffle
+
+OUROBOROS uses the Linux `getrandom()` syscall directly for shuffle randomness, providing cryptographically secure pseudo-random number generation (CSPRNG). This ensures:
+
+- **Unpredictable shuffle order** - Cannot be guessed or predicted
+- **Proper entropy** - Each random pick reads directly from the kernel's CSPRNG (ChaCha20-based with BLAKE2s on kernel 5.17+)
+- **No weak fallbacks** - Direct syscall, no `/dev/urandom` file descriptors, no C++ `<random>` library
+
+While shuffle randomness doesn't require cryptographic strength, using CSPRNG is best practice and demonstrates security-conscious design with zero performance cost.
+
+---
+
 ## Code Quality & Engineering Patterns
 
 ### Memory Management
@@ -1032,8 +1053,8 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 ouroboros/
 ├── src/                      # 47 implementation files (~10,135 lines)
 │   ├── main.cpp              # Entry point, event loop
-│   ├── audio/                # 4 decoders + PipeWire output
-│   ├── backend/              # Library, queue, metadata, config, snapshot publisher
+│   ├── audio/                # 5 decoders + PipeWire output
+│   ├── backend/              # Library, metadata, config, snapshot publisher
 │   ├── collectors/           # LibraryCollector, PlaybackCollector threads
 │   ├── config/               # Theme and keybind management
 │   ├── events/               # EventBus (publish-subscribe)
@@ -1057,7 +1078,7 @@ ouroboros/
 - **Total Lines**: ~13,112 (10,135 implementation + 2,977 headers)
 - **Source Files**: 47 `.cpp` files
 - **Header Files**: 50 `.hpp` files
-- **Audio Decoders**: 4 (MP3, FLAC, OGG, WAV)
+- **Audio Decoders**: 5 (MP3, FLAC, OGG, WAV, M4A/AAC via FFmpeg)
 - **Image Protocols**: 4 (Kitty, Sixel, iTerm2, Unicode blocks)
 - **UI Widgets**: 9 (Browser, Queue, NowPlaying, Controls, StatusBar, SearchBox, AlbumBrowser, DirectoryBrowser, HelpOverlay)
 - **Background Threads**: 4+ (Main, LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers)

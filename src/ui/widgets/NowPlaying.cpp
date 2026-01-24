@@ -22,6 +22,14 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     // Check if we have a current track
     if (!snap.player.current_track_index.has_value()) {
         ouroboros::util::Logger::debug("NowPlaying: No track currently playing");
+        // Clear artwork if one was displayed
+        if (last_art_image_id_ != 0) {
+            auto& img_renderer = ImageRenderer::instance();
+            img_renderer.delete_image_by_id(last_art_image_id_);
+            last_art_image_id_ = 0;
+            cached_path_.clear();
+            ouroboros::util::Logger::debug("NowPlaying: Cleared artwork (queue empty)");
+        }
         return;
     }
 

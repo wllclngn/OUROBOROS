@@ -2,6 +2,8 @@
 
 An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, ~13,100 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
+*An extension system for Foobar2000-style customization is planned - see [Future: Extension System](#future-extension-system).*
+
 **Key Features:**
 
 ### Audio System
@@ -329,17 +331,11 @@ Built with:
 - **Full Unicode support** (ICU normalization, 150+ languages)
 - **30 FPS rendering** with sub-millisecond snapshot reads
 
-## Security
+## Future: Extension System
 
-### Cryptographically Secure Shuffle
+OUROBOROS is currently offline-only, driven entirely by local files. A future enhancement is planned to support Foobar2000-style extensibility - allowing the core player to be extended via user-defined Extensions and a Protocol layer.
 
-OUROBOROS uses the Linux `getrandom()` syscall directly for shuffle randomness, providing cryptographically secure pseudo-random number generation (CSPRNG). This ensures:
-
-- **Unpredictable shuffle order** - Cannot be guessed or predicted
-- **Proper entropy** - Each random pick reads directly from the kernel's CSPRNG (ChaCha20-based with BLAKE2s on kernel 5.17+)
-- **No weak fallbacks** - Direct syscall, no `/dev/urandom` file descriptors, no C++ `<random>` library
-
-While shuffle randomness doesn't require cryptographic strength, using CSPRNG is best practice and demonstrates security-conscious design with zero performance cost.
+For a preview of this architecture, see [muEmacs-extensions](https://github.com/wllclngn/muEmacs-extensions).
 
 ## Technical Documentation
 
