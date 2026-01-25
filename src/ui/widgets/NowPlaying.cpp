@@ -28,6 +28,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
             img_renderer.delete_image_by_id(last_art_image_id_);
             last_art_image_id_ = 0;
             cached_path_.clear();
+            last_rendered_hash_.clear();
             ouroboros::util::Logger::debug("NowPlaying: Cleared artwork (queue empty)");
         }
         return;
@@ -331,14 +332,14 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
     }
 
     // Skip if we already rendered this exact image at this exact position/size
-    // Even with force_render, no need to delete-and-rerender if nothing changed
-    static std::string last_rendered_path;
-    bool same_image = (cached_path_ == last_rendered_path);
+    // Compare by SHA256 hash, not path - tracks with identical artwork skip re-render
+    bool same_image = (artwork->hash == last_rendered_hash_);
     bool same_position = (art_x == last_art_x_ && art_y == last_art_y_);
     bool same_size = (art_cols == last_art_width_ && art_rows == last_art_height_);
 
     if (same_image && same_position && same_size && last_art_image_id_ != 0) {
         // Image is already correctly displayed, no action needed
+        ouroboros::util::Logger::debug("NowPlaying: Skipping re-render (same SHA256 hash)");
         force_next_render_ = false;
         return;
     }
@@ -396,8 +397,7 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
         last_art_width_ = art_cols;
         last_art_height_ = art_rows;
         last_art_image_id_ = image_id;
-
-        last_rendered_path = cached_path_;
+        last_rendered_hash_ = artwork->hash;
         pending_render_path_.clear();
     } else {
         pending_render_path_ = cached_path_;

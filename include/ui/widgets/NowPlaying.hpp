@@ -32,6 +32,9 @@ private:
     // Track the Kitty image ID for selective deletion
     uint32_t last_art_image_id_ = 0;
 
+    // SHA256 hash of last rendered artwork (skip re-render if same album)
+    std::string last_rendered_hash_;
+
     // Force re-render on next frame (set when track changes)
     bool force_next_render_ = false;
 
