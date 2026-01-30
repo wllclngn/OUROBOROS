@@ -64,7 +64,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
 
-### Two Stacks Queue System
+### Two Stacks Playlist System
 - **Proper Previous/Next Navigation**: Previous always returns to the actual previous track, even in shuffle mode
 - **Three-Part State**: `history` (played tracks) + `current` (now playing) + `future` (upcoming tracks)
 - **Deterministic Back-Navigation**: History stack preserves exact play order for reliable Previous behavior
