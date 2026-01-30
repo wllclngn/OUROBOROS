@@ -222,6 +222,18 @@ const DecodedArtwork* ArtworkWindow::get_decoded(const std::string& path, int wi
     return nullptr;
 }
 
+bool ArtworkWindow::is_failed(const std::string& path, int width_cols, int height_rows) {
+    std::string album_dir = std::filesystem::path(path).parent_path().string();
+    CacheKey key{album_dir, width_cols, height_rows};
+
+    std::lock_guard<std::mutex> lock(cache_mutex_);
+    auto it = cache_.find(key);
+    if (it != cache_.end() && it->second) {
+        return it->second->state.load(std::memory_order_acquire) == NowPlayingSlotState::Failed;
+    }
+    return false;
+}
+
 void ArtworkWindow::reset() {
     util::Logger::debug("ArtworkWindow: Reset called - clearing request queue");
 

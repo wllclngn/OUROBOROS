@@ -70,6 +70,9 @@ public:
     // Get decoded pixels (nullptr if not ready)
     const DecodedArtwork* get_decoded(const std::string& path, int width_cols, int height_rows);
 
+    // Check if entry is marked as Failed (no artwork exists)
+    bool is_failed(const std::string& path, int width_cols, int height_rows);
+
     // Clear everything (called on big jump)
     void reset();
 

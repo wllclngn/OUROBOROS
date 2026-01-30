@@ -19,7 +19,8 @@ namespace ouroboros::ui::widgets {
 enum class SlotState : uint8_t {
     Empty,    // Slot not assigned or cleared
     Loading,  // Request in flight
-    Ready     // Decoded and ready to render
+    Ready,    // Decoded and ready to render
+    Failed    // No artwork exists for this album
 };
 
 // Atomic slot for album artwork - eliminates mutex contention during render
@@ -81,6 +82,9 @@ public:
 
     // Global Search Interface
     void set_filter(const std::string& query);
+
+    // Clear all album images (call when closing album view)
+    void clear_all_images();
 
 private:
     void update_filtered_albums();

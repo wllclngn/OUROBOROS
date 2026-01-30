@@ -72,8 +72,25 @@ struct PlayerState {
     bool operator==(const PlayerState&) const = default;
 };
 
+// Pre-computed album grouping for AlbumBrowser (computed at library load, not view switch)
+struct AlbumGroup {
+    std::string title;
+    std::string artist;
+    std::string year;
+    std::vector<int> track_indices;           // Indices into LibraryState::tracks
+    std::string representative_track_path;    // First track path for artwork lookup
+    std::string album_directory;              // Directory containing the album's tracks
+
+    // Pre-computed normalized strings for fast searching
+    std::string normalized_title;
+    std::string normalized_artist;
+
+    bool operator==(const AlbumGroup&) const = default;
+};
+
 struct LibraryState {
     std::vector<Track> tracks;
+    std::vector<AlbumGroup> albums;  // Pre-computed album groups
     bool is_scanning = false;
     int scanned_count = 0;
     int total_count = 0;

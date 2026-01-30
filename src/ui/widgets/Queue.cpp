@@ -19,7 +19,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     // Defensive: Check queue exists
     if (!snap.queue) {
         ouroboros::util::Logger::error("Queue::render: snap.queue is null!");
-        draw_box_border(canvas, rect, "PLAYLIST [ERROR]");
+        draw_box_border(canvas, rect, "PLAYLIST: ERROR");
         return;
     }
 
@@ -41,7 +41,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     }
 
     // Draw border and title (highlight when focused)
-    std::string title = "PLAYLIST [" + std::to_string(display_tracks.size()) + " TRACKS]";
+    std::string title = "PLAYLIST: " + std::to_string(display_tracks.size()) + " TRACKS";
     auto content_rect = draw_box_border(canvas, rect, title, Style{}, is_focused);
 
     // Empty queue

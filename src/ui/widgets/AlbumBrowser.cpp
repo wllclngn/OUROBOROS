@@ -43,9 +43,13 @@ void AlbumBrowser::assign_slot(size_t slot_idx, const std::string& album_dir,
     if (slot.album_dir != album_dir) {
         // DON'T delete image here - let cleanup phase handle it after new renders
         // Just mark slot as needing new data
+        SlotState old_state = slot.state.load(std::memory_order_acquire);
         slot.generation.fetch_add(1, std::memory_order_release);
         slot.album_dir = album_dir;
         slot.state.store(SlotState::Empty, std::memory_order_release);
+        ouroboros::util::Logger::debug("AlbumBrowser::assign_slot: RESET slot=" + std::to_string(slot_idx) +
+            " old_state=" + std::to_string(static_cast<int>(old_state)) +
+            " new_album=" + album_dir.substr(album_dir.rfind('/') + 1));
         slot.decoded_pixels.clear();
         slot.hash.clear();
         slot.image_id = 0;  // Clear ID but don't delete - orphan cleanup handles it
@@ -77,6 +81,20 @@ void AlbumBrowser::clear_all_slots() {
     }
     ouroboros::util::Logger::debug("AlbumBrowser: Cleared all " +
                                    std::to_string(MAX_VISIBLE_SLOTS) + " slots");
+}
+
+void AlbumBrowser::clear_all_images() {
+    // Delete all tracked images from displayed_images_ map
+    auto& img_renderer = ImageRenderer::instance();
+    for (const auto& [key, info] : displayed_images_) {
+        img_renderer.delete_image_by_id(info.image_id);
+    }
+    displayed_images_.clear();
+
+    // Also clear slots
+    clear_all_slots();
+
+    ouroboros::util::Logger::info("AlbumBrowser: Cleared all album images");
 }
 
 // Global SHARED POINTER to current snapshot for event handling
@@ -127,216 +145,34 @@ void AlbumBrowser::update_filtered_albums() {
 }
 
 void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
-    ouroboros::util::Logger::info("AlbumBrowser: refresh_cache called with " +
-                                  std::to_string(snap.library->tracks.size()) + " tracks");
-
-    // Group tracks by Album + Artist
-    std::map<std::string, AlbumGroup> groups;
-
-    for (size_t i = 0; i < snap.library->tracks.size(); ++i) {
-        const auto& track = snap.library->tracks[i];
-
-        // Extract directory for album_directory field (used for cache storage)
-        std::string album_dir;
-        if (!track.path.empty()) {
-            namespace fs = std::filesystem;
-            album_dir = fs::path(track.path).parent_path().string();
-        }
-
-        // Group by: artist + year + album (pure metadata grouping)
-        std::string key = track.artist + "::" + track.date + "::" + track.album;
-
-        if (groups.find(key) == groups.end()) {
-            AlbumGroup g;
-            g.title = track.album.empty() ? "Unknown Album" : track.album;
-            g.artist = track.artist.empty() ? "Unknown Artist" : track.artist;
-            g.year = track.date;  // Use date field for year
-
-            // Pre-compute normalized strings for fast searching
-            g.normalized_title = util::normalize_for_search(g.title);
-            g.normalized_artist = util::normalize_for_search(g.artist);
-
-            // Store first track path for artwork lookup via ArtworkWindow
-            g.representative_track_path = track.path;
-
-            // Store directory
-            g.album_directory = album_dir;
-
-            groups[key] = g;
-
-            ouroboros::util::Logger::debug("AlbumBrowser: Created album group '" + g.title +
-                                          "' with representative_track_path: " + g.representative_track_path);
-        }
-        groups[key].track_indices.push_back(i);
+    // Albums are pre-computed at library load time (async) - just copy when ready
+    if (snap.library->albums.empty()) {
+        // Albums still computing in background - will refresh on next snapshot update
+        return;
     }
 
     albums_.clear();
-    for (auto& [k, v] : groups) {
-        albums_.push_back(std::move(v));
-    }
+    albums_.reserve(snap.library->albums.size());
 
-    // Sort tracks within each album by track number
-    for (auto& album : albums_) {
-        std::sort(album.track_indices.begin(), album.track_indices.end(),
-            [&snap](int a, int b) {
-                return snap.library->tracks[a].track_number <
-                       snap.library->tracks[b].track_number;
-            });
-    }
-
-    // Sort albums by Artist, then by Year or Title (based on config)
-    const auto& cfg = backend::Config::instance();
-    bool sort_by_year = cfg.sort_albums_by_year;
-    bool ignore_the = cfg.sort_ignore_the_prefix;
-    bool ignore_bracket = cfg.sort_ignore_bracket_prefix;
-
-    // Helper to get sort key for artist (strips prefixes based on config)
-    auto get_artist_sort_key = [ignore_the, ignore_bracket](const std::string& artist) -> std::string {
-        if (artist.empty()) return artist;
-        size_t start = 0;
-        // Strip "The " prefix if configured (case-insensitive)
-        if (ignore_the && artist.size() >= 4) {
-            if ((artist[0] == 'T' || artist[0] == 't') &&
-                (artist[1] == 'H' || artist[1] == 'h') &&
-                (artist[2] == 'E' || artist[2] == 'e') &&
-                artist[3] == ' ') {
-                start = 4;
-            }
-        }
-        // Strip "[" prefix if configured
-        if (ignore_bracket && start < artist.size() && artist[start] == '[') {
-            start++;
-        }
-        return (start > 0) ? artist.substr(start) : artist;
-    };
-
-    // Helper to convert year string to int for numeric comparison
-    auto year_to_int = [](const std::string& y) -> int {
-        if (y.empty()) return 9999;  // Unknown years sort last
-        try {
-            // Extract first 4 digits (handles "2020-01-15" format)
-            std::string year_str = y.substr(0, 4);
-            return std::stoi(year_str);
-        } catch (...) {
-            return 9999;
-        }
-    };
-
-    ouroboros::util::timsort(albums_, [sort_by_year, &get_artist_sort_key, &year_to_int](const AlbumGroup& a, const AlbumGroup& b) {
-        // Case-insensitive artist comparison with prefix stripping
-        int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
-        if (cmp != 0) return cmp < 0;
-
-        // Within same artist: sort by year (NUMERIC) or title
-        if (sort_by_year) {
-            int ya = year_to_int(a.year);
-            int yb = year_to_int(b.year);
-            if (ya != yb) return ya < yb;
-        }
-        // Fall back to case-insensitive title comparison
-        return util::case_insensitive_compare(a.title, b.title) < 0;
-    });
-
-    // Count title occurrences to identify scattered albums (soundtracks, compilations)
-    std::unordered_map<std::string, int> title_count;
-    for (const auto& album : albums_) {
-        title_count[album.normalized_title]++;
-    }
-
-    // Remember which titles were scattered BEFORE merge (for sorting later)
-    std::unordered_set<std::string> was_scattered;
-    for (const auto& [title, count] : title_count) {
-        if (count > 1) {
-            was_scattered.insert(title);
-        }
-    }
-
-    // Merge scattered album entries by title only (ignoring artist/year)
-    // This consolidates soundtracks like "Tony Hawk's Pro Skater 4" with 35 different artists into one entry
-    std::unordered_map<std::string, size_t> merge_map;  // title -> index in new vector
-    std::vector<AlbumGroup> merged_albums;
-    merged_albums.reserve(albums_.size());
-
-    for (auto& album : albums_) {
-        bool is_scattered = was_scattered.count(album.normalized_title) > 0;
-
-        if (is_scattered) {
-            // For scattered albums (compilations, soundtracks), merge by title only
-            std::string merge_key = album.normalized_title;
-            auto merge_it = merge_map.find(merge_key);
-
-            if (merge_it != merge_map.end()) {
-                // Merge into existing entry
-                auto& existing = merged_albums[merge_it->second];
-                existing.track_indices.insert(existing.track_indices.end(),
-                    album.track_indices.begin(), album.track_indices.end());
-                // Keep earliest year
-                if (album.year < existing.year) {
-                    existing.year = album.year;
-                }
-            } else {
-                // New entry
-                merge_map[merge_key] = merged_albums.size();
-                merged_albums.push_back(std::move(album));
-            }
-        } else {
-            // Non-scattered albums pass through unchanged
-            merged_albums.push_back(std::move(album));
-        }
-    }
-
-    size_t albums_before = albums_.size();
-    albums_ = std::move(merged_albums);
-    ouroboros::util::Logger::info("AlbumBrowser: Merged scattered albums: " +
-        std::to_string(albums_before) + " -> " + std::to_string(albums_.size()));
-
-    // Sort tracks within merged compilations by track number
-    for (auto& album : albums_) {
-        if (was_scattered.count(album.normalized_title) > 0) {
-            std::sort(album.track_indices.begin(), album.track_indices.end(),
-                [&snap](int a, int b) {
-                    return snap.library->tracks[a].track_number <
-                           snap.library->tracks[b].track_number;
-                });
-        }
-    }
-
-    // Log merge statistics
-    ouroboros::util::Logger::info("AlbumBrowser: " + std::to_string(was_scattered.size()) + " scattered titles merged by title");
-
-    // Stable sort: scattered albums by title, others by artist
-    // This places compilations/soundtracks in alphabetical order by title
-    std::stable_sort(albums_.begin(), albums_.end(),
-        [&](const AlbumGroup& a, const AlbumGroup& b) {
-            bool a_scattered = was_scattered.count(a.normalized_title) > 0;
-            bool b_scattered = was_scattered.count(b.normalized_title) > 0;
-
-            std::string key_a = a_scattered ? a.normalized_title : get_artist_sort_key(a.artist);
-            std::string key_b = b_scattered ? b.normalized_title : get_artist_sort_key(b.artist);
-
-            int cmp = util::case_insensitive_compare(key_a, key_b);
-            if (cmp != 0) return cmp < 0;
-
-            // Tiebreaker: year
-            int ya = year_to_int(a.year);
-            int yb = year_to_int(b.year);
-            return ya < yb;
-        });
-
-    // Debug: Log first 100 albums after sort to verify grouping
-    ouroboros::util::Logger::debug("AlbumBrowser: Post-sort sample (first 100):");
-    for (size_t i = 0; i < std::min(albums_.size(), size_t(100)); ++i) {
-        const auto& a = albums_[i];
-        bool scattered = was_scattered.count(a.normalized_title) > 0;
-        std::string key = scattered ? a.normalized_title : get_artist_sort_key(a.artist);
-        ouroboros::util::Logger::debug("  [" + std::to_string(i) + "] key='" + key + "' year='" + a.year + "' artist='" + a.artist + "' title='" + a.title + "'" + (scattered ? " [COMPILATION]" : ""));
+    // Copy album groups from snapshot (they use model::AlbumGroup, we use local AlbumGroup)
+    for (const auto& album : snap.library->albums) {
+        AlbumGroup g;
+        g.title = album.title;
+        g.artist = album.artist;
+        g.year = album.year;
+        g.track_indices = album.track_indices;
+        g.representative_track_path = album.representative_track_path;
+        g.album_directory = album.album_directory;
+        g.normalized_title = album.normalized_title;
+        g.normalized_artist = album.normalized_artist;
+        albums_.push_back(std::move(g));
     }
 
     // Initial update of filtered indices (matches all)
     update_filtered_albums();
 
-    ouroboros::util::Logger::info("AlbumBrowser: refresh_cache complete - " +
-                                  std::to_string(albums_.size()) + " albums created");
+    ouroboros::util::Logger::info("AlbumBrowser: Loaded " + std::to_string(albums_.size()) +
+                                  " pre-computed albums from snapshot");
 }
 
 void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap) {
@@ -347,8 +183,17 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     // Store as shared_ptr to keep snapshot alive even if original goes out of scope
     g_current_snapshot = std::make_shared<model::Snapshot>(snap);
 
-    // Refresh cache if library changed
-    if (albums_.empty() && !snap.library->tracks.empty()) {
+    // Check if albums are still being computed in background
+    if (snap.library->albums.empty() && !snap.library->tracks.empty()) {
+        // Show loading message while albums compute
+        draw_box_border(canvas, rect, "LIBRARY: LOADING ALBUMS...", Style{}, is_focused);
+        canvas.draw_text(rect.x + 2, rect.y + 2, "Computing album groups...",
+                        Style{Color::Default, Color::Default, Attribute::Dim});
+        return;
+    }
+
+    // Refresh cache if library changed (albums now available)
+    if (albums_.empty() && !snap.library->albums.empty()) {
         refresh_cache(snap);
     }
 
@@ -399,7 +244,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     int total_albums = filtered_album_indices_.size();
     if (total_albums == 0) {
         canvas.draw_text(content_rect.x + 2, content_rect.y + 2,
-                        filter_query_.empty() ? "(no albums)" : "(no matching albums)",
+                        filter_query_.empty() ? "No albums." : "No matching album found.",
                         Style{Color::Default, Color::Default, Attribute::Dim});
         return;
     }
@@ -507,7 +352,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     if (!filter_query_.empty()) {
         title += " [SEARCH: " + filter_query_ + "]";
     } else {
-        title += " [" + std::to_string(albums_.size()) + " ALBUMS]";
+        title += ": " + std::to_string(albums_.size()) + " ALBUMS";
     }
 
     draw_box_border(canvas, rect, title, Style{}, is_focused);
@@ -731,9 +576,15 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int selected_col = selected_index_ % cols_available;
 
     // ========================================================================
-    // PHASE 1: SLOT ASSIGNMENT + REQUEST
+    // PHASE 1: SLOT ASSIGNMENT + REQUEST (with progressive batching)
     // Assign visible albums to atomic slots, request artwork from ArtworkWindow
+    // Progressive loading: limit requests per frame for responsive initial display
     // ========================================================================
+
+    // Progressive batching: limit new requests per frame to prevent overwhelming workers
+    // This allows top rows to render while lower rows load in background
+    static constexpr int MAX_NEW_REQUESTS_PER_FRAME = 8;
+    int new_requests_this_frame = 0;
 
     for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
         for (int c = 0; c < cols_available; ++c) {
@@ -763,8 +614,32 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             // Assign slot (bumps generation if album changed)
             assign_slot(slot_idx, album.album_directory, art_x, art_y, art_cols, art_rows);
 
-            // Request artwork from ArtworkWindow
-            if (!album.representative_track_path.empty()) {
+            // Request artwork from ArtworkWindow - but SKIP if slot already Ready or Loading
+            // This prevents cascade re-requests and duplicate requests for pending items
+            auto& slot = slots_[slot_idx];
+            SlotState current_state = slot.state.load(std::memory_order_acquire);
+            bool needs_request = (current_state == SlotState::Empty);
+
+            // DEBUG: Log why requests are skipped (only for Loading, not Ready or Failed)
+            if (!needs_request && current_state == SlotState::Loading) {
+                std::string filename = album.representative_track_path.substr(
+                    album.representative_track_path.rfind('/') + 1);
+                ouroboros::util::Logger::warn("AlbumBrowser: SKIP slot=" + std::to_string(slot_idx) +
+                    " state=Loading album_dir=" + album.album_directory.substr(album.album_directory.rfind('/') + 1) +
+                    " track=" + filename);
+            }
+
+            if (!album.representative_track_path.empty() && needs_request) {
+                // Progressive batching: limit requests per frame
+                if (new_requests_this_frame >= MAX_NEW_REQUESTS_PER_FRAME) {
+                    ouroboros::util::Logger::debug("AlbumBrowser: BATCH LIMIT slot=" + std::to_string(slot_idx) +
+                        " will retry next frame");
+                    continue;  // Skip - will be requested in subsequent frames
+                }
+
+                // Mark as Loading BEFORE requesting to prevent duplicate requests
+                slot.state.store(SlotState::Loading, std::memory_order_release);
+
                 int distance = std::abs(r - selected_row) + std::abs(c - selected_col);
                 artwork_window.request(
                     album.representative_track_path,
@@ -773,6 +648,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
                     art_rows,
                     false  // Batch - don't notify yet
                 );
+                ++new_requests_this_frame;
             }
         }
     }
@@ -806,7 +682,17 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
 
             // Query ArtworkWindow for decoded pixels
             const auto* artwork = artwork_window.get_decoded(album.representative_track_path, art_cols, art_rows);
-            if (!artwork) continue;
+            if (!artwork) {
+                // Check if artwork is marked as Failed (no artwork exists)
+                if (state == SlotState::Loading &&
+                    artwork_window.is_failed(album.representative_track_path, art_cols, art_rows)) {
+                    slot.state.store(SlotState::Failed, std::memory_order_release);
+                    ouroboros::util::Logger::debug("AlbumBrowser: Slot " + std::to_string(slot_idx) +
+                        " marked Failed - no artwork for " +
+                        album.album_directory.substr(album.album_directory.rfind('/') + 1));
+                }
+                continue;
+            }
 
             // Copy to slot (this is the atomic publish pattern)
             // 1. Copy all data while state is still Empty/Loading
@@ -954,14 +840,19 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     displayed_images_ = std::move(new_displayed_images);
 
     // ========================================================================
-    // PHASE 5: PREFETCH (when idle)
+    // PHASE 5: PREFETCH (when idle AND visible slots mostly loaded)
+    // Don't prefetch until at least 80% of visible slots are Ready
     // ========================================================================
 
     auto time_since_scroll = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - last_scroll_time_
     );
 
-    if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
+    // Only prefetch when 5% of visible slots are Ready - start prefetch early
+    int total_visible = static_cast<int>(render_items.size());
+    bool enough_visible_ready = (total_visible == 0) || (ready_count * 100 / total_visible >= 5);
+
+    if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_ && enough_visible_ready) {
         const int PREFETCH_ITEMS = 20;
         int prefetch_rows_count = (PREFETCH_ITEMS + cols_available - 1) / cols_available;
 

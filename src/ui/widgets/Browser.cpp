@@ -82,7 +82,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
         title += " [SEARCH: " + filter_query_ + "]";
         title += " [" + std::to_string(filtered_indices_.size()) + "/" + std::to_string(tracks.size()) + "]";
     } else {
-        title += " [" + std::to_string(tracks.size()) + " TRACKS]";
+        title += ": " + std::to_string(tracks.size()) + " TRACKS";
     }
     
     auto inner_rect = draw_box_border(canvas, content_rect, title, Style{}, is_focused);
@@ -98,7 +98,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     // Clamp selection to FILTERED list
     int total_items = static_cast<int>(filtered_indices_.size());
     if (total_items == 0) {
-        canvas.draw_text(inner_rect.x + 2, inner_rect.y + 2, "(no matches)", 
+        canvas.draw_text(inner_rect.x + 2, inner_rect.y + 2, "No matching track found.",
                         Style{Color::Default, Color::Default, Attribute::Dim});
         return;
     }

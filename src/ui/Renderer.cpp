@@ -428,11 +428,9 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Toggle album view (from TOML: toggle_album_view)
     if (matches_keybind(event, "toggle_album_view")) {
-        // If closing album view, clear all Kitty graphics
+        // If closing album view, clear only album browser images (not NowPlaying)
         if (show_album_view_) {
-            auto& img_renderer = ImageRenderer::instance();
-            img_renderer.clear_image(0, 0, 0, 0);  // Params unused for Kitty (deletes ALL)
-            ouroboros::util::Logger::info("Renderer: Clearing album artwork before closing view");
+            album_browser_->clear_all_images();
         }
 
         show_album_view_ = !show_album_view_;
