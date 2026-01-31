@@ -165,6 +165,7 @@ void AlbumBrowser::refresh_cache(const model::Snapshot& snap) {
         g.album_directory = album.album_directory;
         g.normalized_title = album.normalized_title;
         g.normalized_artist = album.normalized_artist;
+        g.is_scattered = album.is_scattered;
         albums_.push_back(std::move(g));
     }
 
@@ -308,39 +309,48 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             // Text width based on box width
             int text_width = box_w - 3;  // Box width - borders - padding
 
-            // Prepare strings
-            std::string artist_str = album.artist + ": ";
-            std::string album_str = album.title;
+            // Scattered (compilation) albums: show only title
+            // Unified (single-artist) albums: show "Artist: Title"
+            if (album.is_scattered) {
+                // Compilation - just show album title
+                std::string title_trunc = truncate_text(album.title, text_width);
+                canvas.draw_text(box_x + 1, box_y + box_h - 2, title_trunc,
+                               Style{Color::BrightWhite, Color::Default, Attribute::Bold});
+            } else {
+                // Single-artist album - show "Artist: Title"
+                std::string artist_str = album.artist + ": ";
+                std::string album_str = album.title;
 
-            // Calculate visual widths
-            int artist_display_w = ouroboros::ui::display_cols(artist_str);
-            int album_display_w = ouroboros::ui::display_cols(album_str);
+                // Calculate visual widths
+                int artist_display_w = ouroboros::ui::display_cols(artist_str);
+                int album_display_w = ouroboros::ui::display_cols(album_str);
 
-            int max_artist_w = text_width;
+                int max_artist_w = text_width;
 
-            // Smart truncation strategy
-            if (artist_display_w + album_display_w > text_width) {
-                // If total is too long...
-                if (artist_display_w > text_width * 0.6) {
-                    // Cap artist at 60% (min 5 chars)
-                    max_artist_w = std::max(static_cast<int>(text_width * 0.6), 5);
-                } else {
-                    // Artist fits in <60%, let it stay, squeeze album
-                    max_artist_w = artist_display_w;
+                // Smart truncation strategy
+                if (artist_display_w + album_display_w > text_width) {
+                    // If total is too long...
+                    if (artist_display_w > text_width * 0.6) {
+                        // Cap artist at 60% (min 5 chars)
+                        max_artist_w = std::max(static_cast<int>(text_width * 0.6), 5);
+                    } else {
+                        // Artist fits in <60%, let it stay, squeeze album
+                        max_artist_w = artist_display_w;
+                    }
                 }
-            }
 
-            // Draw Artist (Bold)
-            std::string art_trunc = truncate_text(artist_str, max_artist_w);
-            int next_x = canvas.draw_text(box_x + 1, box_y + box_h - 2, art_trunc,
-                                        Style{Color::BrightWhite, Color::Default, Attribute::Bold});
+                // Draw Artist (Bold)
+                std::string art_trunc = truncate_text(artist_str, max_artist_w);
+                int next_x = canvas.draw_text(box_x + 1, box_y + box_h - 2, art_trunc,
+                                            Style{Color::BrightWhite, Color::Default, Attribute::Bold});
 
-            // Draw Album (Dim) in remaining space
-            int remaining = (box_x + 1 + text_width) - next_x;
-            if (remaining > 2) {
-                std::string alb_trunc = truncate_text(album_str, remaining);
-                canvas.draw_text(next_x, box_y + box_h - 2, alb_trunc,
-                               Style{Color::Default, Color::Default, Attribute::Dim});
+                // Draw Album (Dim) in remaining space
+                int remaining = (box_x + 1 + text_width) - next_x;
+                if (remaining > 2) {
+                    std::string alb_trunc = truncate_text(album_str, remaining);
+                    canvas.draw_text(next_x, box_y + box_h - 2, alb_trunc,
+                                   Style{Color::Default, Color::Default, Attribute::Dim});
+                }
             }
         }
 

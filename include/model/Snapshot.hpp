@@ -57,6 +57,9 @@ struct Track {
     bool is_valid = true;
     std::string error_message;
 
+    // Compilation flag (TCMP from ID3v2)
+    bool is_compilation = false;
+
     bool operator==(const Track&) const = default;
 };
 
@@ -84,6 +87,9 @@ struct AlbumGroup {
     // Pre-computed normalized strings for fast searching
     std::string normalized_title;
     std::string normalized_artist;
+
+    // Scattered = compilation (multiple artists in directory)
+    bool is_scattered = false;
 
     bool operator==(const AlbumGroup&) const = default;
 };

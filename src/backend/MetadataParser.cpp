@@ -155,9 +155,9 @@ bool MetadataParser::parse_mp3(const std::string& path, model::Track& track) {
             if (v2->genre && v2->genre->p) track.genre = trim(v2->genre->p);
             if (v2->year && v2->year->p) track.date = trim(v2->year->p);
 
-            // Parse track number from TRCK frame
+            // Parse text frames: TRCK (track number) and TCMP (compilation)
             for (size_t i = 0; i < v2->texts; ++i) {
-                // Check if this is the TRCK frame (track number)
+                // TRCK frame (track number)
                 if (std::strncmp(v2->text[i].id, "TRCK", 4) == 0) {
                     if (v2->text[i].text.p) {
                         std::string track_num_str = trim(v2->text[i].text.p);
@@ -176,7 +176,12 @@ bool MetadataParser::parse_mp3(const std::string& path, model::Track& track) {
                             }
                         }
                     }
-                    break;  // Found TRCK frame, no need to continue
+                }
+                // TCMP frame (compilation flag)
+                else if (std::strncmp(v2->text[i].id, "TCMP", 4) == 0) {
+                    if (v2->text[i].text.p && v2->text[i].text.p[0] == '1') {
+                        track.is_compilation = true;
+                    }
                 }
             }
         }
@@ -343,6 +348,12 @@ bool MetadataParser::parse_m4a(const std::string& path, model::Track& track) {
         } catch (...) {
             // Track number parsing failed, leave as 0
         }
+    }
+
+    // Compilation flag
+    tag = av_dict_get(fmt_ctx->metadata, "compilation", nullptr, 0);
+    if (tag && tag->value && tag->value[0] == '1') {
+        track.is_compilation = true;
     }
 
     ouroboros::util::Logger::info("MetadataParser: Parsed M4A - " + track.title +

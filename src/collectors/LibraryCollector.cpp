@@ -12,8 +12,72 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
+#include <algorithm>
+#include <execution>
 
 namespace ouroboros::collectors {
+
+// Extract primary artist by stripping featuring/collaboration suffixes
+static std::string extract_primary_artist(const std::string& artist) {
+    static const std::vector<std::string> patterns = {
+        " feat. ", " featuring ", " ft. ", " (feat. ", " (feat ",
+        " (ft. ", " (ft ", " with "
+    };
+
+    std::string lower = artist;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+
+    size_t earliest = std::string::npos;
+    for (const auto& p : patterns) {
+        size_t pos = lower.find(p);
+        if (pos != std::string::npos && pos < earliest) {
+            earliest = pos;
+        }
+    }
+
+    if (earliest != std::string::npos) {
+        std::string result = artist.substr(0, earliest);
+        // Trim trailing whitespace
+        while (!result.empty() && std::isspace(static_cast<unsigned char>(result.back()))) {
+            result.pop_back();
+        }
+        return result;
+    }
+    return artist;
+}
+
+// Detect if album has scattered artists (compilation)
+static bool detect_scattered(const model::AlbumGroup& album, const std::vector<model::Track>& tracks) {
+    std::unordered_set<std::string> unique_artists;
+
+    for (int idx : album.track_indices) {
+        const auto& track = tracks[idx];
+
+        // Explicit compilation flag
+        if (track.is_compilation) return true;
+
+        // Check for "Various Artists" in artist field
+        std::string artist_lower = track.artist;
+        std::transform(artist_lower.begin(), artist_lower.end(), artist_lower.begin(),
+            [](unsigned char c) { return std::tolower(c); });
+        if (artist_lower.find("various artists") != std::string::npos) return true;
+
+        // Extract and normalize primary artist
+        std::string primary = extract_primary_artist(track.artist);
+        std::string normalized = util::normalize_for_search(primary);
+        unique_artists.insert(normalized);
+    }
+
+    size_t track_count = album.track_indices.size();
+    size_t unique_count = unique_artists.size();
+
+    // Thresholds for scattered detection
+    if (unique_count > 3) return true;
+    if (track_count > 4 && unique_count > track_count / 2) return true;
+
+    return false;
+}
 
 // Compute album groups from sorted tracks (called once at library load)
 static void compute_album_groups(model::LibraryState& lib_state, const backend::Config& config) {
@@ -48,18 +112,23 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
         }
     };
 
-    // Group tracks by Artist + Year + Album
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 1: Group tracks by DIRECTORY (not artist+album)
+    // Directory is truth. All tracks in same folder = same album.
+    // ═══════════════════════════════════════════════════════════════════════
     std::map<std::string, model::AlbumGroup> groups;
 
     for (size_t i = 0; i < lib_state.tracks.size(); ++i) {
         const auto& track = lib_state.tracks[i];
 
-        std::string album_dir;
-        if (!track.path.empty()) {
-            album_dir = std::filesystem::path(track.path).parent_path().string();
-        }
+        // Linux-native directory extraction (no std::filesystem overhead)
+        size_t last_slash = track.path.rfind('/');
+        std::string album_dir = (last_slash != std::string::npos)
+            ? track.path.substr(0, last_slash)
+            : track.path;
 
-        std::string key = track.artist + "::" + track.date + "::" + track.album;
+        // Key = directory path (unique per album)
+        std::string key = album_dir;
 
         if (groups.find(key) == groups.end()) {
             model::AlbumGroup g;
@@ -70,6 +139,7 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
             g.normalized_artist = util::normalize_for_search(g.artist);
             g.representative_track_path = track.path;
             g.album_directory = album_dir;
+            g.is_scattered = false;  // Will be detected in Step 2
             groups[key] = g;
         }
         groups[key].track_indices.push_back(static_cast<int>(i));
@@ -82,6 +152,8 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
         albums.push_back(std::move(v));
     }
 
+    util::Logger::info("Grouped into " + std::to_string(albums.size()) + " directory-based albums");
+
     // Sort tracks within each album by track number
     for (auto& album : albums) {
         std::sort(album.track_indices.begin(), album.track_indices.end(),
@@ -90,78 +162,49 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
             });
     }
 
-    // Sort albums by Artist, then Year
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 2: Detect scattered albums (compilations) in parallel
+    // Scattered = multiple unique artists in same directory
+    // ═══════════════════════════════════════════════════════════════════════
+    std::for_each(std::execution::par_unseq, albums.begin(), albums.end(),
+        [&lib_state](model::AlbumGroup& album) {
+            album.is_scattered = detect_scattered(album, lib_state.tracks);
+        }
+    );
+
+    size_t scattered_count = std::count_if(albums.begin(), albums.end(),
+        [](const model::AlbumGroup& a) { return a.is_scattered; });
+    util::Logger::info("Detected " + std::to_string(scattered_count) + " scattered (compilation) albums");
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 3: Sort albums
+    // Scattered: by title | Unified: by artist, then year, then title
+    // ═══════════════════════════════════════════════════════════════════════
     bool sort_by_year = config.sort_albums_by_year;
-    ouroboros::util::timsort(albums, [sort_by_year, &get_artist_sort_key, &year_to_int](
+
+    ouroboros::util::timsort(albums,
+        [sort_by_year, &get_artist_sort_key, &year_to_int](
             const model::AlbumGroup& a, const model::AlbumGroup& b) {
-        int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
-        if (cmp != 0) return cmp < 0;
-        if (sort_by_year) {
-            int ya = year_to_int(a.year);
-            int yb = year_to_int(b.year);
-            if (ya != yb) return ya < yb;
-        }
-        return util::case_insensitive_compare(a.title, b.title) < 0;
-    });
 
-    // Merge scattered albums (compilations with same title, different artists)
-    std::unordered_map<std::string, int> title_count;
-    for (const auto& album : albums) {
-        title_count[album.normalized_title]++;
-    }
-
-    std::unordered_set<std::string> was_scattered;
-    for (const auto& [title, count] : title_count) {
-        if (count > 1) {
-            was_scattered.insert(title);
-        }
-    }
-
-    std::unordered_map<std::string, size_t> merge_map;
-    std::vector<model::AlbumGroup> merged_albums;
-    merged_albums.reserve(albums.size());
-
-    for (auto& album : albums) {
-        bool is_scattered = was_scattered.count(album.normalized_title) > 0;
-
-        if (is_scattered) {
-            std::string merge_key = album.normalized_title;
-            auto merge_it = merge_map.find(merge_key);
-
-            if (merge_it != merge_map.end()) {
-                auto& existing = merged_albums[merge_it->second];
-                existing.track_indices.insert(existing.track_indices.end(),
-                    album.track_indices.begin(), album.track_indices.end());
-                if (album.year < existing.year) {
-                    existing.year = album.year;
-                }
-            } else {
-                merge_map[merge_key] = merged_albums.size();
-                merged_albums.push_back(std::move(album));
-            }
-        } else {
-            merged_albums.push_back(std::move(album));
-        }
-    }
-
-    // Final stable sort
-    std::stable_sort(merged_albums.begin(), merged_albums.end(),
-        [&](const model::AlbumGroup& a, const model::AlbumGroup& b) {
-            bool a_scattered = was_scattered.count(a.normalized_title) > 0;
-            bool b_scattered = was_scattered.count(b.normalized_title) > 0;
-
-            std::string key_a = a_scattered ? a.normalized_title : get_artist_sort_key(a.artist);
-            std::string key_b = b_scattered ? b.normalized_title : get_artist_sort_key(b.artist);
+            // Scattered albums sort by title, unified by artist
+            std::string key_a = a.is_scattered ? a.normalized_title : get_artist_sort_key(a.artist);
+            std::string key_b = b.is_scattered ? b.normalized_title : get_artist_sort_key(b.artist);
 
             int cmp = util::case_insensitive_compare(key_a, key_b);
             if (cmp != 0) return cmp < 0;
 
-            int ya = year_to_int(a.year);
-            int yb = year_to_int(b.year);
-            return ya < yb;
+            // Same primary key, compare by year
+            if (sort_by_year) {
+                int ya = year_to_int(a.year);
+                int yb = year_to_int(b.year);
+                if (ya != yb) return ya < yb;
+            }
+
+            // Finally by title
+            return util::case_insensitive_compare(a.normalized_title, b.normalized_title) < 0;
         });
 
-    lib_state.albums = std::move(merged_albums);
+    lib_state.albums = std::move(albums);
     util::Logger::info("Album groups computed: " + std::to_string(lib_state.albums.size()) + " albums");
 }
 

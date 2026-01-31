@@ -63,6 +63,9 @@ struct AlbumGroup {
     // Pre-computed normalized strings for fast searching (computed once in refresh_cache)
     std::string normalized_title;
     std::string normalized_artist;
+
+    // Scattered = compilation (multiple artists in directory)
+    bool is_scattered = false;
 };
 
 class AlbumBrowser : public Component {
