@@ -129,6 +129,11 @@ void PipeWireOutput::close() {
         struct pw_thread_loop* loop = context_->get_loop();
 
         pw_thread_loop_lock(loop);
+
+        // Drain: wait for all queued audio to play out before destroying
+        // This prevents the pop/click from cutting off buffered samples
+        pw_stream_flush(stream_, true);
+
         pw_stream_destroy(stream_);
         pw_thread_loop_unlock(loop);
 
@@ -138,6 +143,10 @@ void PipeWireOutput::close() {
         pw_stream_destroy(stream_);
         stream_ = nullptr;
     }
+
+    // Reset format tracking for clean reinit
+    sample_rate_ = 0;
+    channels_ = 0;
 }
 
 size_t PipeWireOutput::write(const float* data, size_t frames) {

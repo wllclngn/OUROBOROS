@@ -64,7 +64,7 @@ std::pair<size_t, bool> count_run_and_make_ascending(RandomIt first, RandomIt la
     }
 }
 
-// Merge two adjacent sorted ranges into buffer, then copy back
+// Merge two adjacent sorted ranges
 template<typename RandomIt, typename Compare>
 void merge_ranges(RandomIt first, size_t left_len, size_t right_len, Compare comp) {
     using ValueType = typename std::iterator_traits<RandomIt>::value_type;
@@ -140,7 +140,7 @@ void force_collapse(RandomIt first, std::vector<Run>& runs, Compare comp) {
 /**
  * Sequential TimSort implementation.
  * Exploits natural runs in data for O(n) best case on sorted/nearly-sorted data.
- * O(n log n) worst case.
+ * O(n log n) worst case. Stable sort.
  */
 template<typename RandomIt, typename Compare>
 void timsort(RandomIt first, RandomIt last, Compare comp) {

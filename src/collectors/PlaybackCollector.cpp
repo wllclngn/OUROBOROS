@@ -47,6 +47,12 @@ PlaybackCollector::~PlaybackCollector() {
 void PlaybackCollector::run(std::stop_token stop_token) {
     bool last_queue_empty_logged = false;
 
+    // GAPLESS PLAYBACK: Persistent output - lives across tracks
+    // Only destroyed on format change or shutdown
+    audio::PipeWireOutput output;
+    int output_sample_rate = 0;
+    int output_channels = 0;
+
     while (!stop_token.stop_requested()) {
         auto snap_ptr = publisher_->get_current();
         if (!snap_ptr) {
@@ -161,20 +167,36 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         int actual_sample_rate = decoder->get_sample_rate();
         int actual_channels = decoder->get_channels();
 
-        util::Logger::debug("PlaybackCollector: Initializing PipeWire (" +
-            std::to_string(actual_sample_rate) + "Hz, " +
-            std::to_string(actual_channels) + "ch)");
+        // GAPLESS PLAYBACK: Only reinit output if format changed
+        // Same format = seamless transition, different format = acceptable gap
+        bool format_changed = (actual_sample_rate != output_sample_rate ||
+                               actual_channels != output_channels);
 
-        // Create PipeWire output with ACTUAL format from decoder
-        audio::PipeWireOutput output;
-        if (!output.init(audio_context_, actual_sample_rate, actual_channels)) {
-            util::Logger::error("Failed to initialize PipeWire output");
-            decoder->close();
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-            continue;
+        if (format_changed) {
+            if (output.is_initialized()) {
+                util::Logger::debug("PlaybackCollector: Format change detected (" +
+                    std::to_string(output_sample_rate) + "Hz/" + std::to_string(output_channels) + "ch -> " +
+                    std::to_string(actual_sample_rate) + "Hz/" + std::to_string(actual_channels) + "ch), reinitializing");
+                output.close();  // Drains before destroying
+            }
+
+            util::Logger::debug("PlaybackCollector: Initializing PipeWire (" +
+                std::to_string(actual_sample_rate) + "Hz, " +
+                std::to_string(actual_channels) + "ch)");
+
+            if (!output.init(audio_context_, actual_sample_rate, actual_channels)) {
+                util::Logger::error("Failed to initialize PipeWire output");
+                decoder->close();
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                continue;
+            }
+
+            output_sample_rate = actual_sample_rate;
+            output_channels = actual_channels;
+            util::Logger::debug("PlaybackCollector: PipeWire initialized successfully");
+        } else {
+            util::Logger::debug("PlaybackCollector: Reusing PipeWire stream (gapless transition)");
         }
-
-        util::Logger::debug("PlaybackCollector: PipeWire initialized successfully");
 
         // Update snapshot with playing state and track index
         publisher_->update([&track_index](model::Snapshot& s) {
@@ -431,14 +453,27 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             });
         }
         
-        // Cleanup
-        output.close();
-        util::Logger::debug("PlaybackCollector: Output closed. Closing decoder...");
+        // Cleanup decoder only - output stays alive for gapless playback
+        // Output will be closed on format change or shutdown
         decoder->close();
         decoder.reset();
-        util::Logger::debug("PlaybackCollector: Decoder closed. Ready for next track.");
-        
+        util::Logger::debug("PlaybackCollector: Decoder closed. Ready for next track (gapless).");
+
+        // Handle clear request - close output to release audio device
+        if (clear_requested_.load(std::memory_order_acquire)) {
+            output.close();
+            output_sample_rate = 0;
+            output_channels = 0;
+            util::Logger::debug("PlaybackCollector: Output closed due to clear request.");
+        }
+
         // If we broke out because track changed, the loop will restart and pick up new track
+    }
+
+    // Final cleanup on shutdown
+    if (output.is_initialized()) {
+        output.close();
+        util::Logger::debug("PlaybackCollector: Final output cleanup on shutdown.");
     }
 }
 
