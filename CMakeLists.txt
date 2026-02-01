@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 2.1.0 LANGUAGES CXX)
+project(ouroboros VERSION 2.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,9 +33,6 @@ pkg_check_modules(SWRESAMPLE REQUIRED libswresample)
 # Unicode support for search normalization
 pkg_check_modules(ICU_UC REQUIRED icu-uc)
 pkg_check_modules(ICU_I18N REQUIRED icu-i18n)
-
-# TBB for C++23 parallel execution (std::execution::par_unseq)
-find_package(TBB REQUIRED)
 
 # Auto-download stb headers
 set(STB_DIR "${CMAKE_SOURCE_DIR}/vendor/stb")
@@ -138,9 +135,6 @@ target_link_libraries(ouroboros PRIVATE
     ${AVCODEC_LIBRARIES}
     ${AVUTIL_LIBRARIES}
     ${SWRESAMPLE_LIBRARIES}
-    TBB::tbb
-    ssl
-    crypto
 )
 set_target_properties(ouroboros PROPERTIES OUTPUT_NAME ouroboros)
 

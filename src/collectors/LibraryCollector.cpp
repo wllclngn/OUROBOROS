@@ -13,7 +13,7 @@
 #include <unordered_set>
 #include <filesystem>
 #include <algorithm>
-#include <execution>
+#include <atomic>
 
 namespace ouroboros::collectors {
 
@@ -154,35 +154,55 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
 
     util::Logger::info("Grouped into " + std::to_string(albums.size()) + " directory-based albums");
 
-    // Sort tracks within each album by track number
-    for (auto& album : albums) {
-        std::sort(album.track_indices.begin(), album.track_indices.end(),
-            [&lib_state](int a, int b) {
-                return lib_state.tracks[a].track_number < lib_state.tracks[b].track_number;
-            });
+    // ═══════════════════════════════════════════════════════════════════════
+    // STEP 2: Sort tracks + detect scattered albums IN PARALLEL
+    // Each album is independent - perfect for parallel processing
+    // Uses atomic work-stealing pattern for load balancing across cores
+    // ═══════════════════════════════════════════════════════════════════════
+    const size_t num_threads = std::thread::hardware_concurrency();
+    const size_t num_albums = albums.size();
+    std::atomic<size_t> work_index{0};
+
+    util::Logger::info("Processing " + std::to_string(num_albums) + " albums with " +
+                      std::to_string(num_threads) + " threads");
+
+    std::vector<std::thread> workers;
+    for (size_t t = 0; t < num_threads; ++t) {
+        workers.emplace_back([&]() {
+            while (true) {
+                size_t idx = work_index.fetch_add(1, std::memory_order_relaxed);
+                if (idx >= num_albums) break;
+
+                auto& album = albums[idx];
+
+                // Sort tracks within this album by track number (TimSort for natural runs)
+                ouroboros::util::timsort(album.track_indices,
+                    [&lib_state](int a, int b) {
+                        return lib_state.tracks[a].track_number < lib_state.tracks[b].track_number;
+                    });
+
+                // Detect if this album is scattered (compilation)
+                album.is_scattered = detect_scattered(album, lib_state.tracks);
+            }
+        });
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
-    // STEP 2: Detect scattered albums (compilations) in parallel
-    // Scattered = multiple unique artists in same directory
-    // ═══════════════════════════════════════════════════════════════════════
-    std::for_each(std::execution::par_unseq, albums.begin(), albums.end(),
-        [&lib_state](model::AlbumGroup& album) {
-            album.is_scattered = detect_scattered(album, lib_state.tracks);
-        }
-    );
+    for (auto& w : workers) {
+        w.join();
+    }
 
     size_t scattered_count = std::count_if(albums.begin(), albums.end(),
         [](const model::AlbumGroup& a) { return a.is_scattered; });
     util::Logger::info("Detected " + std::to_string(scattered_count) + " scattered (compilation) albums");
 
     // ═══════════════════════════════════════════════════════════════════════
-    // STEP 3: Sort albums
+    // STEP 3: Sort albums (parallel)
     // Scattered: by title | Unified: by artist, then year, then title
     // ═══════════════════════════════════════════════════════════════════════
     bool sort_by_year = config.sort_albums_by_year;
 
-    ouroboros::util::timsort(albums,
+    util::Logger::info("Sorting " + std::to_string(albums.size()) + " albums (parallel)");
+    ouroboros::util::parallel_timsort(albums,
         [sort_by_year, &get_artist_sort_key, &year_to_int](
             const model::AlbumGroup& a, const model::AlbumGroup& b) {
 
@@ -297,9 +317,9 @@ void LibraryCollector::run(std::stop_token stop_token) {
                 auto new_lib_state = std::make_shared<model::LibraryState>();
                 new_lib_state->tracks = library.get_all_tracks();
 
-                // Sort library
-                util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-                ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+                // Sort library (parallel)
+                util::Logger::info("Sorting library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
+                ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
                     int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
                     if (cmp != 0) return cmp < 0;
                     if (a.date != b.date) return a.date < b.date;
@@ -360,8 +380,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
             auto new_lib_state = std::make_shared<model::LibraryState>();
             new_lib_state->tracks = library.get_all_tracks();
 
-            util::Logger::info("Sorting library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-            ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+            util::Logger::info("Sorting library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
+            ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
                 int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
                 if (cmp != 0) return cmp < 0;
                 if (a.date != b.date) return a.date < b.date;
@@ -429,8 +449,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
         auto new_lib_state = std::make_shared<model::LibraryState>();
         new_lib_state->tracks = library.get_all_tracks();
 
-        util::Logger::info("Sorting scanned library: " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-        ouroboros::util::timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
+        util::Logger::info("Sorting scanned library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
+        ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
             int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
             if (cmp != 0) return cmp < 0;
             if (a.date != b.date) return a.date < b.date;

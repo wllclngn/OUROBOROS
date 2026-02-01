@@ -1,4 +1,5 @@
 #include "util/DirectoryScanner.hpp"
+#include "util/ArtworkHasher.hpp"
 #include "util/Logger.hpp"
 #include <fcntl.h>
 #include <unistd.h>
@@ -8,7 +9,6 @@
 #include <dirent.h>
 #include <cstring>
 #include <algorithm>
-#include <openssl/sha.h>
 
 namespace ouroboros::util {
 
@@ -236,15 +236,15 @@ uint64_t DirectoryScanner::compute_tree_hash(const std::vector<std::string>& pat
         concatenated += '\n';
     }
 
-    // Compute SHA-256 hash
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(reinterpret_cast<const unsigned char*>(concatenated.data()),
-           concatenated.size(),
-           hash);
+    // Compute SHA-256 hash using our custom implementation
+    auto hash = ArtworkHasher::sha256(
+        reinterpret_cast<const uint8_t*>(concatenated.data()),
+        concatenated.size()
+    );
 
     // Truncate to uint64_t (first 8 bytes)
     uint64_t result = 0;
-    std::memcpy(&result, hash, sizeof(result));
+    std::memcpy(&result, hash.data(), sizeof(result));
 
     return result;
 }

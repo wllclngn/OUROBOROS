@@ -18,21 +18,21 @@ inline std::string normalize_for_search(const std::string& text) {
     // Convert UTF-8 string to ICU UnicodeString
     icu::UnicodeString unicode_text = icu::UnicodeString::fromUTF8(text);
 
-    // Transliterate to Latin-ASCII (removes diacritics: ö → o, é → e)
-    // NFD: Canonical decomposition (splits ö into o + combining diaeresis)
-    // [:Nonspacing Mark:] Remove: Removes combining characters
-    // NFC: Canonical composition (normalizes back to standard form)
-    // Latin-ASCII: Converts Latin characters to pure ASCII
-    UErrorCode status = U_ZERO_ERROR;
-    std::unique_ptr<icu::Transliterator> trans(
-        icu::Transliterator::createInstance(
-            "NFD; [:Nonspacing Mark:] Remove; NFC; Latin-ASCII",
-            UTRANS_FORWARD,
-            status
-        )
-    );
+    // Cache Transliterator per-thread (creation is expensive - parses rules, loads Unicode tables)
+    // thread_local ensures thread safety without locking
+    thread_local std::unique_ptr<icu::Transliterator> trans = []() {
+        UErrorCode status = U_ZERO_ERROR;
+        auto t = std::unique_ptr<icu::Transliterator>(
+            icu::Transliterator::createInstance(
+                "NFD; [:Nonspacing Mark:] Remove; NFC; Latin-ASCII",
+                UTRANS_FORWARD,
+                status
+            )
+        );
+        return U_SUCCESS(status) ? std::move(t) : nullptr;
+    }();
 
-    if (U_FAILURE(status) || !trans) {
+    if (!trans) {
         // Fallback: just lowercase without transliteration
         std::string result;
         unicode_text.toLower().toUTF8String(result);

@@ -24,7 +24,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Hardware-Aware Parallelism**: Metadata extraction with 4-16 thread pool (hardware_concurrency)
 - **Three-Tier Cache Validation**: O(1) tree hash → O(dirs) dirty detection → O(files) incremental parsing
 - **Real-World Performance**: 10K track library scans in <500ms (warm start: 95ms)
-- **Compilation/Soundtrack Grouping**: Automatic detection and merging of scattered albums (multi-disc sets, soundtracks) via title occurrence counting and same-artist merging
+- **Compilation/Soundtrack Grouping**: Directory-based album boundaries with automatic compilation detection (TCMP flag, "Various Artists", artist diversity thresholds)
 
 ### Content-Addressed Artwork
 - **SHA-256 Deduplication**: Custom NIST FIPS 180-4 implementation (100 tracks → 1 cached JPEG, 99% space savings)
@@ -132,19 +132,18 @@ sudo cmake --install build
 - **Audio Output**: PipeWire (`libpipewire-0.3`, `libspa-0.2`)
 - **Audio Codecs**: libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG), FFmpeg (M4A/AAC)
 - **Unicode**: ICU (`icu-uc`, `icu-i18n`) for case-insensitive sorting and diacritic normalization
-- **Crypto**: OpenSSL (SHA-256 for content-addressed artwork storage)
-- **Image Support**: stb_image, stb_image_resize2 (auto-downloaded by CMake)
+- **Image Support**: stb_image, stb_image_resize2 (vendored in vendor/stb/)
 
 ### Install Dependencies: Arch Linux
 
 ```bash
-sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis ffmpeg openssl icu
+sudo pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis ffmpeg icu
 ```
 
 ### Install Dependencies: Debian Linux
 
 ```bash
-sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libavformat-dev libavcodec-dev libswresample-dev libssl-dev cmake
+sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev libavformat-dev libavcodec-dev libswresample-dev libicu-dev cmake
 ```
 
 ### Run Without Installing
@@ -241,7 +240,7 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 
 - **Navigation**: `j`/`k` (up/down), `Shift+j`/`Shift+k` (multi-select)
 - **Playback**: `Space` (play/pause), `n` (next), `p` (previous), `←`/`→` (seek ±5s)
-- **Queue**: `Enter` (add to queue), `Ctrl+d` (clear queue), `Tab` (switch focus)
+- **Queue**: `Enter` (add to queue, or jump to album during search), `Ctrl+d` (clear queue), `Tab` (switch focus)
 - **Search**: `Ctrl+f` (toggle search box)
 - **Volume**: `+`/`-` (adjust ±5%)
 - **Modes**: `r` (cycle repeat), `s` (toggle shuffle)
@@ -270,7 +269,7 @@ All keybindings are customizable via `~/.config/ouroboros/config.toml`
 ### Build Fails
 
 1. **Check Compiler**: `g++ --version` (need GCC 13+ for C++23)
-2. **Verify Dependencies**: `pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis openssl`
+2. **Verify Dependencies**: `pacman -S cmake gcc pipewire libpipewire libmpg123 libsndfile libvorbis icu`
 3. **Clean Build**: `make distclean && cmake -B build`
 4. **CMake Cache**: Delete `build/CMakeCache.txt` if switching compilers
 
@@ -316,7 +315,6 @@ Built with:
 - **FFmpeg** (`libavformat`, `libavcodec`, `libswresample`) - M4A/AAC decoding
 - **stb_image** - Image loading (public domain)
 - **stb_image_resize2** - Image resizing (public domain)
-- **OpenSSL** - SHA-256 hashing for artwork cache
 
 ## Technical Highlights
 

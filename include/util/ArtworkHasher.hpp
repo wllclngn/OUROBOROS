@@ -14,12 +14,14 @@ public:
     // Fast FNV-1a hash for quick equality checks (same as ImageRenderer uses)
     static size_t fast_hash(const std::vector<uint8_t>& data);
 
+    // SHA-256 raw bytes (for general-purpose hashing, e.g., directory tree hash)
+    static std::vector<uint8_t> sha256(const uint8_t* data, size_t len);
+
 private:
     // SHA-256 internal implementation
     static constexpr size_t SHA256_BLOCK_SIZE = 64;
     static constexpr size_t SHA256_HASH_SIZE = 32;
 
-    static std::vector<uint8_t> sha256(const uint8_t* data, size_t len);
     static std::string to_hex(const std::vector<uint8_t>& bytes);
 
     // SHA-256 internal functions
