@@ -360,7 +360,8 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     // Draw border (will be redrawn on top of images in draw_border_overlay)
     std::string title = "LIBRARY";
     if (!filter_query_.empty()) {
-        title += " [SEARCH: " + filter_query_ + "]";
+        title += " SEARCH: \"" + filter_query_ + "\", ";
+        title += std::to_string(filtered_album_indices_.size()) + "/" + std::to_string(albums_.size()) + " ALBUMS";
     } else {
         title += ": " + std::to_string(albums_.size()) + " ALBUMS";
     }
@@ -408,19 +409,28 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
     }
 
     if (matches_keybind(event, "select")) {
-        // Add all tracks in album to queue (using safe shared_ptr pattern from Browser)
+        // Lookup actual album from filtered list
+        size_t album_idx = filtered_album_indices_[selected_index_];
+
+        // If searching: jump to album in unfiltered view
+        if (!filter_query_.empty()) {
+            ouroboros::util::Logger::debug("AlbumBrowser: ENTER during search, jumping to album " +
+                                          std::to_string(album_idx));
+            set_filter("");  // Clear search
+            selected_index_ = static_cast<int>(album_idx);  // Jump to album
+            ArtworkWindow::instance().reset();  // Reset artwork for new position
+            return;
+        }
+
+        // Normal mode: add all tracks in album to queue
         if (!g_current_snapshot || g_current_snapshot->library->tracks.empty()) {
             return;
         }
 
         auto& bus = events::EventBus::instance();
-        // Lookup actual album from filtered list
-        size_t album_idx = filtered_album_indices_[selected_index_];
         const auto& album = albums_[album_idx];
 
-        // Queue each track in the album (same pattern as Browser multi-select)
         for (int idx : album.track_indices) {
-            // Safety check: ensure index is valid
             if (idx >= 0 && idx < static_cast<int>(g_current_snapshot->library->tracks.size())) {
                 events::Event evt;
                 evt.type = events::Event::Type::AddTrackToQueue;

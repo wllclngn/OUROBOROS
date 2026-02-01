@@ -79,8 +79,8 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     // Draw border and title (highlight when focused)
     std::string title = "LIBRARY";
     if (!filter_query_.empty()) {
-        title += " [SEARCH: " + filter_query_ + "]";
-        title += " [" + std::to_string(filtered_indices_.size()) + "/" + std::to_string(tracks.size()) + "]";
+        title += " SEARCH: \"" + filter_query_ + "\", ";
+        title += std::to_string(filtered_indices_.size()) + "/" + std::to_string(tracks.size()) + " TRACKS";
     } else {
         title += ": " + std::to_string(tracks.size()) + " TRACKS";
     }
