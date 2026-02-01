@@ -20,40 +20,94 @@ import sys
 import shutil
 import subprocess
 from pathlib import Path
+from datetime import datetime
 
-def run(cmd, check=True, capture=False, sudo=False, cwd=None):
-    """Run a command, optionally with sudo."""
-    if sudo:
-        cmd = ["sudo"] + cmd
-    if capture:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-        return result.returncode, result.stdout, result.stderr
-    else:
-        result = subprocess.run(cmd, cwd=cwd)
-        return result.returncode, None, None
 
-def check_cmake():
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+def _timestamp() -> str:
+    """Get current timestamp in [HH:MM:SS] format."""
+    return datetime.now().strftime("[%H:%M:%S]")
+
+
+def log_debug(msg: str) -> None:
+    print(f"{_timestamp()} [DEBUG]  {msg}")
+
+
+def log_info(msg: str) -> None:
+    print(f"{_timestamp()} [INFO]   {msg}")
+
+
+def log_warn(msg: str) -> None:
+    print(f"{_timestamp()} [WARN]   {msg}")
+
+
+def log_error(msg: str) -> None:
+    print(f"{_timestamp()} [ERROR]  {msg}")
+
+
+# =============================================================================
+# COMMAND EXECUTION
+# =============================================================================
+
+def run_cmd(cmd: str | list, shell: bool = False, cwd: Path | None = None) -> int:
+    """
+    Run a command with real-time output to terminal.
+    Returns the exit code.
+    """
+    print(f">>> {cmd if isinstance(cmd, str) else ' '.join(cmd)}")
+    result = subprocess.run(
+        cmd,
+        shell=shell,
+        cwd=cwd,
+        # stdout and stderr go directly to terminal (no capture)
+    )
+    return result.returncode
+
+
+def run_cmd_capture(cmd: list, cwd: Path | None = None) -> tuple[int, str, str]:
+    """Run a command and capture output."""
+    result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    return result.returncode, result.stdout, result.stderr
+
+
+def run_cmd_sudo(cmd: list, cwd: Path | None = None) -> int:
+    """Run a command with sudo."""
+    return run_cmd(["sudo"] + cmd, cwd=cwd)
+
+
+# =============================================================================
+# DEPENDENCY CHECKS
+# =============================================================================
+
+def check_cmake() -> bool:
     """Check if cmake is available."""
-    ret, _, _ = run(["which", "cmake"], capture=True)
+    ret, _, _ = run_cmd_capture(["which", "cmake"])
     return ret == 0
 
-def check_compiler():
+
+def check_compiler() -> bool:
     """Check if a C++ compiler is available."""
     for compiler in ["g++", "clang++"]:
-        ret, _, _ = run(["which", compiler], capture=True)
+        ret, _, _ = run_cmd_capture(["which", compiler])
         if ret == 0:
             return True
     return False
 
-def check_pkg_config():
+
+def check_pkg_config() -> bool:
     """Check if pkg-config is available."""
-    ret, _, _ = run(["which", "pkg-config"], capture=True)
+    ret, _, _ = run_cmd_capture(["which", "pkg-config"])
     return ret == 0
 
-def check_dependency(pkg_name):
+
+def check_dependency(pkg_name: str) -> bool:
     """Check if a pkg-config dependency is available."""
-    ret, _, _ = run(["pkg-config", "--exists", pkg_name], capture=True)
+    ret, _, _ = run_cmd_capture(["pkg-config", "--exists", pkg_name])
     return ret == 0
+
 
 # pkg-config name -> friendly name for error messages
 REQUIRED_DEPS = [
@@ -66,88 +120,108 @@ REQUIRED_DEPS = [
     ("icu-i18n", "ICU i18n"),
 ]
 
-def cmd_build(args, source_dir):
+
+# =============================================================================
+# COMMANDS
+# =============================================================================
+
+def cmd_build(args, source_dir: Path) -> bool:
     """Build OUROBOROS."""
     build_dir = source_dir / "build"
 
-    # Configure
+    log_info("CONFIGURING BUILD")
+
     cmake_args = ["cmake", "-S", str(source_dir), "-B", str(build_dir)]
 
     if args.debug or args.debug_log:
         cmake_args.append("-DCMAKE_BUILD_TYPE=Debug")
+        log_info("Build type: Debug")
     else:
         cmake_args.append("-DCMAKE_BUILD_TYPE=Release")
+        log_info("Build type: Release")
 
     if args.debug_log:
         cmake_args.append("-DOUROBOROS_DEBUG_LOG=ON")
+        log_info("Debug logging: enabled")
 
     if args.prefix:
         cmake_args.append(f"-DCMAKE_INSTALL_PREFIX={args.prefix}")
+        log_info(f"Install prefix: {args.prefix}")
 
-    print("Configuring...")
-    ret, _, stderr = run(cmake_args, capture=True)
+    ret = run_cmd(cmake_args)
     if ret != 0:
-        print(f"ERROR: cmake configure failed!")
-        print(stderr)
+        log_error("cmake configure failed!")
         return False
+    log_info("Configuration complete")
 
     # Build
     import multiprocessing
     jobs = multiprocessing.cpu_count()
 
-    print(f"Building (using {jobs} jobs)...")
-    ret, _, stderr = run(["cmake", "--build", str(build_dir), f"-j{jobs}"], capture=True)
+    log_info("BUILDING")
+    log_info(f"Using {jobs} parallel jobs")
+
+    build_cmd = ["cmake", "--build", str(build_dir), f"-j{jobs}"]
+
+    ret = run_cmd(build_cmd)
     if ret != 0:
-        print(f"ERROR: Build failed!")
-        print(stderr)
+        log_error("Build failed!")
         return False
 
-    print("  OK: Build complete")
+    binary = build_dir / "ouroboros"
+    if binary.exists():
+        size = binary.stat().st_size
+        log_info(f"Built {binary} ({size} bytes)")
+
     return True
 
-def cmd_install(args, source_dir):
+
+def cmd_install(args, source_dir: Path) -> bool:
     """Build and install OUROBOROS."""
     if not cmd_build(args, source_dir):
         return False
 
     build_dir = source_dir / "build"
+    prefix = Path(args.prefix) if args.prefix else Path("/usr/local")
+    install_path = prefix / "bin" / "ouroboros"
 
-    print("Installing...")
-    ret, _, stderr = run(["cmake", "--install", str(build_dir)], sudo=True, capture=True)
+    log_info("INSTALLING")
+    log_info(f"Destination: {install_path}")
+
+    ret = run_cmd(["sudo", "cmake", "--install", str(build_dir)])
     if ret != 0:
-        print(f"ERROR: Install failed!")
-        print(stderr)
+        log_error("Install failed!")
         return False
 
-    print("  OK: Installed")
+    if install_path.exists():
+        size = install_path.stat().st_size
+        log_info(f"Installed {install_path} ({size} bytes)")
+
     print()
-    print("=" * 50)
-    print("SUCCESS!")
-    print("=" * 50)
-    print()
-    print("Run:")
-    print("  ouroboros")
-    print()
-    print("Man page:")
-    print("  man ouroboros")
-    print()
+    log_info("SUCCESS. Installation complete.")
+    log_info("RUN COMMAND: ouroboros")
+    log_info("MAN PAGE: man ouroboros")
 
     return True
 
-def cmd_clean(args, source_dir):
+
+def cmd_clean(args, source_dir: Path) -> bool:
     """Clean build directory."""
     build_dir = source_dir / "build"
 
+    log_info("CLEANING")
+
     if build_dir.exists():
-        print(f"Removing {build_dir}...")
+        log_info(f"Removing {build_dir}")
         shutil.rmtree(build_dir)
-        print("  OK: Cleaned")
+        log_info("Clean complete")
     else:
-        print("Nothing to clean")
+        log_info("Nothing to clean")
 
     return True
 
-def cmd_uninstall(args, source_dir):
+
+def cmd_uninstall(args, source_dir: Path) -> bool:
     """Remove installed files."""
     prefix = Path(args.prefix) if args.prefix else Path("/usr/local")
 
@@ -156,36 +230,51 @@ def cmd_uninstall(args, source_dir):
         prefix / "share" / "man" / "man1" / "ouroboros.1",
     ]
 
+    log_info("UNINSTALLING")
+
     removed = False
     for f in files:
         if f.exists() or f.is_symlink():
-            print(f"Removing {f}...")
-            ret, _, _ = run(["rm", "-f", str(f)], sudo=True)
+            log_info(f"Removing {f}")
+            ret = run_cmd_sudo(["rm", "-f", str(f)])
             if ret == 0:
-                print("  OK: Removed")
+                log_info("Removed")
                 removed = True
             else:
-                print("  ERROR: Failed to remove")
+                log_error("Failed to remove")
 
     if not removed:
-        print("No installed files found")
+        log_warn("No installed files found")
 
     return True
 
-def cmd_test(args, source_dir):
+
+def cmd_test(args, source_dir: Path) -> bool:
     """Run tests."""
     build_dir = source_dir / "build"
 
+    log_info("RUNNING TESTS")
+
     if not (build_dir / "Makefile").exists():
-        print("Project not built. Building first...")
+        log_info("Project not built. Building first...")
         if not cmd_build(args, source_dir):
             return False
 
-    print("Running tests...")
-    ret, _, _ = run(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
+    ret = run_cmd(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
+
+    if ret == 0:
+        log_info("All tests passed")
+    else:
+        log_error("Some tests failed")
+
     return ret == 0
 
-def main():
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+def main() -> int:
     parser = argparse.ArgumentParser(
         description="Build and install OUROBOROS (terminal music player)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -221,50 +310,47 @@ Examples:
 
     source_dir = Path(__file__).parent.resolve()
 
-    print("OUROBOROS installer")
-    print("===================")
-    print(f"Source: {source_dir}")
+    print()
+    log_info("OUROBOROS installer")
+    log_info(f"Source: {source_dir}")
     print()
 
     # Check dependencies
     if args.command in ["install", "build", "test"]:
-        print("Checking dependencies...")
+        log_info("CHECKING DEPENDENCIES")
 
         if not check_cmake():
+            log_error("cmake not found!")
             print()
-            print("ERROR: cmake not found!")
+            log_info("Install it first:")
+            print("         Arch Linux:    sudo pacman -S cmake")
+            print("         Debian/Ubuntu: sudo apt install cmake")
+            print("         Fedora:        sudo dnf install cmake")
             print()
-            print("Install it first:")
-            print("  Arch Linux:    sudo pacman -S cmake")
-            print("  Debian/Ubuntu: sudo apt install cmake")
-            print("  Fedora:        sudo dnf install cmake")
-            print()
-            sys.exit(1)
-        print("  OK: cmake found")
+            return 1
+        log_info("cmake found")
 
         if not check_compiler():
+            log_error("C++ compiler not found!")
             print()
-            print("ERROR: C++ compiler not found!")
+            log_info("Install it first:")
+            print("         Arch Linux:    sudo pacman -S gcc")
+            print("         Debian/Ubuntu: sudo apt install build-essential")
+            print("         Fedora:        sudo dnf install gcc-c++")
             print()
-            print("Install it first:")
-            print("  Arch Linux:    sudo pacman -S gcc")
-            print("  Debian/Ubuntu: sudo apt install build-essential")
-            print("  Fedora:        sudo dnf install gcc-c++")
-            print()
-            sys.exit(1)
-        print("  OK: C++ compiler found")
+            return 1
+        log_info("C++ compiler found")
 
         if not check_pkg_config():
+            log_error("pkg-config not found!")
             print()
-            print("ERROR: pkg-config not found!")
+            log_info("Install it first:")
+            print("         Arch Linux:    sudo pacman -S pkgconf")
+            print("         Debian/Ubuntu: sudo apt install pkg-config")
+            print("         Fedora:        sudo dnf install pkgconf-pkg-config")
             print()
-            print("Install it first:")
-            print("  Arch Linux:    sudo pacman -S pkgconf")
-            print("  Debian/Ubuntu: sudo apt install pkg-config")
-            print("  Fedora:        sudo dnf install pkgconf-pkg-config")
-            print()
-            sys.exit(1)
-        print("  OK: pkg-config found")
+            return 1
+        log_info("pkg-config found")
 
         # Check audio/media dependencies
         missing = []
@@ -273,30 +359,29 @@ Examples:
                 missing.append((pkg_config_name, friendly_name))
 
         if missing:
+            log_error("Missing dependencies!")
             print()
-            print("ERROR: Missing dependencies!")
-            print()
-            print("The following libraries are required:")
+            log_info("The following libraries are required:")
             for pkg_config_name, friendly_name in missing:
-                print(f"  - {friendly_name} ({pkg_config_name})")
+                print(f"           - {friendly_name} ({pkg_config_name})")
             print()
-            print("Install them:")
+            log_info("Install them:")
             print()
-            print("  Arch Linux:")
-            print("    sudo pacman -S pipewire mpg123 libsndfile libvorbis icu openssl")
+            print("         Arch Linux:")
+            print("           sudo pacman -S pipewire mpg123 libsndfile libvorbis icu openssl")
             print()
-            print("  Debian/Ubuntu:")
-            print("    sudo apt install libpipewire-0.3-dev libspa-0.2-dev \\")
-            print("      libmpg123-dev libsndfile1-dev libvorbis-dev \\")
-            print("      libicu-dev libssl-dev")
+            print("         Debian/Ubuntu:")
+            print("           sudo apt install libpipewire-0.3-dev libspa-0.2-dev \\")
+            print("             libmpg123-dev libsndfile1-dev libvorbis-dev \\")
+            print("             libicu-dev libssl-dev")
             print()
-            print("  Fedora:")
-            print("    sudo dnf install pipewire-devel mpg123-devel libsndfile-devel \\")
-            print("      libvorbis-devel libicu-devel openssl-devel")
+            print("         Fedora:")
+            print("           sudo dnf install pipewire-devel mpg123-devel libsndfile-devel \\")
+            print("             libvorbis-devel libicu-devel openssl-devel")
             print()
-            sys.exit(1)
+            return 1
 
-        print("  OK: All dependencies found")
+        log_info("All dependencies found")
         print()
 
     # Run command
@@ -309,7 +394,12 @@ Examples:
     }
 
     success = commands[args.command](args, source_dir)
-    sys.exit(0 if success else 1)
+    return 0 if success else 1
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        sys.exit(130)
