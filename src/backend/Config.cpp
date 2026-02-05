@@ -115,17 +115,17 @@ Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
 
                             // Find quoted string
                             if (inner[pos] == '"') {
-                                size_t start = pos + 1;
-                                size_t end = inner.find('"', start);
-                                if (end != std::string::npos) {
-                                    std::string path_str = inner.substr(start, end - start);
+                                size_t qstart = pos + 1;
+                                size_t qend = inner.find('"', qstart);
+                                if (qend != std::string::npos) {
+                                    std::string path_str = inner.substr(qstart, qend - qstart);
                                     // Expand ~ to home directory
                                     if (!path_str.empty() && path_str[0] == '~') {
                                         const char* home = std::getenv("HOME");
                                         if (home) path_str = std::string(home) + path_str.substr(1);
                                     }
                                     cfg.music_directories.emplace_back(path_str);
-                                    pos = end + 1;
+                                    pos = qend + 1;
                                 } else {
                                     break;
                                 }

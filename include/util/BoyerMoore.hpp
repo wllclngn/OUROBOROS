@@ -30,11 +30,12 @@ public:
      * @param start_pos Starting position in text (default 0)
      * @return Position of first match, or -1 if not found
      */
-    int search(const std::string& text, int start_pos = 0) const;
+    [[nodiscard]] int search(const std::string& text, int start_pos = 0) const;
 
 private:
     static constexpr int ALPHABET_SIZE = 256;
     static constexpr int MAX_PATTERN = 256;
+    static_assert(ALPHABET_SIZE == 256, "BMH requires full byte alphabet");
 
     // Bad character skip table (no heap allocation)
     int bad_char_[ALPHABET_SIZE];

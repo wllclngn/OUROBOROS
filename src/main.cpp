@@ -11,6 +11,7 @@
 #include "ui/ImageRenderer.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
+#include "util/Platform.hpp"
 #include <iostream>
 #include <memory>
 #include <thread>
@@ -168,7 +169,7 @@ int main() {
                     }
 
                     // Defensive: Bounds check
-                    if (evt.index < 0 || evt.index >= static_cast<int>(snap.library->tracks.size())) {
+                    if (evt.index < 0 || evt.index >= ouroboros::util::narrow_cast<int>(snap.library->tracks.size())) {
                         ouroboros::util::Logger::error("AddTrackToQueue: Index out of bounds! index=" +
                             std::to_string(evt.index) + ", library size=" +
                             std::to_string(snap.library->tracks.size()));
@@ -325,7 +326,7 @@ int main() {
 
                     // Resolve track via Library
                     int track_idx = snap.player.current_track_index.value();
-                    if (track_idx < 0 || track_idx >= static_cast<int>(snap.library->tracks.size())) return;
+                    if (track_idx < 0 || track_idx >= ouroboros::util::narrow_cast<int>(snap.library->tracks.size())) return;
                     const auto& track = snap.library->tracks[track_idx];
 
                     int current_pos = snap.player.playback_position_ms;
@@ -492,7 +493,6 @@ int main() {
                     // This fixes the Ghostty terminal runaway key repeat issue
                     ouroboros::ui::InputEvent last_event;
                     int events_drained = 0;
-                    auto& terminal = ouroboros::ui::Terminal::instance();
 
                     while (true) {
                         auto event = terminal.read_input();

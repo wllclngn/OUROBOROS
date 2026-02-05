@@ -11,6 +11,7 @@
 #include "util/BoyerMoore.hpp"
 #include "util/Logger.hpp"
 #include "util/UnicodeUtils.hpp"
+#include "util/Platform.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -134,7 +135,7 @@ void AlbumBrowser::update_filtered_albums() {
     }
 
     // Reset selection if out of bounds
-    if (selected_index_ >= (int)filtered_album_indices_.size()) {
+    if (selected_index_ >= util::narrow_cast<int>(filtered_album_indices_.size())) {
         selected_index_ = 0;
     }
 
@@ -242,7 +243,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     int x_offset = (content_rect.width - grid_width) / 2;
 
     // Use filtered indices for rendering
-    int total_albums = filtered_album_indices_.size();
+    int total_albums = util::narrow_cast<int>(filtered_album_indices_.size());
     if (total_albums == 0) {
         canvas.draw_text(content_rect.x + 2, content_rect.y + 2,
                         filter_query_.empty() ? "No albums." : "No matching album found.",
@@ -378,7 +379,7 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
     }
 
     if (albums_.empty()) return;
-    int total_albums = filtered_album_indices_.size();
+    int total_albums = util::narrow_cast<int>(filtered_album_indices_.size());
     if (total_albums == 0) return;
 
     // Track old selection for change detection
@@ -417,7 +418,7 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
             ouroboros::util::Logger::debug("AlbumBrowser: ENTER during search, jumping to album " +
                                           std::to_string(album_idx));
             set_filter("");  // Clear search
-            selected_index_ = static_cast<int>(album_idx);  // Jump to album
+            selected_index_ = util::narrow_cast<int>(album_idx);  // Jump to album
             ArtworkWindow::instance().reset();  // Reset artwork for new position
             return;
         }
@@ -431,7 +432,7 @@ void AlbumBrowser::handle_input(const InputEvent& event) {
         const auto& album = albums_[album_idx];
 
         for (int idx : album.track_indices) {
-            if (idx >= 0 && idx < static_cast<int>(g_current_snapshot->library->tracks.size())) {
+            if (idx >= 0 && idx < util::narrow_cast<int>(g_current_snapshot->library->tracks.size())) {
                 events::Event evt;
                 evt.type = events::Event::Type::AddTrackToQueue;
                 evt.index = idx;
@@ -589,7 +590,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int start_row = scroll_offset_;
     int end_row = start_row + visible_rows_grid + 1;
 
-    int total_filtered = filtered_album_indices_.size();
+    int total_filtered = util::narrow_cast<int>(filtered_album_indices_.size());
 
     // Calculate selected album's grid position for Manhattan distance calculation
     int selected_row = selected_index_ / cols_available;
@@ -869,7 +870,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     );
 
     // Only prefetch when 5% of visible slots are Ready - start prefetch early
-    int total_visible = static_cast<int>(render_items.size());
+    int total_visible = util::narrow_cast<int>(render_items.size());
     bool enough_visible_ready = (total_visible == 0) || (ready_count * 100 / total_visible >= 5);
 
     if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_ && enough_visible_ready) {

@@ -3,12 +3,13 @@
 #include "ui/InputEvent.hpp"
 #include "config/Theme.hpp"
 #include "events/EventBus.hpp"
+#include "util/Logger.hpp"
+#include "util/BoyerMoore.hpp"
+#include "util/Platform.hpp"
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
 #include <ctime>
-#include "util/Logger.hpp"
-#include "util/BoyerMoore.hpp"
 
 namespace ouroboros::ui::widgets {
 
@@ -96,7 +97,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     }
 
     // Clamp selection to FILTERED list
-    int total_items = static_cast<int>(filtered_indices_.size());
+    int total_items = util::narrow_cast<int>(filtered_indices_.size());
     if (total_items == 0) {
         canvas.draw_text(inner_rect.x + 2, inner_rect.y + 2, "No matching track found.",
                         Style{Color::Default, Color::Default, Attribute::Dim});
@@ -247,7 +248,7 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
             Style{Color::BrightWhite, Color::Default, Attribute::Bold} :  // Highlighted char (whiteish)
             Style{Color::BrightYellow, Color::Default, Attribute::None};   // Normal char (yellow)
 
-        canvas.draw_text(center_x + static_cast<int>(i), center_y, std::string(1, message[i]), style);
+        canvas.draw_text(center_x + util::narrow_cast<int>(i), center_y, std::string(1, message[i]), style);
     }
 
     // Show progress count if available (below main message)
@@ -353,7 +354,7 @@ void Browser::handle_input(const InputEvent& event) {
     }
 
     // Determine effective size (filtered or full)
-    int total_items = static_cast<int>(filtered_indices_.size());
+    int total_items = util::narrow_cast<int>(filtered_indices_.size());
     if (total_items == 0 && filtered_indices_.empty() && g_current_snapshot) {
          if (!g_current_snapshot->library->tracks.empty() && filter_query_.empty()) {
              total_items = g_current_snapshot->library->tracks.size();
@@ -371,7 +372,7 @@ void Browser::handle_input(const InputEvent& event) {
     // Move down AND toggle selection (from TOML: nav_select_down)
     else if (matches_keybind(event, "nav_select_down")) {
         if (selected_index_ < total_items) {
-             if (selected_index_ < (int)filtered_indices_.size()) {
+             if (selected_index_ < util::narrow_cast<int>(filtered_indices_.size())) {
                  toggle_selection(filtered_indices_[selected_index_]);
              }
              selected_index_++;
@@ -379,7 +380,7 @@ void Browser::handle_input(const InputEvent& event) {
     }
     // Move up AND toggle selection (from TOML: nav_select_up)
     else if (matches_keybind(event, "nav_select_up")) {
-        if (selected_index_ < (int)filtered_indices_.size()) {
+        if (selected_index_ < util::narrow_cast<int>(filtered_indices_.size())) {
             toggle_selection(filtered_indices_[selected_index_]);
         }
         if (selected_index_ > 0) selected_index_--;
@@ -393,7 +394,7 @@ void Browser::handle_input(const InputEvent& event) {
 
         if (!selected_indices_.empty()) {
             for (int idx : selected_indices_) {
-                if (idx >= 0 && idx < static_cast<int>(g_current_snapshot->library->tracks.size())) {
+                if (idx >= 0 && idx < util::narrow_cast<int>(g_current_snapshot->library->tracks.size())) {
                     events::Event evt;
                     evt.type = events::Event::Type::AddTrackToQueue;
                     evt.index = idx;
@@ -403,7 +404,7 @@ void Browser::handle_input(const InputEvent& event) {
             clear_selection();
         }
         else if (selected_index_ >= 0 && selected_index_ < total_items) {
-            if (selected_index_ < (int)filtered_indices_.size()) {
+            if (selected_index_ < util::narrow_cast<int>(filtered_indices_.size())) {
                 int real_index = filtered_indices_[selected_index_];
                 
                 events::Event evt;

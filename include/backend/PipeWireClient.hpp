@@ -10,18 +10,18 @@ public:
     PipeWireClient();
     ~PipeWireClient();
 
-    bool connect(const std::string& server_name = "");
-    bool disconnect();
-    bool is_connected() const;
+    [[nodiscard]] bool connect(const std::string& server_name = "");
+    [[nodiscard]] bool disconnect();
+    [[nodiscard]] bool is_connected() const;
 
-    bool play();
-    bool pause();
-    bool next();
-    bool prev();
-    bool set_volume(int percent);
-    bool seek(int position_ms);
+    [[nodiscard]] bool play();
+    [[nodiscard]] bool pause();
+    [[nodiscard]] bool next();
+    [[nodiscard]] bool prev();
+    [[nodiscard]] bool set_volume(int percent);
+    [[nodiscard]] bool seek(int position_ms);
 
-    model::PlayerState get_state() const;
+    [[nodiscard]] model::PlayerState get_state() const;
 
 private:
     struct Impl;

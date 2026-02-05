@@ -268,7 +268,7 @@ void LibraryCollector::run(std::stop_token stop_token) {
     } else {
         auto default_dir = util::Platform::get_music_directory();
         util::Logger::info("Music directory (default): " + default_dir.string());
-        library.set_music_directory(default_dir);
+        library.set_music_directories({default_dir});
     }
 
     // Publish early scanning state so UI shows loading indicator during validation
@@ -443,7 +443,9 @@ void LibraryCollector::run(std::stop_token stop_token) {
         });
 
         // Save monolithic cache
-        library.save_to_cache(cache_file);
+        if (!library.save_to_cache(cache_file)) {
+            util::Logger::error("Failed to save library cache: " + cache_file.string());
+        }
 
         // Publish final library
         auto new_lib_state = std::make_shared<model::LibraryState>();

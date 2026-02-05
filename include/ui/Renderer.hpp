@@ -19,8 +19,8 @@ public:
     void render(bool force_redraw = false);
     void handle_input();
     void handle_input_event(const InputEvent& event);
-    bool should_quit() const;
-    bool is_album_view_active() const { return show_album_view_; }
+    [[nodiscard]] bool should_quit() const;
+    [[nodiscard]] bool is_album_view_active() const { return show_album_view_; }
 
 private:
     std::shared_ptr<backend::SnapshotPublisher> publisher_;

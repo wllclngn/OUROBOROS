@@ -90,6 +90,13 @@ void Library::set_music_directories(const std::vector<std::filesystem::path>& di
 }
 
 bool Library::save_to_cache(const std::filesystem::path& cache_path) const {
+    // Binary format invariants for serialized POD fields
+    static_assert(sizeof(uint32_t) == 4);
+    static_assert(sizeof(uint64_t) == 8);
+    static_assert(sizeof(int) == 4, "Serialized int fields must be 4 bytes");
+    static_assert(sizeof(model::AudioFormat) == 4, "Enum must be 4 bytes for binary cache");
+    static_assert(sizeof(bool) == 1, "Bool must be 1 byte for binary cache");
+
     try {
         std::filesystem::create_directories(cache_path.parent_path());
         std::ofstream out(cache_path, std::ios::binary);

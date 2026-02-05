@@ -4,10 +4,11 @@
 #include "ui/ArtworkWindow.hpp"
 #include "ui/VisualBlocks.hpp"
 #include "config/Theme.hpp"
+#include "util/Logger.hpp"
+#include "util/Platform.hpp"
 #include <sstream>
 #include <fstream>
 #include <iomanip>
-#include "util/Logger.hpp"
 
 namespace ouroboros::ui::widgets {
 
@@ -36,7 +37,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
     // Resolve track index to actual Track via Library
     int track_idx = snap.player.current_track_index.value();
-    if (track_idx < 0 || track_idx >= static_cast<int>(snap.library->tracks.size())) {
+    if (track_idx < 0 || track_idx >= util::narrow_cast<int>(snap.library->tracks.size())) {
         canvas.draw_text(content_rect.x + 2, content_rect.y + 2, "(invalid track index)",
                         Style{Color::Default, Color::Default, Attribute::Dim});
         return;

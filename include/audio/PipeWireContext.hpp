@@ -9,7 +9,7 @@ public:
     PipeWireContext();
     ~PipeWireContext();
     
-    bool init();
+    [[nodiscard]] bool init();
     struct pw_thread_loop* get_loop() const { return loop_; }
     
 private:

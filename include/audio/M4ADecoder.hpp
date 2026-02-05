@@ -16,18 +16,18 @@ public:
     M4ADecoder();
     ~M4ADecoder() override;
 
-    bool open(const std::string& filepath) override;
+    [[nodiscard]] bool open(const std::string& filepath) override;
     void close() override;
 
-    int read_pcm(float* buffer, int max_frames) override;
+    [[nodiscard]] int read_pcm(float* buffer, int max_frames) override;
 
-    int get_sample_rate() const override { return sample_rate_; }
-    int get_channels() const override { return channels_; }
-    long get_total_frames() const override { return total_frames_; }
-    long get_position_frames() const override { return position_frames_; }
+    [[nodiscard]] int get_sample_rate() const override { return sample_rate_; }
+    [[nodiscard]] int get_channels() const override { return channels_; }
+    [[nodiscard]] long get_total_frames() const override { return total_frames_; }
+    [[nodiscard]] long get_position_frames() const override { return position_frames_; }
 
-    bool seek(long frame) override;
-    bool is_open() const override { return format_ctx_ != nullptr; }
+    [[nodiscard]] bool seek(long frame) override;
+    [[nodiscard]] bool is_open() const override { return format_ctx_ != nullptr; }
 
 private:
     AVFormatContext* format_ctx_ = nullptr;

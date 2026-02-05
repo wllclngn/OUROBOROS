@@ -11,8 +11,8 @@ public:
     MetadataCache(std::chrono::seconds ttl = std::chrono::seconds(3600));
 
     void cache_metadata(const std::string& file_path, const model::Track& metadata);
-    std::optional<model::Track> get_cached_metadata(const std::string& file_path) const;
-    bool has_cached_metadata(const std::string& file_path) const;
+    [[nodiscard]] std::optional<model::Track> get_cached_metadata(const std::string& file_path) const;
+    [[nodiscard]] bool has_cached_metadata(const std::string& file_path) const;
     
     void clear();
     void cleanup_expired();

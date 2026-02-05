@@ -15,19 +15,20 @@ class Library {
 public:
     Library();
 
-    void set_music_directory(const std::filesystem::path& dir);  // Legacy single-dir
+    [[deprecated("use set_music_directories() instead")]]
+    void set_music_directory(const std::filesystem::path& dir);
     void set_music_directories(const std::vector<std::filesystem::path>& dirs);
     void scan_directory(const std::function<void(int scanned, int total)>& progress_callback = nullptr);
 
-    std::vector<model::Track> get_all_tracks() const;
-    std::optional<model::Track> get_track_by_path(const std::filesystem::path& path) const;
+    [[nodiscard]] std::vector<model::Track> get_all_tracks() const;
+    [[nodiscard]] std::optional<model::Track> get_track_by_path(const std::filesystem::path& path) const;
 
-    size_t get_track_count() const;
-    bool is_scanning() const;
+    [[nodiscard]] size_t get_track_count() const;
+    [[nodiscard]] bool is_scanning() const;
 
     // Persistence (monolithic .bin cache)
-    bool save_to_cache(const std::filesystem::path& cache_path) const;
-    bool load_from_cache(const std::filesystem::path& cache_path);
+    [[nodiscard]] bool save_to_cache(const std::filesystem::path& cache_path) const;
+    [[nodiscard]] bool load_from_cache(const std::filesystem::path& cache_path);
     void set_tracks(const std::vector<model::Track>& tracks);
 
     // Multi-tier cache validation
@@ -39,8 +40,8 @@ public:
         GenericFailure
     };
 
-    CacheValidationResult validate_cache_tier0(const std::filesystem::path& cache_path);
-    std::vector<std::string> find_dirty_directories(
+    [[nodiscard]] CacheValidationResult validate_cache_tier0(const std::filesystem::path& cache_path);
+    [[nodiscard]] std::vector<std::string> find_dirty_directories(
         const std::unordered_map<std::string, std::time_t>& current_dir_mtimes,
         const std::unordered_map<std::string, std::time_t>& cached_dir_mtimes
     );
@@ -51,8 +52,8 @@ public:
     );
 
     // Accessors for optimization fields
-    const std::unordered_map<std::string, std::time_t>& get_dir_mtimes() const { return dir_mtimes_; }
-    uint64_t get_tree_hash() const { return last_tree_hash_; }
+    [[nodiscard]] const std::unordered_map<std::string, std::time_t>& get_dir_mtimes() const { return dir_mtimes_; }
+    [[nodiscard]] uint64_t get_tree_hash() const { return last_tree_hash_; }
 
 private:
     std::vector<std::filesystem::path> music_dirs_;  // Multiple directories

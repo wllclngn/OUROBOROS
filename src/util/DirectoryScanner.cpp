@@ -26,16 +26,15 @@ constexpr uint8_t DT_UNKNOWN = 0;
 constexpr uint8_t DT_REG = 8;     // Regular file
 constexpr uint8_t DT_DIR = 4;     // Directory
 
-// Audio file extensions
-const std::unordered_set<std::string_view> DirectoryScanner::AUDIO_EXTENSIONS = {
-    ".mp3", ".flac", ".ogg", ".wav", ".m4a"
-};
-
 bool DirectoryScanner::is_audio_extension(const char* filename) {
     const char* ext = strrchr(filename, '.');
     if (!ext) return false;
 
-    return AUDIO_EXTENSIONS.count(ext) > 0;
+    std::string_view sv(ext);
+    for (const auto& ae : AUDIO_EXTENSIONS) {
+        if (ae == sv) return true;
+    }
+    return false;
 }
 
 DirectoryScanner::ScanResult DirectoryScanner::scan_directory(

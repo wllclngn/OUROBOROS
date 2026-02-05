@@ -1,5 +1,6 @@
 #include "backend/ArtworkCache.hpp"
 #include "util/Logger.hpp"
+#include "util/Platform.hpp"
 #include <fstream>
 #include <cstring>
 
@@ -22,7 +23,7 @@ void ArtworkCache::store(const std::string& hash, std::vector<uint8_t> data, con
 
     // Validate image before storing (reject corrupt data)
     int w, h, channels;
-    unsigned char* pixels = stbi_load_from_memory(data.data(), static_cast<int>(data.size()),
+    unsigned char* pixels = stbi_load_from_memory(data.data(), util::narrow_cast<int>(data.size()),
                                                   &w, &h, &channels, 4);
 
     if (!pixels) {
@@ -167,6 +168,12 @@ bool ArtworkCache::is_dirty() const {
 }
 
 bool ArtworkCache::save(const std::filesystem::path& cache_path) {
+    // Binary format invariants
+    static_assert(sizeof(uint32_t) == 4);
+    static_assert(sizeof(uint64_t) == 8);
+    static_assert(sizeof(CACHE_MAGIC) == 8);
+    static_assert(sizeof(CACHE_VERSION) == 4);
+
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Skip save if nothing changed
@@ -218,8 +225,9 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) {
             out.write(reinterpret_cast<const char*>(&data_len), sizeof(data_len));
             out.write(reinterpret_cast<const char*>(entry.data.data()), data_len);
 
-            // Ref count
-            out.write(reinterpret_cast<const char*>(&entry.ref_count), sizeof(entry.ref_count));
+            // Ref count (serialize as uint64_t for portability)
+            uint64_t ref_count = entry.ref_count;
+            out.write(reinterpret_cast<const char*>(&ref_count), sizeof(ref_count));
         }
 
         // Write verified tracks count and paths
@@ -268,6 +276,9 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) {
 }
 
 bool ArtworkCache::load(const std::filesystem::path& cache_path) {
+    static_assert(sizeof(uint32_t) == 4);
+    static_assert(sizeof(uint64_t) == 8);
+
     if (!std::filesystem::exists(cache_path)) {
         util::Logger::info("ArtworkCache: No existing cache file found");
         return false;
@@ -336,8 +347,8 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             std::vector<uint8_t> data(data_len);
             in.read(reinterpret_cast<char*>(data.data()), data_len);
 
-            // Ref count (read but ignore - reset to 0 since LRU cache is empty at startup)
-            size_t ref_count_ignored;
+            // Ref count (read as uint64_t for portability, but ignore - reset to 0 at startup)
+            uint64_t ref_count_ignored;
             in.read(reinterpret_cast<char*>(&ref_count_ignored), sizeof(ref_count_ignored));
 
             // Store entry with ref_count=0 (no LRU entries reference it yet)

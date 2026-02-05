@@ -3,8 +3,8 @@
 #include <filesystem>
 #include <vector>
 #include <string>
+#include <array>
 #include <unordered_map>
-#include <unordered_set>
 #include <cstdint>
 #include <ctime>
 
@@ -40,7 +40,7 @@ public:
      * @param root_dir Root directory to scan recursively
      * @return ScanResult containing all audio files, mtimes, and tree hash
      */
-    static ScanResult scan_directory(const std::filesystem::path& root_dir);
+    [[nodiscard]] static ScanResult scan_directory(const std::filesystem::path& root_dir);
 
     /**
      * Scans only directories (not files) for TIER 1 validation.
@@ -49,7 +49,7 @@ public:
      * @param root_dir Root directory to scan
      * @return Map of directory path → modification time
      */
-    static std::unordered_map<std::string, std::time_t> scan_directories_only(
+    [[nodiscard]] static std::unordered_map<std::string, std::time_t> scan_directories_only(
         const std::filesystem::path& root_dir
     );
 
@@ -59,7 +59,7 @@ public:
      * @param filename Filename to check
      * @return true if filename ends with .mp3, .flac, .ogg, .wav, or .m4a
      */
-    static bool is_audio_extension(const char* filename);
+    [[nodiscard]] static bool is_audio_extension(const char* filename);
 
 private:
     static constexpr size_t BUFFER_SIZE = 256 * 1024;  // 256KB buffer for getdents64
@@ -67,7 +67,9 @@ private:
     /**
      * Supported audio file extensions.
      */
-    static const std::unordered_set<std::string_view> AUDIO_EXTENSIONS;
+    static constexpr std::array<std::string_view, 5> AUDIO_EXTENSIONS = {
+        ".flac", ".m4a", ".mp3", ".ogg", ".wav"
+    };
 
     /**
      * Recursively scan directory using getdents64 syscall.

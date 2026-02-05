@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 2.3.0 LANGUAGES CXX)
+project(ouroboros VERSION 2.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -119,7 +119,12 @@ target_include_directories(ouroboros PUBLIC
     ${AVUTIL_INCLUDE_DIRS}
     ${SWRESAMPLE_INCLUDE_DIRS}
 )
-target_compile_options(ouroboros PRIVATE -Wall -Wextra -Werror)
+target_compile_options(ouroboros PRIVATE
+    -Wall -Wextra -Wshadow -Werror
+    # -Wpedantic: blocked by PipeWire/SPA C headers (compound literals)
+    # -Wconversion: requires fixing ~100+ implicit conversions in FFmpeg/mpg123/toml interop
+    # -Wcast-qual: blocked by PipeWire/SPA headers (qsort const cast)
+)
 if(OUROBOROS_DEBUG_LOG)
     target_compile_definitions(ouroboros PRIVATE OUROBOROS_ENABLE_LOGGING)
 endif()

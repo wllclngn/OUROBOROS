@@ -16,7 +16,7 @@ public:
     ~PipeWireOutput();
 
     // Now requires the shared context
-    bool init(PipeWireContext& context, int sample_rate, int channels);
+    [[nodiscard]] bool init(PipeWireContext& context, int sample_rate, int channels);
     void close();
     
     // Write audio data to PipeWire stream

@@ -177,7 +177,7 @@ bool ImageRenderer::query_kitty_support() {
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
 
-    int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    int ret = select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
 
     char buf[256] = {0};
     ssize_t n = 0;
@@ -223,7 +223,7 @@ bool ImageRenderer::query_sixel_support() {
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
 
-    int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    int ret = select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
 
     char buf[256] = {0};
     ssize_t n = 0;
@@ -267,7 +267,7 @@ std::string ImageRenderer::query_da1() {
     FD_ZERO(&fds);
     FD_SET(STDIN_FILENO, &fds);
 
-    int ret = select(STDIN_FILENO + 1, &fds, NULL, NULL, &tv);
+    int ret = select(STDIN_FILENO + 1, &fds, nullptr, nullptr, &tv);
 
     char buf[256] = {0};
     ssize_t n = 0;

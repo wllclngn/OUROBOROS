@@ -20,7 +20,7 @@ public:
 
     void init();
     void shutdown();
-    bool is_initialized() const;
+    [[nodiscard]] bool is_initialized() const;
 
     void clear_screen();
     void move_cursor(int x, int y);
@@ -31,8 +31,8 @@ public:
     void write_raw(const std::string& text);
 
     InputEvent read_input();
-    int get_terminal_width() const;
-    int get_terminal_height() const;
+    [[nodiscard]] int get_terminal_width() const;
+    [[nodiscard]] int get_terminal_height() const;
 
 private:
     Terminal();

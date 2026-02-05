@@ -5,6 +5,8 @@
 #include <chrono>
 #include <optional>
 
+static_assert(sizeof(size_t) >= 8, "64-bit platform required");
+
 namespace ouroboros::model {
 
 enum class PlaybackState {

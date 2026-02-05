@@ -39,10 +39,10 @@ public:
 
     // O(1) lookup by hash
     // Returns nullptr if not found
-    const RawArtworkEntry* get(const std::string& hash) const;
+    [[nodiscard]] const RawArtworkEntry* get(const std::string& hash) const;
 
     // O(1) lookup by directory - returns hash or nullptr
-    const std::string* get_hash_for_dir(const std::string& dir) const;
+    [[nodiscard]] const std::string* get_hash_for_dir(const std::string& dir) const;
 
     // Increment reference count (called when track references artwork)
     void ref(const std::string& hash);
@@ -51,25 +51,25 @@ public:
     void unref(const std::string& hash);
 
     // Persist cache to disk (only if dirty)
-    bool save(const std::filesystem::path& cache_path);
+    [[nodiscard]] bool save(const std::filesystem::path& cache_path);
 
     // Check if cache has unsaved changes
-    bool is_dirty() const;
+    [[nodiscard]] bool is_dirty() const;
 
     // Load cache from disk
-    bool load(const std::filesystem::path& cache_path);
+    [[nodiscard]] bool load(const std::filesystem::path& cache_path);
 
     // Per-track artwork verification (persisted with cache)
     // Avoids redundant SHA256 extraction after initial comparison
     void mark_verified(const std::string& path, const std::string& hash = "");
-    bool is_verified(const std::string& path) const;
+    [[nodiscard]] bool is_verified(const std::string& path) const;
 
     // Get hash for track (returns unique hash if set, otherwise nullptr)
-    const std::string* get_hash_for_track(const std::string& path) const;
+    [[nodiscard]] const std::string* get_hash_for_track(const std::string& path) const;
 
     // Statistics
-    size_t size() const;
-    size_t memory_usage() const;  // Total bytes in cache
+    [[nodiscard]] size_t size() const;
+    [[nodiscard]] size_t memory_usage() const;  // Total bytes in cache
 
     // Clear all entries (used for testing)
     void clear();
@@ -92,6 +92,8 @@ private:
     // Cache file format magic/version
     static constexpr uint64_t CACHE_MAGIC = 0x4F55524F41525431ULL;  // 'OUROART1'
     static constexpr uint32_t CACHE_VERSION = 5;  // Added explicit dir_to_hash_ persistence
+    static_assert(sizeof(CACHE_MAGIC) == 8);
+    static_assert(sizeof(CACHE_VERSION) == 4);
 };
 
 }  // namespace ouroboros::backend

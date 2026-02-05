@@ -1,4 +1,5 @@
 #include "ui/Component.hpp"
+#include "util/Platform.hpp"
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
@@ -50,7 +51,7 @@ std::string Component::format_track_display(
     if (show_duration && track.duration_ms > 0) {
         int duration_seconds = track.duration_ms / 1000;
         std::string duration_str = " [" + format_duration(duration_seconds) + "]";
-        int available_width = max_width - static_cast<int>(duration_str.length());
+        int available_width = max_width - util::narrow_cast<int>(duration_str.length());
 
         if (available_width > 10) {  // Ensure minimum space for track info
             std::string truncated = truncate_text(display, available_width);
@@ -85,16 +86,16 @@ std::string Component::format_track_metadata_line(
 }
 
 std::string Component::center_text(const std::string& text, int width) const {
-    if (static_cast<int>(text.length()) >= width) {
+    if (util::narrow_cast<int>(text.length()) >= width) {
         return text.substr(0, width);
     }
 
-    int padding = (width - static_cast<int>(text.length())) / 2;
+    int padding = (width - util::narrow_cast<int>(text.length())) / 2;
     return std::string(padding, ' ') + text;
 }
 
 std::string Component::pad_right(const std::string& text, int width) const {
-    if (static_cast<int>(text.length()) >= width) {
+    if (util::narrow_cast<int>(text.length()) >= width) {
         return text.substr(0, width);
     }
 

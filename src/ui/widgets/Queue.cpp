@@ -3,9 +3,10 @@
 #include "ui/VisualBlocks.hpp"
 #include "ui/InputEvent.hpp"
 #include "config/Theme.hpp"
+#include "util/Logger.hpp"
+#include "util/Platform.hpp"
 #include <algorithm>
 #include <sstream>
-#include "util/Logger.hpp"
 
 namespace ouroboros::ui::widgets {
 
@@ -56,8 +57,8 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     }
 
     // Bounds checking for scroll
-    if (scroll_offset_ >= static_cast<int>(display_tracks.size())) {
-        scroll_offset_ = std::max(0, static_cast<int>(display_tracks.size()) - 1);
+    if (scroll_offset_ >= util::narrow_cast<int>(display_tracks.size())) {
+        scroll_offset_ = std::max(0, util::narrow_cast<int>(display_tracks.size()) - 1);
     }
     if (scroll_offset_ < 0) {
         scroll_offset_ = 0;
@@ -67,13 +68,13 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     int y = content_rect.y;
     int available_lines = content_rect.height;
 
-    int end_index = std::min(static_cast<int>(display_tracks.size()), scroll_offset_ + available_lines);
+    int end_index = std::min(util::narrow_cast<int>(display_tracks.size()), scroll_offset_ + available_lines);
 
     for (int i = scroll_offset_; i < end_index; ++i) {
         const auto& [track_idx, is_current] = display_tracks[i];
 
         // Bounds check
-        if (track_idx < 0 || track_idx >= static_cast<int>(snap.library->tracks.size())) {
+        if (track_idx < 0 || track_idx >= util::narrow_cast<int>(snap.library->tracks.size())) {
             ouroboros::util::Logger::error("Queue::render: Invalid track_idx=" + std::to_string(track_idx));
             continue;
         }

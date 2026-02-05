@@ -32,16 +32,16 @@ public:
 
     // Detect what the terminal supports
     void detect_protocol();
-    ImageProtocol get_protocol() const { return protocol_; }
+    [[nodiscard]] ImageProtocol get_protocol() const { return protocol_; }
 
     // Control album art display from config
     void set_album_art_enabled(bool enabled) { album_art_enabled_ = enabled; }
-    bool is_album_art_enabled() const { return album_art_enabled_; }
+    [[nodiscard]] bool is_album_art_enabled() const { return album_art_enabled_; }
 
     // Render pre-decoded pixels at terminal position
     // data is RGB or PNG pixels from ArtworkWindow
     // Returns image ID if successful, 0 if failed
-    uint32_t render_image(
+    [[nodiscard]] uint32_t render_image(
         const uint8_t* data,
         size_t data_size,
         int data_width,
@@ -61,17 +61,17 @@ public:
     void clear_image(int x, int y, int width_cols, int height_rows);
 
     // Check if images are supported
-    bool images_supported() const { return album_art_enabled_; }
+    [[nodiscard]] bool images_supported() const { return album_art_enabled_; }
 
     // Debug helper
-    std::string protocol_name(ImageProtocol proto);
+    [[nodiscard]] std::string protocol_name(ImageProtocol proto);
 
     // Helper to write data to a temporary file in /dev/shm (RAM)
-    std::string write_to_temp_file(const unsigned char* data, size_t len);
+    [[nodiscard]] std::string write_to_temp_file(const unsigned char* data, size_t len);
 
     // Cell size accessors
-    int get_cell_width() const { return cell_width_; }
-    int get_cell_height() const { return cell_height_; }
+    [[nodiscard]] int get_cell_width() const { return cell_width_; }
+    [[nodiscard]] int get_cell_height() const { return cell_height_; }
 
 private:
     ImageRenderer();

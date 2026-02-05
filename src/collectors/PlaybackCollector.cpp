@@ -6,6 +6,7 @@
 #include "audio/PipeWireOutput.hpp"
 #include "backend/MetadataParser.hpp"
 #include "util/Logger.hpp"
+#include "util/Platform.hpp"
 #include "events/EventBus.hpp"
 #include <thread>
 #include <memory>
@@ -79,7 +80,7 @@ void PlaybackCollector::run(std::stop_token stop_token) {
 
         // Two Stacks: Get current track index directly
         int track_index = *snap.queue->current;
-        if (track_index < 0 || track_index >= static_cast<int>(snap.library->tracks.size())) {
+        if (track_index < 0 || track_index >= util::narrow_cast<int>(snap.library->tracks.size())) {
             util::Logger::error("PlaybackCollector: Track index out of bounds (idx=" +
                 std::to_string(track_index) + ", lib_size=" +
                 std::to_string(snap.library->tracks.size()) + ")");

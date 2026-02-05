@@ -6,7 +6,7 @@
 namespace ouroboros::util {
 
 // SHA-256 constants (first 32 bits of the fractional parts of the cube roots of the first 64 primes)
-static const uint32_t K[64] = {
+static constexpr uint32_t K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
     0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -17,31 +17,31 @@ static const uint32_t K[64] = {
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-uint32_t ArtworkHasher::rotr(uint32_t x, uint32_t n) {
+constexpr uint32_t ArtworkHasher::rotr(uint32_t x, uint32_t n) {
     return (x >> n) | (x << (32 - n));
 }
 
-uint32_t ArtworkHasher::ch(uint32_t x, uint32_t y, uint32_t z) {
+constexpr uint32_t ArtworkHasher::ch(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) ^ (~x & z);
 }
 
-uint32_t ArtworkHasher::maj(uint32_t x, uint32_t y, uint32_t z) {
+constexpr uint32_t ArtworkHasher::maj(uint32_t x, uint32_t y, uint32_t z) {
     return (x & y) ^ (x & z) ^ (y & z);
 }
 
-uint32_t ArtworkHasher::sigma0(uint32_t x) {
+constexpr uint32_t ArtworkHasher::sigma0(uint32_t x) {
     return rotr(x, 2) ^ rotr(x, 13) ^ rotr(x, 22);
 }
 
-uint32_t ArtworkHasher::sigma1(uint32_t x) {
+constexpr uint32_t ArtworkHasher::sigma1(uint32_t x) {
     return rotr(x, 6) ^ rotr(x, 11) ^ rotr(x, 25);
 }
 
-uint32_t ArtworkHasher::gamma0(uint32_t x) {
+constexpr uint32_t ArtworkHasher::gamma0(uint32_t x) {
     return rotr(x, 7) ^ rotr(x, 18) ^ (x >> 3);
 }
 
-uint32_t ArtworkHasher::gamma1(uint32_t x) {
+constexpr uint32_t ArtworkHasher::gamma1(uint32_t x) {
     return rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10);
 }
 

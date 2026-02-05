@@ -1,5 +1,6 @@
 #include "ui/FlexLayout.hpp"
 #include "ui/Component.hpp"
+#include "util/Platform.hpp"
 #include <algorithm>
 #include <limits>
 #include <cmath>
@@ -79,7 +80,7 @@ std::vector<int> FlexLayout::compute_main_axis_sizes(int available_space) {
     
     // Add spacing
     if (n > 1) {
-        used_space += spacing_ * static_cast<int>(n - 1);
+        used_space += spacing_ * util::narrow_cast<int>(n - 1);
     }
     
     // Iterative distribution loop
@@ -150,7 +151,7 @@ std::vector<int> FlexLayout::compute_main_axis_sizes(int available_space) {
             // Re-calculate used space with the frozen item's new fixed size
             used_space = 0;
             for (int s : sizes) used_space += s;
-            if (n > 1) used_space += spacing_ * static_cast<int>(n - 1);
+            if (n > 1) used_space += spacing_ * util::narrow_cast<int>(n - 1);
             continue; // Loop again
         } else {
             // No violations! Apply proposed sizes
@@ -159,11 +160,11 @@ std::vector<int> FlexLayout::compute_main_axis_sizes(int available_space) {
             // Distribute any final rounding error to the last flexible, unfrozen item
             int final_used = 0;
             for (int s : sizes) final_used += s;
-            if (n > 1) final_used += spacing_ * static_cast<int>(n - 1);
+            if (n > 1) final_used += spacing_ * util::narrow_cast<int>(n - 1);
             
             int remainder = available_space - final_used;
             if (remainder != 0) {
-                 for (int i = static_cast<int>(n) - 1; i >= 0; --i) {
+                 for (int i = util::narrow_cast<int>(n) - 1; i >= 0; --i) {
                      if (!frozen[i]) {
                          float flex = (free_space > 0) ? items_[i].constraints.flex.flex_grow 
                                                        : items_[i].constraints.flex.flex_shrink;

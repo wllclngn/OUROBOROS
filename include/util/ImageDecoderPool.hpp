@@ -23,10 +23,10 @@ public:
 
     // Submit a job to the pool (non-blocking)
     // Returns false if queue is full (prevents memory explosion)
-    bool submit_job(DecodeJob job);
+    [[nodiscard]] bool submit_job(DecodeJob job);
 
     // Get queue size for monitoring
-    size_t get_queue_size() const;
+    [[nodiscard]] size_t get_queue_size() const;
 
     // Destructor waits for all jobs to complete
     ~ImageDecoderPool();
