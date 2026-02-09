@@ -133,7 +133,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
             };
 
             // Prefix
-            draw_part("  ", Style{});
+            draw_part("  ", uc.muted);
 
             // Artist (Cyan)
             draw_part(!track.artist.empty() ? track.artist : "Unknown Artist",
@@ -145,7 +145,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
             }
 
             // Separator
-            draw_part(": ", Style{});
+            draw_part(": ", uc.separator);
 
             // Track number (Dim)
             if (track.track_number > 0) {

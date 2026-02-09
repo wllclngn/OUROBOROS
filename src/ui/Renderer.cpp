@@ -5,6 +5,7 @@
 #include "ui/FlexLayout.hpp"
 #include "ui/InputEvent.hpp"
 #include "events/EventBus.hpp"
+#include "config/UIConfig.hpp"
 #include "util/Logger.hpp"
 #include <algorithm>
 #include <format>
@@ -183,7 +184,7 @@ void Renderer::render_search_overlay(const LayoutRect& rect, const model::Snapsh
     LayoutRect search_rect = {browser_rect_.x, browser_rect_.y, browser_rect_.width, 3};
 
     // Clear area behind it
-    canvas_.fill_rect(search_rect.x, search_rect.y, search_rect.width, search_rect.height, Cell{" ", Style{}});
+    canvas_.fill_rect(search_rect.x, search_rect.y, search_rect.width, search_rect.height, Cell{" ", config::ui_config().muted});
 
     global_search_box_->set_visible(true);
     global_search_box_->render(canvas_, search_rect, snap);

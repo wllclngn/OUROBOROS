@@ -189,7 +189,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
             };
 
             // Prefix
-            draw_part("  ", Style{});
+            draw_part("  ", uc.muted);
 
             // Artist
             draw_part(!track.artist.empty() ? track.artist : "Unknown Artist", uc.artist);
@@ -200,7 +200,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
             }
 
             // Separator
-            draw_part(": ", Style{});
+            draw_part(": ", uc.separator);
 
             // Track number
             if (track.track_number > 0) {

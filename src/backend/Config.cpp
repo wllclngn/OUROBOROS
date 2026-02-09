@@ -176,6 +176,7 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "warning = \"red\"\n";
     file << "heading = \"brightyellow\"\n";
     file << "focus_title = \"green\"\n";
+    file << "nowplaying_info = \"brightblack\"\n";
 
     // Optional: define a custom palette to use with integer role values.
     // e.g. artist = 14 would look up color14 below.

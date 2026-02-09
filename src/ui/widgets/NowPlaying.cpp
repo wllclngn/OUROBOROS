@@ -199,10 +199,45 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         draw_part(track.album, uc.album);
     }
 
-    // Format info
+    // Format info (multi-color: data in nowplaying_info, bullets in separator)
     if (!format_str.empty()) {
-        canvas.draw_text(content_rect.x + horizontal_padding, y++, truncate_text(format_str, art_cols),
-                        uc.separator);
+        int fmt_x = content_rect.x + horizontal_padding;
+        int fmt_y = y++;
+        int fmt_remaining = art_cols;
+
+        auto draw_fmt = [&](const std::string& text, Style s) {
+            if (fmt_remaining <= 0) return;
+            std::string t = truncate_text(text, fmt_remaining);
+            canvas.draw_text(fmt_x, fmt_y, t, s);
+            int len = display_cols(t);
+            fmt_x += len;
+            fmt_remaining -= len;
+        };
+
+        // Codec
+        switch (track.format) {
+            case model::AudioFormat::MP3:  draw_fmt("MP3", uc.nowplaying_info); break;
+            case model::AudioFormat::FLAC: draw_fmt("FLAC", uc.nowplaying_info); break;
+            case model::AudioFormat::OGG:  draw_fmt("OGG", uc.nowplaying_info); break;
+            case model::AudioFormat::WAV:  draw_fmt("WAV", uc.nowplaying_info); break;
+            default: draw_fmt("Unknown", uc.nowplaying_info); break;
+        }
+        if (track.sample_rate > 0) {
+            draw_fmt(" • ", uc.separator);
+            draw_fmt(std::to_string(track.sample_rate / 1000) + "kHz", uc.nowplaying_info);
+        }
+        if (track.bitrate > 0) {
+            draw_fmt(" • ", uc.separator);
+            draw_fmt(std::to_string(track.bitrate) + "kbps", uc.nowplaying_info);
+        }
+        if (track.bit_depth > 0) {
+            draw_fmt(" " + std::to_string(track.bit_depth) + "bit", uc.nowplaying_info);
+        }
+        if (track.channels == 2) {
+            draw_fmt(" Stereo", uc.nowplaying_info);
+        } else if (track.channels == 1) {
+            draw_fmt(" Mono", uc.nowplaying_info);
+        }
     }
 
     // STATUSLINE: Playback info + progress + volume + repeat
@@ -226,7 +261,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     } else if (snap.player.state == model::PlaybackState::Paused) {
         state_icon = "⏸";
     }
-    draw_status_part(std::string(state_icon) + " ", Style{});
+    draw_status_part(std::string(state_icon) + " ", uc.nowplaying_info);
 
     // Progress bar and time
     int position_pct = 0;
@@ -238,21 +273,21 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     std::string time_str = format_duration(pos_sec) + " / " + format_duration(dur_sec);
 
     auto progress_bar = ui::blocks::bar_chart(position_pct, 12);
-    draw_status_part(progress_bar + " " + time_str, Style{});
+    draw_status_part(progress_bar + " " + time_str, uc.nowplaying_info);
 
     // Separator bullet
     draw_status_part(" • ", uc.separator);
 
     // Volume
-    draw_status_part("Vol. ", Style{});
+    draw_status_part("Vol. ", uc.nowplaying_info);
     auto volume_bar = ui::blocks::bar_chart(snap.player.volume_percent, 8);
-    draw_status_part(volume_bar, Style{});
+    draw_status_part(volume_bar, uc.nowplaying_info);
 
     // Separator bullet
     draw_status_part(" • ", uc.separator);
 
     // Repeat mode
-    draw_status_part("REPEAT: ", Style{});
+    draw_status_part("REPEAT: ", uc.nowplaying_info);
     std::string repeat_str;
     switch (snap.player.repeat_mode) {
         case model::RepeatMode::Off:  repeat_str = "OFF"; break;
@@ -260,14 +295,14 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         case model::RepeatMode::All:  repeat_str = "ALL"; break;
         default: std::unreachable();
     }
-    draw_status_part(repeat_str, Style{});
+    draw_status_part(repeat_str, uc.nowplaying_info);
 
     // Separator bullet
     draw_status_part(" • ", uc.separator);
 
     // Shuffle mode
-    draw_status_part("SHUFFLE: ", Style{});
-    draw_status_part(snap.player.shuffle_enabled ? "ON" : "OFF", Style{});
+    draw_status_part("SHUFFLE: ", uc.nowplaying_info);
+    draw_status_part(snap.player.shuffle_enabled ? "ON" : "OFF", uc.nowplaying_info);
 }
 
 void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*force_render*/) {

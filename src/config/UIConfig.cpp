@@ -118,6 +118,7 @@ const UIConfig& ui_config() {
         auto warning_fg    = resolve_color(toml, have_toml, "warning",      Color::Red);
         auto heading_fg    = resolve_color(toml, have_toml, "heading",      Color::BrightYellow);
         auto focus_title_fg = resolve_color(toml, have_toml, "focus_title", Color::Green);
+        auto nowplaying_info_fg = resolve_color(toml, have_toml, "nowplaying_info", Color::BrightBlack);
 
         c.selection   = Style{selection_fg,  Color::Default, Attribute::Bold};
         c.marked      = Style{marked_fg,     Color::Default, Attribute::None};
@@ -132,6 +133,7 @@ const UIConfig& ui_config() {
         c.warning     = Style{warning_fg,    Color::Default, Attribute::None};
         c.heading     = Style{heading_fg,    Color::Default, Attribute::Bold};
         c.focus_title = Style{focus_title_fg, Color::Default, Attribute::Bold};
+        c.nowplaying_info = Style{nowplaying_info_fg, Color::Default, Attribute::None};
 
         return c;
     }();

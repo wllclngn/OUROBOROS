@@ -22,6 +22,7 @@ struct UIConfig {
     ouroboros::ui::Style warning;      // Errors, missing files
     ouroboros::ui::Style heading;      // Help overlay headings
     ouroboros::ui::Style focus_title;  // Focused panel title
+    ouroboros::ui::Style nowplaying_info; // NowPlaying format/statusline data
 };
 
 [[nodiscard]] const UIConfig& ui_config();

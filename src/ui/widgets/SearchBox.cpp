@@ -25,7 +25,7 @@ void SearchBox::render(Canvas& canvas, const LayoutRect& rect, const model::Snap
         content += "█";
     }
 
-    canvas.draw_text(content_rect.x, content_rect.y, content, Style{});
+    canvas.draw_text(content_rect.x, content_rect.y, content, uc.selection);
 
     // Instructions
     std::string instructions = "Enter to search | Esc to cancel";

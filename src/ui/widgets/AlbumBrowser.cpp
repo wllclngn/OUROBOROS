@@ -315,7 +315,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
                 // Compilation - just show album title
                 std::string title_trunc = truncate_text(album.title, text_width);
                 canvas.draw_text(box_x + 1, box_y + box_h - 2, title_trunc,
-                               uc.accent);
+                               uc.title);
             } else {
                 // Single-artist album - show "Artist: Title"
                 std::string artist_str = album.artist + ": ";
@@ -342,7 +342,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
                 // Draw Artist (Bold)
                 std::string art_trunc = truncate_text(artist_str, max_artist_w);
                 int next_x = canvas.draw_text(box_x + 1, box_y + box_h - 2, art_trunc,
-                                            uc.accent);
+                                            uc.artist);
 
                 // Draw Album (Dim) in remaining space
                 int remaining = (box_x + 1 + text_width) - next_x;
