@@ -2,7 +2,7 @@
 #include "ui/Formatting.hpp"
 #include "ui/VisualBlocks.hpp"
 #include "ui/InputEvent.hpp"
-#include "config/Theme.hpp"
+#include "config/UIConfig.hpp"
 #include "util/Logger.hpp"
 #include "util/Platform.hpp"
 #include <algorithm>
@@ -15,7 +15,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 }
 
 void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap, bool is_focused) {
-    auto theme = config::ThemeManager::get_theme("terminal");
+    const auto& uc = config::ui_config();
 
     // Defensive: Check queue exists
     if (!snap.queue) {
@@ -114,7 +114,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
             }
 
             std::string line = oss.str();
-            Style style = Style{Color::BrightYellow, Color::Default, Attribute::Bold};
+            Style style = uc.selection;
             canvas.draw_text(content_rect.x, y++, truncate_text(line, content_rect.width), style);
         } else {
             // Normal track: multi-color rendering (matches Browser)
@@ -137,11 +137,11 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 
             // Artist (Cyan)
             draw_part(!track.artist.empty() ? track.artist : "Unknown Artist",
-                     Style{Color::Cyan, Color::Default, Attribute::None});
+                     uc.artist);
 
             // Album (Default)
             if (!track.album.empty()) {
-                draw_part(" " + track.album, Style{Color::Default, Color::Default, Attribute::None});
+                draw_part(" " + track.album, uc.album);
             }
 
             // Separator
@@ -151,12 +151,12 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
             if (track.track_number > 0) {
                 std::ostringstream num_oss;
                 num_oss << std::setfill('0') << std::setw(2) << track.track_number << " ";
-                draw_part(num_oss.str(), Style{Color::Default, Color::Default, Attribute::Dim});
+                draw_part(num_oss.str(), uc.muted);
             }
 
             // Title (BrightWhite)
             draw_part(!track.title.empty() ? track.title : "Untitled",
-                     Style{Color::BrightWhite, Color::Default, Attribute::None});
+                     uc.title);
         }
 
         if (y >= content_rect.y + content_rect.height) break;

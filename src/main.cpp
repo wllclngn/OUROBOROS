@@ -16,7 +16,7 @@
 #include <memory>
 #include <thread>
 #include <chrono>
-#include <csignal>
+#include <signal.h>
 #include <cerrno>
 #include <cstdlib>
 #include <clocale>
@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <sys/random.h>
 #include <optional>
+#include <utility>
 #include <vector>
 
 using namespace std::chrono_literals;
@@ -105,8 +106,12 @@ int main() {
         std::atexit(on_atexit_restore);
 
         // Install signal handlers for graceful shutdown (AFTER terminal init!)
-        std::signal(SIGINT, signal_handler);   // Ctrl+C
-        std::signal(SIGTERM, signal_handler);  // kill command
+        struct sigaction sa{};
+        sa.sa_handler = signal_handler;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT, &sa, nullptr);   // Ctrl+C
+        sigaction(SIGTERM, &sa, nullptr);  // kill command
 
         // Create snapshot publisher (lock-free, thread-safe, double-buffered)
         auto publisher = std::make_shared<ouroboros::backend::SnapshotPublisher>();
@@ -384,6 +389,7 @@ int main() {
                         case ouroboros::model::RepeatMode::All:
                             snap.player.repeat_mode = ouroboros::model::RepeatMode::Off;
                             break;
+                        default: std::unreachable();
                     }
                  });
             });

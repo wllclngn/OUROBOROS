@@ -14,7 +14,7 @@ enum class Color : uint32_t {
     Magenta = 6,
     Cyan = 7,
     White = 8,
-    
+
     // Bright/Bold variants
     BrightBlack = 9,
     BrightRed = 10,
@@ -25,6 +25,25 @@ enum class Color : uint32_t {
     BrightCyan = 15,
     BrightWhite = 16
 };
+
+// Truecolor RGB support: packs R,G,B into upper 24 bits with bit 24 as sentinel.
+// Named enum values (0-16) never have bit 24 set, so this is backward-compatible.
+constexpr Color rgb_color(uint8_t r, uint8_t g, uint8_t b) {
+    return static_cast<Color>(
+        (1u << 24) |
+        (static_cast<uint32_t>(r) << 16) |
+        (static_cast<uint32_t>(g) << 8) |
+        static_cast<uint32_t>(b)
+    );
+}
+
+constexpr bool is_truecolor(Color c) {
+    return (static_cast<uint32_t>(c) & (1u << 24)) != 0;
+}
+
+constexpr uint8_t color_r(Color c) { return static_cast<uint8_t>((static_cast<uint32_t>(c) >> 16) & 0xFF); }
+constexpr uint8_t color_g(Color c) { return static_cast<uint8_t>((static_cast<uint32_t>(c) >> 8) & 0xFF); }
+constexpr uint8_t color_b(Color c) { return static_cast<uint8_t>(static_cast<uint32_t>(c) & 0xFF); }
 
 enum class Attribute : uint8_t {
     None = 0,

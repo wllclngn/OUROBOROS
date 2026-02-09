@@ -350,11 +350,15 @@ uint32_t ImageRenderer::render_image(
     if (visible_rows > 0 && visible_rows < height_rows) {
         render_rows = visible_rows;  // Applies to ALL formats (Kitty uses r= parameter)
 
-        // Only crop raw pixel data for RGB (PNG is already encoded)
+        // Crop raw pixel data (PNG is already encoded, can't crop)
         if (format == CachedFormat::RGB) {
             int crop_h = visible_rows * cell_height_;
             if (crop_h > data_height) crop_h = data_height;
             render_size = data_width * crop_h * 3;
+        } else if (format == CachedFormat::RGBA) {
+            int crop_h = visible_rows * cell_height_;
+            if (crop_h > data_height) crop_h = data_height;
+            render_size = data_width * crop_h * 4;
         }
     }
 
@@ -558,7 +562,8 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
                << ",c=" << cols << ",r=" << rows
                << ",q=1,z=1,C=1";
         } else {
-            ss << "a=T,t=t,f=24,i=" << image_id
+            int f = (format == CachedFormat::RGBA) ? 32 : 24;
+            ss << "a=T,t=t,f=" << f << ",i=" << image_id
                << ",s=" << img_w << ",v=" << img_h
                << ",c=" << cols << ",r=" << rows
                << ",q=1,z=1,C=1";
@@ -566,7 +571,7 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
         ss << ";";
         ss << b64_path;
 
-        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : "RGB";
+        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : (format == CachedFormat::RGBA) ? "RGBA" : "RGB";
         std::string hash_info = content_hash.empty() ? "ptr-hash" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
         ouroboros::util::Logger::debug("ImageRenderer: Uploaded via SHM (t=t), format=" + format_str +
                                        ", image_id=" + std::to_string(image_id) +
@@ -579,7 +584,8 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
                << ",c=" << cols << ",r=" << rows
                << ",q=1";
         } else {
-            ss << "a=T,t=d,f=24,i=" << image_id
+            int f = (format == CachedFormat::RGBA) ? 32 : 24;
+            ss << "a=T,t=d,f=" << f << ",i=" << image_id
                << ",s=" << img_w << ",v=" << img_h
                << ",c=" << cols << ",r=" << rows
                << ",q=1";
@@ -587,7 +593,7 @@ std::string ImageRenderer::render_kitty(const unsigned char* data, size_t len, i
         ss << ";";
         ss << b64_data;
 
-        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : "RGB";
+        std::string format_str = (format == CachedFormat::PNG) ? "PNG" : (format == CachedFormat::RGBA) ? "RGBA" : "RGB";
         std::string hash_info = content_hash.empty() ? "ptr-hash" : ("SHA-256: " + content_hash.substr(0, 8) + "...");
         ouroboros::util::Logger::debug("ImageRenderer: Uploaded via direct mode (t=d), format=" + format_str +
                                        ", image_id=" + std::to_string(image_id) +

@@ -1,8 +1,9 @@
 #include "backend/Config.hpp"
+#include "util/TomlReader.hpp"
+#include "util/Logger.hpp"
 #include <cstdlib>
 #include <fstream>
 #include <string>
-#include "util/Logger.hpp"
 
 namespace ouroboros::backend {
 
@@ -20,148 +21,92 @@ Config ConfigLoader::load_config() {
         cfg = load_from_file(config_file);
     } else {
         cfg = create_default_config();
-        // Write default config to disk so users can customize it
         save_config(cfg, config_file);
         ouroboros::util::Logger::info("Config: Created default config at " + config_file.string());
     }
 
-    // Update global singleton
     Config::instance() = cfg;
     return cfg;
+}
+
+// Parse music_directories array: ["path1", "path2", ...]
+static void parse_music_dirs(const std::string& value, std::vector<std::filesystem::path>& out) {
+    out.clear();
+    if (value.size() < 2 || value.front() != '[' || value.back() != ']') return;
+
+    std::string inner = value.substr(1, value.size() - 2);
+    size_t pos = 0;
+    while (pos < inner.size()) {
+        while (pos < inner.size() && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == ',')) pos++;
+        if (pos >= inner.size()) break;
+
+        if (inner[pos] == '"') {
+            size_t qstart = pos + 1;
+            size_t qend = inner.find('"', qstart);
+            if (qend == std::string::npos) break;
+            std::string path_str = inner.substr(qstart, qend - qstart);
+            if (!path_str.empty() && path_str[0] == '~') {
+                const char* home = std::getenv("HOME");
+                if (home) path_str = std::string(home) + path_str.substr(1);
+            }
+            out.emplace_back(path_str);
+            pos = qend + 1;
+        } else {
+            pos++;
+        }
+    }
 }
 
 Config ConfigLoader::load_from_file(const std::filesystem::path& path) {
     ouroboros::util::Logger::debug("Config: Loading from file");
 
     Config cfg = create_default_config();
-    
-    std::ifstream file(path);
-    if (!file) return cfg;
-    
-    std::string line, current_section;
-    while (std::getline(file, line)) {
-        // Trim whitespace
-        auto start = line.find_first_not_of(" \t");
-        auto end = line.find_last_not_of(" \t");
-        if (start == std::string::npos) continue;
-        line = line.substr(start, end - start + 1);
-        
-        // Skip comments and empty lines
-        if (line.empty() || line[0] == '#') continue;
-        
-        // Section header
-        if (line[0] == '[' && line.back() == ']') {
-            current_section = line.substr(1, line.length() - 2);
-            continue;
-        }
-        
-        // Key = value
-        auto eq_pos = line.find('=');
-        if (eq_pos != std::string::npos) {
-            std::string key = line.substr(0, eq_pos);
-            std::string value = line.substr(eq_pos + 1);
-            
-            // Trim key and value
-            auto key_start = key.find_first_not_of(" \t");
-            auto key_end = key.find_last_not_of(" \t");
-            if (key_start != std::string::npos) {
-                key = key.substr(key_start, key_end - key_start + 1);
-            }
-            
-            auto val_start = value.find_first_not_of(" \t");
-            auto val_end = value.find_last_not_of(" \t");
-            if (val_start != std::string::npos) {
-                value = value.substr(val_start, val_end - val_start + 1);
-            }
-            
-            // Remove quotes from strings
-            if (value.length() >= 2 && value.front() == '"' && value.back() == '"') {
-                value = value.substr(1, value.length() - 2);
-            }
-            
-            // Parse based on section
-            if (current_section == "playback") {
-                if (key == "default_volume") {
-                    try { cfg.default_volume = std::stoi(value); } catch(...) {}
-                }
-                else if (key == "shuffle") cfg.shuffle = (value == "true");
-                else if (key == "repeat") cfg.repeat = value;
-            }
-            else if (current_section == "ui") {
-                if (key == "layout") cfg.layout = value;
-                else if (key == "theme") cfg.theme = value;
-                else if (key == "enable_album_art") cfg.enable_album_art = (value == "true");
-                else if (key == "album_grid_columns") {
-                    try { cfg.album_grid_columns = std::stoi(value); } catch(...) {}
-                }
-                else if (key == "sort_albums_by_year") cfg.sort_albums_by_year = (value == "true");
-                else if (key == "sort_ignore_the_prefix") cfg.sort_ignore_the_prefix = (value == "true");
-                else if (key == "sort_ignore_bracket_prefix") cfg.sort_ignore_bracket_prefix = (value == "true");
-            }
-            else if (current_section == "keybinds") {
-                cfg.keybinds[key] = value;
-            }
-            else if (current_section == "library" || current_section == "paths") {
-                if (key == "music_directories") {
-                    // Parse array format: ["path1", "path2", ...]
-                    cfg.music_directories.clear();
-                    if (value.front() == '[' && value.back() == ']') {
-                        std::string inner = value.substr(1, value.length() - 2);
-                        size_t pos = 0;
-                        while (pos < inner.length()) {
-                            // Skip whitespace
-                            while (pos < inner.length() && (inner[pos] == ' ' || inner[pos] == '\t' || inner[pos] == ',')) pos++;
-                            if (pos >= inner.length()) break;
 
-                            // Find quoted string
-                            if (inner[pos] == '"') {
-                                size_t qstart = pos + 1;
-                                size_t qend = inner.find('"', qstart);
-                                if (qend != std::string::npos) {
-                                    std::string path_str = inner.substr(qstart, qend - qstart);
-                                    // Expand ~ to home directory
-                                    if (!path_str.empty() && path_str[0] == '~') {
-                                        const char* home = std::getenv("HOME");
-                                        if (home) path_str = std::string(home) + path_str.substr(1);
-                                    }
-                                    cfg.music_directories.emplace_back(path_str);
-                                    pos = qend + 1;
-                                } else {
-                                    break;
-                                }
-                            } else {
-                                pos++;
-                            }
-                        }
-                    }
-                }
-                else if (key == "music_directory") {
-                    // Legacy single directory support
-                    std::string path_str = value;
-                    if (!path_str.empty() && path_str[0] == '~') {
-                        const char* home = std::getenv("HOME");
-                        if (home) path_str = std::string(home) + path_str.substr(1);
-                    }
-                    cfg.music_directories.clear();
-                    cfg.music_directories.emplace_back(path_str);
-                }
-            }
-            else if (current_section == "performance") {
-                if (key == "artwork_max_workers") {
-                    try { cfg.artwork_max_workers = std::stoi(value); } catch(...) {}
-                }
-                else if (key == "artwork_prefetch_items") {
-                    try { cfg.artwork_prefetch_items = std::stoi(value); } catch(...) {}
-                }
-                else if (key == "artwork_spawn_threshold") {
-                    try { cfg.artwork_spawn_threshold = std::stoi(value); } catch(...) {}
-                }
-                else if (key == "artwork_memory_limit_mb") {
-                    try { cfg.artwork_memory_limit_mb = std::stoi(value); } catch(...) {}
-                }
-            }
+    ouroboros::util::TomlReader toml;
+    if (!toml.load(path.string())) return cfg;
+
+    // [playback]
+    cfg.default_volume = toml.get_int("playback", "default_volume", cfg.default_volume);
+    cfg.shuffle = toml.get_bool("playback", "shuffle", cfg.shuffle);
+    cfg.repeat = toml.get_string("playback", "repeat", cfg.repeat);
+
+    // [ui]
+    cfg.layout = toml.get_string("ui", "layout", cfg.layout);
+    cfg.enable_album_art = toml.get_bool("ui", "enable_album_art", cfg.enable_album_art);
+    cfg.album_grid_columns = toml.get_int("ui", "album_grid_columns", cfg.album_grid_columns);
+    cfg.sort_albums_by_year = toml.get_bool("ui", "sort_albums_by_year", cfg.sort_albums_by_year);
+    cfg.sort_ignore_the_prefix = toml.get_bool("ui", "sort_ignore_the_prefix", cfg.sort_ignore_the_prefix);
+    cfg.sort_ignore_bracket_prefix = toml.get_bool("ui", "sort_ignore_bracket_prefix", cfg.sort_ignore_bracket_prefix);
+
+    // [keybinds] - check known keys from defaults
+    for (auto& [key, value] : cfg.keybinds) {
+        if (toml.has("keybinds", key)) {
+            value = toml.get_string("keybinds", key, value);
         }
     }
+
+    // [library] / [paths] music_directories (array format, inline parse)
+    if (toml.has("library", "music_directories")) {
+        parse_music_dirs(toml.get_string("library", "music_directories"), cfg.music_directories);
+    } else if (toml.has("paths", "music_directories")) {
+        parse_music_dirs(toml.get_string("paths", "music_directories"), cfg.music_directories);
+    }
+    // Legacy single-directory support
+    if (toml.has("library", "music_directory")) {
+        std::string path_str = toml.get_string("library", "music_directory");
+        if (!path_str.empty() && path_str[0] == '~') {
+            const char* home = std::getenv("HOME");
+            if (home) path_str = std::string(home) + path_str.substr(1);
+        }
+        cfg.music_directories.clear();
+        cfg.music_directories.emplace_back(path_str);
+    }
+
+    // [performance]
+    cfg.artwork_max_workers = toml.get_int("performance", "artwork_max_workers", cfg.artwork_max_workers);
+    cfg.artwork_prefetch_items = toml.get_int("performance", "artwork_prefetch_items", cfg.artwork_prefetch_items);
+    cfg.artwork_spawn_threshold = toml.get_int("performance", "artwork_spawn_threshold", cfg.artwork_spawn_threshold);
+    cfg.artwork_memory_limit_mb = toml.get_int("performance", "artwork_memory_limit_mb", cfg.artwork_memory_limit_mb);
 
     return cfg;
 }
@@ -178,27 +123,16 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "# Generated on install; edit with care\n\n";
 
     file << "[playback]\n";
-    file << "# Default volume level (0-100)\n";
-    file << "default_volume = " << cfg.default_volume << "\n\n";
-    file << "# Enable shuffle by default\n";
-    file << "shuffle = " << (cfg.shuffle ? "true" : "false") << "\n\n";
-    file << "# Repeat mode: \"off\", \"one\", \"all\"\n";
+    file << "default_volume = " << cfg.default_volume << "\n";
+    file << "shuffle = " << (cfg.shuffle ? "true" : "false") << "\n";
     file << "repeat = \"" << cfg.repeat << "\"\n\n";
 
     file << "[ui]\n";
-    file << "# Layout mode: \"default\", \"queue\", \"browser\"\n";
-    file << "layout = \"" << cfg.layout << "\"\n\n";
-    file << "# Theme: \"dark\", \"light\", \"monokai\"\n";
-    file << "theme = \"" << cfg.theme << "\"\n\n";
-    file << "# Enable album art display\n";
-    file << "enable_album_art = " << (cfg.enable_album_art ? "true" : "false") << "\n\n";
-    file << "# Number of album columns in grid view (default: 4)\n";
-    file << "album_grid_columns = " << cfg.album_grid_columns << "\n\n";
-    file << "# Sort albums by year instead of alphabetically\n";
-    file << "sort_albums_by_year = " << (cfg.sort_albums_by_year ? "true" : "false") << "\n\n";
-    file << "# Ignore 'The ' prefix when sorting artists (e.g., 'The Beatles' sorts as 'Beatles')\n";
-    file << "sort_ignore_the_prefix = " << (cfg.sort_ignore_the_prefix ? "true" : "false") << "\n\n";
-    file << "# Ignore '[' prefix when sorting artists (e.g., '[Unknown]' sorts as 'Unknown]')\n";
+    file << "layout = \"" << cfg.layout << "\"\n";
+    file << "enable_album_art = " << (cfg.enable_album_art ? "true" : "false") << "\n";
+    file << "album_grid_columns = " << cfg.album_grid_columns << "\n";
+    file << "sort_albums_by_year = " << (cfg.sort_albums_by_year ? "true" : "false") << "\n";
+    file << "sort_ignore_the_prefix = " << (cfg.sort_ignore_the_prefix ? "true" : "false") << "\n";
     file << "sort_ignore_bracket_prefix = " << (cfg.sort_ignore_bracket_prefix ? "true" : "false") << "\n\n";
 
     file << "[keybinds]\n";
@@ -208,7 +142,6 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "\n";
 
     file << "[library]\n";
-    file << "# Music library directories (array format)\n";
     if (!cfg.music_directories.empty()) {
         file << "music_directories = [";
         for (size_t i = 0; i < cfg.music_directories.size(); ++i) {
@@ -221,12 +154,33 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     }
 
     file << "\n[performance]\n";
-    file << "# 0 = auto (uses hardware_concurrency)\n";
     file << "artwork_max_workers = " << cfg.artwork_max_workers << "\n";
     file << "artwork_prefetch_items = " << cfg.artwork_prefetch_items << "\n";
     file << "artwork_spawn_threshold = " << cfg.artwork_spawn_threshold << "\n";
-    file << "# Memory limit for artwork cache in MB (triggers eviction when exceeded)\n";
     file << "artwork_memory_limit_mb = " << cfg.artwork_memory_limit_mb << "\n";
+
+    // Semantic color roles -- these drive the entire UI.
+    // Values: named color (e.g. "green"), hex "#RRGGBB", or palette index (integer).
+    // Named colors use your terminal palette, hex bypasses it with truecolor.
+    file << "\n[roles]\n";
+    file << "selection = \"brightyellow\"\n";
+    file << "marked = \"yellow\"\n";
+    file << "artist = \"cyan\"\n";
+    file << "title = \"brightwhite\"\n";
+    file << "album = \"blue\"\n";
+    file << "muted = \"brightblack\"\n";
+    file << "border = \"brightblack\"\n";
+    file << "accent = \"green\"\n";
+    file << "separator = \"brightblack\"\n";
+    file << "warning = \"red\"\n";
+    file << "heading = \"brightyellow\"\n";
+    file << "focus_title = \"green\"\n";
+
+    // Optional: define a custom palette to use with integer role values.
+    // e.g. artist = 14 would look up color14 below.
+    file << "\n# [palette]\n";
+    file << "# color0  = \"#1E1E2E\"\n";
+    file << "# color14 = \"#94E2D5\"\n";
 }
 
 std::filesystem::path ConfigLoader::get_config_file() {
@@ -239,13 +193,11 @@ std::filesystem::path ConfigLoader::get_config_file() {
 
 Config ConfigLoader::create_default_config() {
     Config cfg;
-    // Default to ~/Music
     const char* home = std::getenv("HOME");
     if (home) {
         cfg.music_directories.emplace_back(std::filesystem::path(home) / "Music");
     }
 
-    // Default keybinds (can be overridden by TOML config)
     cfg.keybinds["quit"] = "q";
     cfg.keybinds["play"] = "space";
     cfg.keybinds["next"] = "n";
@@ -261,7 +213,6 @@ Config ConfigLoader::create_default_config() {
     cfg.keybinds["search"] = "ctrl+f";
     cfg.keybinds["help"] = "?";
     cfg.keybinds["tab"] = "tab";
-    // Navigation keybinds (used by Browser, Queue, AlbumBrowser)
     cfg.keybinds["nav_up"] = "k";
     cfg.keybinds["nav_down"] = "j";
     cfg.keybinds["nav_left"] = "h";

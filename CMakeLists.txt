@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 2.4.0 LANGUAGES CXX)
+project(ouroboros VERSION 2.5.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -82,7 +82,7 @@ add_executable(ouroboros
     src/events/EventBus.cpp
     src/events/Scheduler.cpp
     src/config/KeyMap.cpp
-    src/config/Theme.cpp
+    src/config/UIConfig.cpp
     src/util/TimSort.cpp
     src/util/Logger.cpp
     src/util/Platform.cpp
@@ -106,6 +106,8 @@ set_source_files_properties(${ALL_CPP_SOURCES} PROPERTIES
 
 target_include_directories(ouroboros PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+target_include_directories(ouroboros SYSTEM PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/vendor
     ${PIPEWIRE_INCLUDE_DIRS}
     ${SPA_INCLUDE_DIRS}
@@ -121,10 +123,30 @@ target_include_directories(ouroboros PUBLIC
 )
 target_compile_options(ouroboros PRIVATE
     -Wall -Wextra -Wshadow -Werror
+    -Wno-unused-result  # FORTIFY_SOURCE=3 adds __wur to write/getrandom/freopen; all callsites are intentional
     # -Wpedantic: blocked by PipeWire/SPA C headers (compound literals)
     # -Wconversion: requires fixing ~100+ implicit conversions in FFmpeg/mpg123/toml interop
     # -Wcast-qual: blocked by PipeWire/SPA headers (qsort const cast)
+    -fstack-protector-strong
+    -fstack-clash-protection
+    -fcf-protection
 )
+target_link_options(ouroboros PRIVATE
+    -Wl,-z,relro
+    -Wl,-z,now
+    -Wl,-z,noexecstack
+)
+# Release: fortified libc wrappers (requires -O1+)
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    target_compile_definitions(ouroboros PRIVATE _FORTIFY_SOURCE=3)
+endif()
+# Debug: sanitizers for development
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    target_compile_options(ouroboros PRIVATE
+        -fsanitize=address,undefined -fno-omit-frame-pointer -O1
+    )
+    target_link_options(ouroboros PRIVATE -fsanitize=address,undefined)
+endif()
 if(OUROBOROS_DEBUG_LOG)
     target_compile_definitions(ouroboros PRIVATE OUROBOROS_ENABLE_LOGGING)
 endif()

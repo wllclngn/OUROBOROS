@@ -1,7 +1,7 @@
 #include "ui/widgets/Browser.hpp"
 #include "ui/Formatting.hpp"
 #include "ui/InputEvent.hpp"
-#include "config/Theme.hpp"
+#include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
 #include "util/BoyerMoore.hpp"
@@ -66,7 +66,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     // Store as shared_ptr to keep snapshot alive even if original goes out of scope
     g_current_snapshot = std::make_shared<model::Snapshot>(snap);
 
-    auto theme = config::ThemeManager::get_theme("terminal");
+    const auto& uc = config::ui_config();
     const auto& tracks = snap.library->tracks;
 
     // Check if filter needs update (dirty flag or library changed size)
@@ -100,7 +100,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
     int total_items = util::narrow_cast<int>(filtered_indices_.size());
     if (total_items == 0) {
         canvas.draw_text(inner_rect.x + 2, inner_rect.y + 2, "No matching track found.",
-                        Style{Color::Default, Color::Default, Attribute::Dim});
+                        uc.muted);
         return;
     }
 
@@ -167,9 +167,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
                 oss << "Untitled";
             }
 
-            Style style = is_cursor ?
-                Style{Color::BrightYellow, Color::Default, Attribute::Bold} :
-                Style{Color::Yellow, Color::Default, Attribute::None};
+            Style style = is_cursor ? uc.selection : uc.marked;
 
             // Truncate the entire line to fit width
             std::string full_line = oss.str();
@@ -193,28 +191,26 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
             // Prefix
             draw_part("  ", Style{});
 
-            // Artist (Cyan)
-            draw_part(!track.artist.empty() ? track.artist : "Unknown Artist", 
-                     Style{Color::Cyan, Color::Default, Attribute::None});
+            // Artist
+            draw_part(!track.artist.empty() ? track.artist : "Unknown Artist", uc.artist);
 
-            // Album (Default, no quotes)
+            // Album
             if (!track.album.empty()) {
-                draw_part(" " + track.album, Style{Color::Default, Color::Default, Attribute::None});
+                draw_part(" " + track.album, uc.album);
             }
 
             // Separator
             draw_part(": ", Style{});
 
-            // Track number (Dim)
+            // Track number
             if (track.track_number > 0) {
                 std::ostringstream num_oss;
                 num_oss << std::setfill('0') << std::setw(2) << track.track_number << " ";
-                draw_part(num_oss.str(), Style{Color::Default, Color::Default, Attribute::Dim});
+                draw_part(num_oss.str(), uc.muted);
             }
 
-            // Title (BrightWhite, no quotes)
-            draw_part(!track.title.empty() ? track.title : "Untitled", 
-                     Style{Color::BrightWhite, Color::Default, Attribute::None});
+            // Title
+            draw_part(!track.title.empty() ? track.title : "Untitled", uc.title);
         }
 
         if (y >= inner_rect.y + inner_rect.height) break;
@@ -224,6 +220,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
 // ... render_loading_indicator unchanged ...
 void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content_rect, const model::Snapshot& snap) {
     using namespace std::chrono;
+    const auto& uc = config::ui_config();
 
     auto now = steady_clock::now();
 
@@ -245,8 +242,8 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
     // RENDER character-by-character with highlight
     for (size_t i = 0; i < message.length(); ++i) {
         Style style = (static_cast<size_t>(char_index) == i) ?
-            Style{Color::BrightWhite, Color::Default, Attribute::Bold} :  // Highlighted char (whiteish)
-            Style{Color::BrightYellow, Color::Default, Attribute::None};   // Normal char (yellow)
+            uc.accent :   // Highlighted char
+            uc.marked;    // Normal char
 
         canvas.draw_text(center_x + util::narrow_cast<int>(i), center_y, std::string(1, message[i]), style);
     }
@@ -260,7 +257,7 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
         int progress_x = content_rect.x + (content_rect.width / 2) - (progress.length() / 2);
 
         canvas.draw_text(progress_x, progress_y, progress,
-                        Style{Color::White, Color::Default, Attribute::None});
+                        uc.title);
 
         // Calculate and display estimated completion time
         auto elapsed_seconds = duration_cast<seconds>(elapsed).count();
@@ -283,7 +280,7 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
 
                 int eta_x = content_rect.x + (content_rect.width / 2) - (eta_str.length() / 2);
                 canvas.draw_text(eta_x, progress_y + 1, eta_str,
-                                Style{Color::Cyan, Color::Default, Attribute::None});
+                                uc.artist);
             }
 
             // Slow scan detection - show notice after 15 seconds if rate < 1000 tracks/min
@@ -297,9 +294,9 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
                 int notice_y = progress_y + 3;
 
                 canvas.draw_text(notice_x, notice_y, notice,
-                                Style{Color::Yellow, Color::Default, Attribute::None});
+                                uc.marked);
                 canvas.draw_text(notice2_x, notice_y + 1, notice2,
-                                Style{Color::Yellow, Color::Default, Attribute::None});
+                                uc.marked);
             }
         }
     } else {
@@ -308,7 +305,7 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
         int progress_x = content_rect.x + (content_rect.width / 2) - (progress.length() / 2);
 
         canvas.draw_text(progress_x, progress_y, progress,
-                        Style{Color::White, Color::Default, Attribute::None});
+                        uc.title);
 
         auto elapsed_seconds = duration_cast<seconds>(elapsed).count();
         if (elapsed_seconds >= 5) {
@@ -316,8 +313,7 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
             std::string eta_str = "Estimated completion: calculating...";
 
             int eta_x = content_rect.x + (content_rect.width / 2) - (eta_str.length() / 2);
-            canvas.draw_text(eta_x, progress_y + 1, eta_str,
-                            Style{Color::Cyan, Color::Default, Attribute::None});
+            canvas.draw_text(eta_x, progress_y + 1, eta_str, uc.artist);
         }
 
         // NOTICE after 15 seconds (same Yellow style, same format)
@@ -330,9 +326,9 @@ void Browser::render_loading_indicator(Canvas& canvas, const LayoutRect& content
             int notice_y = progress_y + 3;
 
             canvas.draw_text(notice_x, notice_y, notice,
-                            Style{Color::Yellow, Color::Default, Attribute::None});
+                            uc.marked);
             canvas.draw_text(notice2_x, notice_y + 1, notice2,
-                            Style{Color::Yellow, Color::Default, Attribute::None});
+                            uc.marked);
         }
     }
 }

@@ -1,6 +1,6 @@
 #include "ui/widgets/SearchBox.hpp"
 #include "ui/Formatting.hpp"
-#include "config/Theme.hpp"
+#include "config/UIConfig.hpp"
 #include "util/BoyerMoore.hpp"
 #include "util/Logger.hpp"
 
@@ -11,7 +11,7 @@ void SearchBox::render(Canvas& canvas, const LayoutRect& rect, const model::Snap
 
     if (!visible_) return;
 
-    auto theme = config::ThemeManager::get_theme("terminal");
+    const auto& uc = config::ui_config();
 
     // Draw search box border
     auto content_rect = draw_box_border(canvas, rect, "FIND");
@@ -25,13 +25,11 @@ void SearchBox::render(Canvas& canvas, const LayoutRect& rect, const model::Snap
         content += "█";
     }
 
-    canvas.draw_text(content_rect.x, content_rect.y, content,
-                    Style{Color::BrightYellow, Color::Default, Attribute::Bold});
+    canvas.draw_text(content_rect.x, content_rect.y, content, Style{});
 
     // Instructions
     std::string instructions = "Enter to search | Esc to cancel";
-    canvas.draw_text(content_rect.x, content_rect.y + 1, instructions,
-                    Style{Color::BrightBlack, Color::Default, Attribute::Dim});
+    canvas.draw_text(content_rect.x, content_rect.y + 1, instructions, uc.muted);
 }
 
 void SearchBox::handle_input(const InputEvent& event) {

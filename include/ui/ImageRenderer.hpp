@@ -22,8 +22,9 @@ enum class TerminalType {
 
 // Format of image data for rendering
 enum class CachedFormat {
-    RGB,  // Raw RGB pixels (transmitted with f=24)
-    PNG   // PNG-encoded data with transparency (transmitted with f=100)
+    RGB,   // Raw RGB pixels (transmitted with f=24)
+    RGBA,  // Raw RGBA pixels with transparency (transmitted with f=32)
+    PNG    // PNG-encoded data with transparency (transmitted with f=100)
 };
 
 class ImageRenderer {

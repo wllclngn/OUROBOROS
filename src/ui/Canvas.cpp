@@ -107,14 +107,16 @@ int Canvas::draw_text(int x, int y, std::string_view text, Style initial_style) 
                 // Apply SGR code to current_style
                 switch (code) {
                     case 0: // Reset
-                        current_style = initial_style; // Or default? Let's reset to passed-in base
-                        current_style = Style{}; // Reset to truly default
+                        current_style = Style{};
                         break;
                     case 1: // Bold
-                        current_style.attr = static_cast<Attribute>(static_cast<uint8_t>(current_style.attr) | static_cast<uint8_t>(Attribute::Bold));
+                        current_style.attr = current_style.attr | Attribute::Bold;
                         break;
                     case 2: // Dim
-                        current_style.attr = static_cast<Attribute>(static_cast<uint8_t>(current_style.attr) | static_cast<uint8_t>(Attribute::Dim));
+                        current_style.attr = current_style.attr | Attribute::Dim;
+                        break;
+                    case 4: // Underline
+                        current_style.attr = current_style.attr | Attribute::Underline;
                         break;
                     case 30: current_style.fg = Color::Black; break;
                     case 31: current_style.fg = Color::Red; break;
@@ -125,6 +127,49 @@ int Canvas::draw_text(int x, int y, std::string_view text, Style initial_style) 
                     case 36: current_style.fg = Color::Cyan; break;
                     case 37: current_style.fg = Color::White; break;
                     case 39: current_style.fg = Color::Default; break;
+                    // Bright foreground colors
+                    case 90: current_style.fg = Color::BrightBlack; break;
+                    case 91: current_style.fg = Color::BrightRed; break;
+                    case 92: current_style.fg = Color::BrightGreen; break;
+                    case 93: current_style.fg = Color::BrightYellow; break;
+                    case 94: current_style.fg = Color::BrightBlue; break;
+                    case 95: current_style.fg = Color::BrightMagenta; break;
+                    case 96: current_style.fg = Color::BrightCyan; break;
+                    case 97: current_style.fg = Color::BrightWhite; break;
+                    case 38: // Extended foreground: 38;2;R;G;B (truecolor)
+                        if (*p == ';') {
+                            p++;
+                            int mode = parse_int(p);
+                            if (mode == 2 && *p == ';') {
+                                p++; int r = parse_int(p);
+                                if (*p == ';') { p++; int g = parse_int(p);
+                                    if (*p == ';') { p++; int b = parse_int(p);
+                                        current_style.fg = rgb_color(
+                                            static_cast<uint8_t>(r),
+                                            static_cast<uint8_t>(g),
+                                            static_cast<uint8_t>(b));
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    case 48: // Extended background: 48;2;R;G;B (truecolor)
+                        if (*p == ';') {
+                            p++;
+                            int mode = parse_int(p);
+                            if (mode == 2 && *p == ';') {
+                                p++; int r = parse_int(p);
+                                if (*p == ';') { p++; int g = parse_int(p);
+                                    if (*p == ';') { p++; int b = parse_int(p);
+                                        current_style.bg = rgb_color(
+                                            static_cast<uint8_t>(r),
+                                            static_cast<uint8_t>(g),
+                                            static_cast<uint8_t>(b));
+                                    }
+                                }
+                            }
+                        }
+                        break;
                 }
                 
                 if (*p == ';') {

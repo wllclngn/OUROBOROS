@@ -15,7 +15,6 @@ struct Config {
 
     // UI settings
     std::string layout = "default";
-    std::string theme = "dark";
     bool enable_album_art = true;
     int album_grid_columns = 4;
 

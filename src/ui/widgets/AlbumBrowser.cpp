@@ -5,7 +5,7 @@
 #include "ui/InputEvent.hpp"
 #include "backend/MetadataParser.hpp"
 #include "backend/Config.hpp"
-#include "config/Theme.hpp"
+#include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
 #include "util/TimSort.hpp"
 #include "util/BoyerMoore.hpp"
@@ -184,13 +184,14 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
 void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap, bool is_focused) {
     // Store as shared_ptr to keep snapshot alive even if original goes out of scope
     g_current_snapshot = std::make_shared<model::Snapshot>(snap);
+    const auto& uc = config::ui_config();
 
     // Check if albums are still being computed in background
     if (snap.library->albums.empty() && !snap.library->tracks.empty()) {
         // Show loading message while albums compute
         draw_box_border(canvas, rect, "LIBRARY: LOADING ALBUMS...", Style{}, is_focused);
         canvas.draw_text(rect.x + 2, rect.y + 2, "Computing album groups...",
-                        Style{Color::Default, Color::Default, Attribute::Dim});
+                        uc.muted);
         return;
     }
 
@@ -198,8 +199,6 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     if (albums_.empty() && !snap.library->albums.empty()) {
         refresh_cache(snap);
     }
-
-    auto theme = config::ThemeManager::get_theme("terminal");
 
     // Calculate content rect (inner area minus 1-char border on all sides)
     LayoutRect content_rect{
@@ -247,7 +246,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     if (total_albums == 0) {
         canvas.draw_text(content_rect.x + 2, content_rect.y + 2,
                         filter_query_.empty() ? "No albums." : "No matching album found.",
-                        Style{Color::Default, Color::Default, Attribute::Dim});
+                        uc.muted);
         return;
     }
 
@@ -299,9 +298,9 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             // Determine border color
             Style border_style;
             if (is_selected) {
-                border_style = Style{Color::BrightYellow, Color::Default, Attribute::Bold};
+                border_style = uc.selection;
             } else {
-                border_style = Style{Color::BrightBlack, Color::Default, Attribute::None};
+                border_style = uc.border;
             }
 
             // Draw border around ARTWORK BOX
@@ -316,7 +315,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
                 // Compilation - just show album title
                 std::string title_trunc = truncate_text(album.title, text_width);
                 canvas.draw_text(box_x + 1, box_y + box_h - 2, title_trunc,
-                               Style{Color::BrightWhite, Color::Default, Attribute::Bold});
+                               uc.accent);
             } else {
                 // Single-artist album - show "Artist: Title"
                 std::string artist_str = album.artist + ": ";
@@ -343,14 +342,14 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
                 // Draw Artist (Bold)
                 std::string art_trunc = truncate_text(artist_str, max_artist_w);
                 int next_x = canvas.draw_text(box_x + 1, box_y + box_h - 2, art_trunc,
-                                            Style{Color::BrightWhite, Color::Default, Attribute::Bold});
+                                            uc.accent);
 
                 // Draw Album (Dim) in remaining space
                 int remaining = (box_x + 1 + text_width) - next_x;
                 if (remaining > 2) {
                     std::string alb_trunc = truncate_text(album_str, remaining);
                     canvas.draw_text(next_x, box_y + box_h - 2, alb_trunc,
-                                   Style{Color::Default, Color::Default, Attribute::Dim});
+                                   uc.muted);
                 }
             }
         }
@@ -449,7 +448,7 @@ SizeConstraints AlbumBrowser::get_constraints() const {
     return constraints;
 }
 
-void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_render) {
+void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_render, int reserve_top) {
     auto& img_renderer = ImageRenderer::instance();
     if (!img_renderer.images_supported()) {
         ouroboros::util::Logger::warn("AlbumBrowser: Images not supported, skipping artwork render");
@@ -795,15 +794,14 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         int container_bottom_y = content_y + content_height;
         int visible_art_rows = -1;
 
-        if (art_y >= container_bottom_y) continue; // Fully clipped
+        if (art_y >= container_bottom_y) continue; // Fully off-screen (bottom)
+        if (art_y < rect.y + reserve_top) continue; // Clipped by search overlay
+        if (art_x + art_cols_slot > content_x + content_width) continue; // Right edge
 
         if (art_bottom_y > container_bottom_y) {
             visible_art_rows = container_bottom_y - art_y;
             if (visible_art_rows <= 0) continue;
         }
-
-        // Also check right edge
-        if (art_x + art_cols_slot > content_x + content_width) continue;
 
         // Create display key (position + hash) - same as old approach
         std::string display_key = std::to_string(art_x) + "," + std::to_string(art_y) + "," + slot.hash.substr(0, 16);

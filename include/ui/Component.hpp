@@ -4,6 +4,7 @@
 #include "ui/LayoutConstraints.hpp"
 #include "ui/InputEvent.hpp"
 #include "model/Snapshot.hpp"
+#include "config/UIConfig.hpp"
 
 namespace ouroboros::ui {
 
@@ -82,10 +83,9 @@ protected:
 
         // Draw title (top-left of border)
         if (!title.empty()) {
-            // Highlight title when widget has focus (same color as track selection)
-            Style title_style = title_highlighted ?
-                Style{Color::BrightYellow, Color::Default, Attribute::Bold} :
-                Style{Color::BrightWhite, Color::Default, Attribute::Bold};
+            // Highlight title when widget has focus
+            const auto& uc = config::ui_config();
+            Style title_style = title_highlighted ? uc.focus_title : uc.accent;
 
             canvas.draw_text(
                 rect.x + 2,

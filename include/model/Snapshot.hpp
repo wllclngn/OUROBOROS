@@ -124,7 +124,6 @@ struct QueueState {
 
 struct UIState {
     std::string current_layout = "default";
-    std::string current_theme = "dark";
     bool show_header = true;
     bool show_controls = true;
     bool show_browser = true;

@@ -1,4 +1,5 @@
 #include "ui/widgets/HelpOverlay.hpp"
+#include "config/UIConfig.hpp"
 
 namespace ouroboros::ui::widgets {
 
@@ -24,7 +25,7 @@ void HelpOverlay::render(Canvas& canvas, const LayoutRect& rect, const model::Sn
     // Draw semi-transparent background (use darker color)
     for (int y = help_rect.y; y < help_rect.y + help_rect.height; ++y) {
         for (int x = help_rect.x; x < help_rect.x + help_rect.width; ++x) {
-            canvas.draw_text(x, y, " ", Style{Color::Default, Color::Black, Attribute::None});
+            canvas.draw_text(x, y, " ", Style{Color::Default, Color::Default, Attribute::None});
         }
     }
 
@@ -34,9 +35,10 @@ void HelpOverlay::render(Canvas& canvas, const LayoutRect& rect, const model::Sn
     // Draw help content
     int y = content_rect.y;
 
-    Style heading_style{Color::BrightYellow, Color::Black, Attribute::Bold};
-    Style text_style{Color::BrightWhite, Color::Black, Attribute::None};
-    Style key_style{Color::BrightCyan, Color::Black, Attribute::Bold};
+    const auto& uc = config::ui_config();
+    Style heading_style = uc.heading;
+    Style text_style{uc.title.fg, Color::Default, uc.title.attr};
+    Style key_style{uc.artist.fg, Color::Default, Attribute::Bold};
 
     canvas.draw_text(content_rect.x + 2, y++, "OUROBOROS MUSIC PLAYER", heading_style);
     y++;  // Blank line

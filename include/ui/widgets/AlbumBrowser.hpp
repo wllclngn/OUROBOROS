@@ -81,7 +81,7 @@ public:
     void refresh_cache(const model::Snapshot& snap);
 
     // Render album artwork after Canvas flush (similar to NowPlaying)
-    void render_images_if_needed(const LayoutRect& rect, bool force_render);
+    void render_images_if_needed(const LayoutRect& rect, bool force_render, int reserve_top = 0);
 
     // Global Search Interface
     void set_filter(const std::string& query);

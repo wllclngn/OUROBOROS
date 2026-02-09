@@ -5,7 +5,7 @@
 #include <termios.h>
 #include <fcntl.h>
 #include <cstring>
-#include <csignal>
+#include <signal.h>
 #include <cerrno>
 #include <poll.h>
 #include <format>
@@ -15,7 +15,7 @@ namespace ouroboros::ui {
 
 // PHASE #3: Signal Safety
 // Use volatile sig_atomic_t for signal flag - NEVER call ioctl in a handler!
-static volatile std::sig_atomic_t g_resize_pending = 0;
+static volatile sig_atomic_t g_resize_pending = 0;
 
 static void sigwinch_handler(int) {
     g_resize_pending = 1;
@@ -46,8 +46,12 @@ void Terminal::init() {
         int flags = fcntl(STDIN_FILENO, F_GETFL, 0);
         fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK);
         
-        // Install SIGWINCH handler for resize
-        std::signal(SIGWINCH, sigwinch_handler);
+        // Install SIGWINCH handler for resize (sigaction: SA_RESTART)
+        struct sigaction sa_winch{};
+        sa_winch.sa_handler = sigwinch_handler;
+        sa_winch.sa_flags = SA_RESTART;
+        sigemptyset(&sa_winch.sa_mask);
+        sigaction(SIGWINCH, &sa_winch, nullptr);
 #endif
         
         // Start writer thread

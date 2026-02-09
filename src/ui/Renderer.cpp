@@ -7,7 +7,9 @@
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
 #include <algorithm>
+#include <format>
 #include <fstream>
+#include <utility>
 
 namespace ouroboros::ui {
 
@@ -54,8 +56,8 @@ namespace {
                 return {40, 30, true, 1.0f, 1.0f};   // Standard 50/50 split
             case LayoutMode::EXPANDED:
                 return {50, 35, true, 1.5f, 1.0f};   // More Browser space (60/40)
+            default: std::unreachable();
         }
-        return {40, 30, true, 1.0f, 1.0f};
     }
 }
 
@@ -204,11 +206,30 @@ void Renderer::flush_canvas() {
 
                 // Foreground color
                 if (cell.style.fg != Color::Default) {
-                    int fg_code = 30 + (static_cast<int>(cell.style.fg) - 1) % 8;
-                    if (static_cast<int>(cell.style.fg) > 8) {
-                        fg_code += 60;  // Bright colors
+                    if (is_truecolor(cell.style.fg)) {
+                        output += std::format("\033[38;2;{};{};{}m",
+                            color_r(cell.style.fg), color_g(cell.style.fg), color_b(cell.style.fg));
+                    } else {
+                        int fg_code = 30 + (static_cast<int>(cell.style.fg) - 1) % 8;
+                        if (static_cast<int>(cell.style.fg) > 8) {
+                            fg_code += 60;  // Bright colors
+                        }
+                        output += "\033[" + std::to_string(fg_code) + "m";
                     }
-                    output += "\033[" + std::to_string(fg_code) + "m";
+                }
+
+                // Background color
+                if (cell.style.bg != Color::Default) {
+                    if (is_truecolor(cell.style.bg)) {
+                        output += std::format("\033[48;2;{};{};{}m",
+                            color_r(cell.style.bg), color_g(cell.style.bg), color_b(cell.style.bg));
+                    } else {
+                        int bg_code = 40 + (static_cast<int>(cell.style.bg) - 1) % 8;
+                        if (static_cast<int>(cell.style.bg) > 8) {
+                            bg_code += 60;
+                        }
+                        output += "\033[" + std::to_string(bg_code) + "m";
+                    }
                 }
 
                 // Attributes
@@ -315,7 +336,8 @@ void Renderer::render(bool force_redraw) {
     last_album_view_state = show_album_view_;
 
     if (show_album_view_) {
-        album_browser_->render_images_if_needed(browser_rect_, size_changed || album_view_activated || force_redraw);
+        int search_reserve = (focus_ == Focus::Search) ? 3 : 0;
+        album_browser_->render_images_if_needed(browser_rect_, size_changed || album_view_activated || force_redraw, search_reserve);
     }
 }
 

@@ -622,10 +622,10 @@ ArtworkWindow::DecodeResult ArtworkWindow::decode_jpeg(const std::vector<uint8_t
                      STBIR_RGB, STBIR_TYPE_UINT8, STBIR_EDGE_CLAMP, STBIR_FILTER_MITCHELL);
         stbi_image_free(pixels);
 
-        // Create RGBA canvas with transparent background
+        // Create RGBA canvas with transparent letterbox borders (alpha=0)
         std::vector<unsigned char> rgba(target_w * target_h * 4, 0);
 
-        // Center the scaled image
+        // Center the scaled image on transparent canvas
         int offset_x = (target_w - scaled_w) / 2;
         int offset_y = (target_h - scaled_h) / 2;
         for (int y = 0; y < scaled_h; ++y) {
@@ -639,25 +639,11 @@ ArtworkWindow::DecodeResult ArtworkWindow::decode_jpeg(const std::vector<uint8_t
             }
         }
 
-        // Encode to PNG
-        int png_len = 0;
-        unsigned char* png_raw = stbi_write_png_to_mem(rgba.data(), target_w * 4, target_w, target_h, 4, &png_len);
-
-        if (png_raw && png_len > 0) {
-            result.pixels.assign(png_raw, png_raw + png_len);
-            STBIW_FREE(png_raw);
-            result.width = target_w;
-            result.height = target_h;
-            result.format = CachedFormat::PNG;
-            result.valid = true;
-        } else {
-            // Fallback to raw RGBA
-            result.pixels = std::move(rgba);
-            result.width = target_w;
-            result.height = target_h;
-            result.format = CachedFormat::RGB;
-            result.valid = true;
-        }
+        result.pixels = std::move(rgba);
+        result.width = target_w;
+        result.height = target_h;
+        result.format = CachedFormat::RGBA;
+        result.valid = true;
     } else {
         // Square or nearly-square: direct resize to RGB
         std::vector<unsigned char> output(target_w * target_h * 3);
