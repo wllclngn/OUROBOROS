@@ -323,6 +323,12 @@ void LibraryCollector::run(std::stop_token stop_token) {
                     int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
                     if (cmp != 0) return cmp < 0;
                     if (a.date != b.date) return a.date < b.date;
+                    // Group by directory (matches album view's directory-based grouping)
+                    size_t a_slash = a.path.rfind('/');
+                    size_t b_slash = b.path.rfind('/');
+                    std::string_view a_dir(a.path.data(), a_slash != std::string::npos ? a_slash : 0);
+                    std::string_view b_dir(b.path.data(), b_slash != std::string::npos ? b_slash : 0);
+                    if (a_dir != b_dir) return a_dir < b_dir;
                     return a.track_number < b.track_number;
                 });
                 util::Logger::info("Library sorted successfully");
