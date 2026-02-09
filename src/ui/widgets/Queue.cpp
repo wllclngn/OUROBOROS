@@ -43,7 +43,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 
     // Draw border and title (highlight when focused)
     std::string title = "PLAYLIST: " + std::to_string(display_tracks.size()) + " TRACKS";
-    auto content_rect = draw_box_border(canvas, rect, title, Style{}, is_focused);
+    auto content_rect = draw_box_border(canvas, rect, title, is_focused);
 
     // Empty queue
     if (display_tracks.empty()) {

@@ -169,7 +169,8 @@ void ConfigLoader::save_config(const Config& cfg, const std::filesystem::path& p
     file << "title = \"brightwhite\"\n";
     file << "album = \"blue\"\n";
     file << "muted = \"brightblack\"\n";
-    file << "border = \"brightblack\"\n";
+    file << "artwork_border = \"brightblack\"\n";
+    file << "widget_border = \"brightblack\"\n";
     file << "accent = \"green\"\n";
     file << "separator = \"brightblack\"\n";
     file << "warning = \"red\"\n";

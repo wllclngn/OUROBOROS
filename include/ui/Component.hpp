@@ -75,17 +75,16 @@ protected:
         Canvas& canvas,
         const LayoutRect& rect,
         const std::string& title,
-        Style border_style = Style{},
         bool title_highlighted = false
     ) {
-        // Draw border
-        canvas.draw_rect(rect.x, rect.y, rect.width, rect.height, border_style);
+        // Draw border using TOML-driven widget_border role
+        canvas.draw_rect(rect.x, rect.y, rect.width, rect.height, config::ui_config().widget_border);
 
         // Draw title (top-left of border)
         if (!title.empty()) {
             // Highlight title when widget has focus
-            const auto& uc = config::ui_config();
-            Style title_style = title_highlighted ? uc.focus_title : uc.accent;
+            const auto& uicfg = config::ui_config();
+            Style title_style = title_highlighted ? uicfg.focus_title : uicfg.accent;
 
             canvas.draw_text(
                 rect.x + 2,

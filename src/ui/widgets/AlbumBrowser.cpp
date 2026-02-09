@@ -189,7 +189,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     // Check if albums are still being computed in background
     if (snap.library->albums.empty() && !snap.library->tracks.empty()) {
         // Show loading message while albums compute
-        draw_box_border(canvas, rect, "LIBRARY: LOADING ALBUMS...", Style{}, is_focused);
+        draw_box_border(canvas, rect, "LIBRARY: LOADING ALBUMS...", is_focused);
         canvas.draw_text(rect.x + 2, rect.y + 2, "Computing album groups...",
                         uc.muted);
         return;
@@ -300,7 +300,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
             if (is_selected) {
                 border_style = uc.selection;
             } else {
-                border_style = uc.border;
+                border_style = uc.artwork_border;
             }
 
             // Draw border around ARTWORK BOX
@@ -366,7 +366,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
         title += ": " + std::to_string(albums_.size()) + " ALBUMS";
     }
 
-    draw_box_border(canvas, rect, title, Style{}, is_focused);
+    draw_box_border(canvas, rect, title, is_focused);
 }
 
 void AlbumBrowser::handle_input(const InputEvent& event) {

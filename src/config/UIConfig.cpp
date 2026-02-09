@@ -111,7 +111,8 @@ const UIConfig& ui_config() {
         auto title_fg      = resolve_color(toml, have_toml, "title",        Color::BrightWhite);
         auto album_fg      = resolve_color(toml, have_toml, "album",        Color::Blue);
         auto muted_fg      = resolve_color(toml, have_toml, "muted",        Color::BrightBlack);
-        auto border_fg     = resolve_color(toml, have_toml, "border",       Color::BrightBlack);
+        auto artwork_border_fg = resolve_color(toml, have_toml, "artwork_border", Color::BrightBlack);
+        auto widget_border_fg  = resolve_color(toml, have_toml, "widget_border",  Color::BrightBlack);
         auto accent_fg     = resolve_color(toml, have_toml, "accent",       Color::Green);
         auto separator_fg  = resolve_color(toml, have_toml, "separator",    Color::BrightBlack);
         auto warning_fg    = resolve_color(toml, have_toml, "warning",      Color::Red);
@@ -124,7 +125,8 @@ const UIConfig& ui_config() {
         c.title       = Style{title_fg,      Color::Default, Attribute::None};
         c.album       = Style{album_fg,      Color::Default, Attribute::None};
         c.muted       = Style{muted_fg,      Color::Default, Attribute::None};
-        c.border      = Style{border_fg,     Color::Default, Attribute::None};
+        c.artwork_border = Style{artwork_border_fg, Color::Default, Attribute::None};
+        c.widget_border  = Style{widget_border_fg,  Color::Default, Attribute::None};
         c.accent      = Style{accent_fg,     Color::Default, Attribute::Bold};
         c.separator   = Style{separator_fg,  Color::Default, Attribute::None};
         c.warning     = Style{warning_fg,    Color::Default, Attribute::None};

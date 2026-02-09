@@ -2,6 +2,7 @@
 COMMIT_MESSAGE.txt
 
 build/
+build-*/
 *.o
 *.a
 *.so

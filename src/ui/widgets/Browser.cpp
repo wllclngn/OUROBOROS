@@ -86,7 +86,7 @@ void Browser::render(Canvas& canvas, const LayoutRect& rect, const model::Snapsh
         title += ": " + std::to_string(tracks.size()) + " TRACKS";
     }
     
-    auto inner_rect = draw_box_border(canvas, content_rect, title, Style{}, is_focused);
+    auto inner_rect = draw_box_border(canvas, content_rect, title, is_focused);
 
     // Empty library - show loading indicator if scanning
     if (tracks.empty()) {
@@ -381,6 +381,9 @@ void Browser::handle_input(const InputEvent& event) {
         }
         if (selected_index_ > 0) selected_index_--;
     }
+    else if (event.key == 27 && !selected_indices_.empty()) {
+        clear_selection();
+    }
     else if (matches_keybind(event, "select")) {
         if (!g_current_snapshot || g_current_snapshot->library->tracks.empty()) {
             return;
@@ -389,6 +392,10 @@ void Browser::handle_input(const InputEvent& event) {
         auto& bus = events::EventBus::instance();
 
         if (!selected_indices_.empty()) {
+            // Include the cursor track in the selection
+            if (selected_index_ >= 0 && selected_index_ < util::narrow_cast<int>(filtered_indices_.size())) {
+                selected_indices_.insert(filtered_indices_[selected_index_]);
+            }
             for (int idx : selected_indices_) {
                 if (idx >= 0 && idx < util::narrow_cast<int>(g_current_snapshot->library->tracks.size())) {
                     events::Event evt;

@@ -15,7 +15,8 @@ struct UIConfig {
     ouroboros::ui::Style title;        // Track/album title
     ouroboros::ui::Style album;        // Album name
     ouroboros::ui::Style muted;        // Secondary text, dim metadata
-    ouroboros::ui::Style border;       // Box-drawing characters
+    ouroboros::ui::Style artwork_border; // Album art frame border
+    ouroboros::ui::Style widget_border;  // Widget box-drawing characters
     ouroboros::ui::Style accent;       // Panel titles, headings
     ouroboros::ui::Style separator;    // Bullet separators
     ouroboros::ui::Style warning;      // Errors, missing files
