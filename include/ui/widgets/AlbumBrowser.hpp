@@ -81,10 +81,11 @@ public:
     void refresh_cache(const model::Snapshot& snap);
 
     // Render album artwork after Canvas flush (similar to NowPlaying)
-    void render_images_if_needed(const LayoutRect& rect, bool force_render, int reserve_top = 0);
+    void render_images_if_needed(const LayoutRect& rect, bool force_render);
 
     // Global Search Interface
     void set_filter(const std::string& query);
+    void set_search_active(bool active);
 
     // Clear all album images (call when closing album view)
     void clear_all_images();
@@ -115,6 +116,7 @@ private:
     bool filter_dirty_ = false;
     bool content_changed_ = false; // Flag to force clear images on filter change
     bool prefetch_completed_ = false; // Skip redundant prefetch when viewport hasn't changed
+    bool search_active_ = false;     // When true, render search bar at top of widget
 
     // Atomic slots for flicker-free rendering (holds decoded pixel data)
     // Slots are indexed by visible position: (row - scroll_offset) * cols + col

@@ -102,6 +102,10 @@ void AlbumBrowser::clear_all_images() {
 // This prevents dangling pointer issues when snap reference goes out of scope
 static std::shared_ptr<const model::Snapshot> g_current_snapshot = nullptr;
 
+void AlbumBrowser::set_search_active(bool active) {
+    search_active_ = active;
+}
+
 void AlbumBrowser::set_filter(const std::string& query) {
     ouroboros::util::Logger::debug("AlbumBrowser::set_filter: '" + query + "' (current: '" + filter_query_ + "')");
     if (filter_query_ != query) {
@@ -257,8 +261,13 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
 
     int selected_row = selected_index_ / cols_;
 
+    // When search overlay is active, offset grid below the FIND box
+    // The search overlay covers 3 rows from rect.y; content starts at rect.y+1,
+    // so the grid needs to shift down by 2 content rows
+    const int search_offset = search_active_ ? 2 : 0;
+
     // Scrolling logic
-    int visible_rows = content_rect.height / cell_h;
+    int visible_rows = (content_rect.height - search_offset) / cell_h;
     if (visible_rows < 1) visible_rows = 1;
 
     if (selected_row < scroll_offset_) {
@@ -272,7 +281,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     int box_h = cell_h;
 
     // Render visible albums in grid
-    int y_offset = content_rect.y;
+    int y_offset = content_rect.y + search_offset;
 
     for (int r = scroll_offset_; r < total_rows; ++r) {
         // Allow partial rows to render - border will clip overflow naturally
@@ -448,7 +457,7 @@ SizeConstraints AlbumBrowser::get_constraints() const {
     return constraints;
 }
 
-void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_render, int reserve_top) {
+void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_render) {
     auto& img_renderer = ImageRenderer::instance();
     if (!img_renderer.images_supported()) {
         ouroboros::util::Logger::warn("AlbumBrowser: Images not supported, skipping artwork render");
@@ -559,10 +568,12 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     if (cols_available < 1) cols_available = 1;
 
     // Calculate content area from actual widget rect
+    // When search overlay is active, offset below the FIND box (same as render())
+    const int search_offset = search_active_ ? 2 : 0;
     int content_x = rect.x + 1;
-    int content_y = rect.y + 1;
+    int content_y = rect.y + 1 + search_offset;
     int content_width = rect.width - 2;
-    int content_height = rect.height - 2;
+    int content_height = rect.height - 2 - search_offset;
 
     // NO gap between cells - must match render()
     const int cell_w = content_width / cols_available;
@@ -644,7 +655,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
             if (!needs_request && current_state == SlotState::Loading) {
                 std::string filename = album.representative_track_path.substr(
                     album.representative_track_path.rfind('/') + 1);
-                ouroboros::util::Logger::warn("AlbumBrowser: SKIP slot=" + std::to_string(slot_idx) +
+                ouroboros::util::Logger::debug("AlbumBrowser: SKIP slot=" + std::to_string(slot_idx) +
                     " state=Loading album_dir=" + album.album_directory.substr(album.album_directory.rfind('/') + 1) +
                     " track=" + filename);
             }
@@ -795,7 +806,6 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         int visible_art_rows = -1;
 
         if (art_y >= container_bottom_y) continue; // Fully off-screen (bottom)
-        if (art_y < rect.y + reserve_top) continue; // Clipped by search overlay
         if (art_x + art_cols_slot > content_x + content_width) continue; // Right edge
 
         if (art_bottom_y > container_bottom_y) {

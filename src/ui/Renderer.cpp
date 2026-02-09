@@ -295,6 +295,7 @@ void Renderer::render(bool force_redraw) {
     // RENDER WIDGETS TO CANVAS
     // Toggle between track list (Browser) and album grid (AlbumBrowser) with Ctrl+a
     if (show_album_view_) {
+        album_browser_->set_search_active(focus_ == Focus::Search);
         album_browser_->render(canvas_, browser_rect_, *snap, focus_ == Focus::Browser);
     } else {
         browser_->render(canvas_, browser_rect_, *snap, focus_ == Focus::Browser);
@@ -337,8 +338,7 @@ void Renderer::render(bool force_redraw) {
     last_album_view_state = show_album_view_;
 
     if (show_album_view_) {
-        int search_reserve = (focus_ == Focus::Search) ? 3 : 0;
-        album_browser_->render_images_if_needed(browser_rect_, size_changed || album_view_activated || force_redraw, search_reserve);
+        album_browser_->render_images_if_needed(browser_rect_, size_changed || album_view_activated || force_redraw);
     }
 }
 
