@@ -25,14 +25,12 @@ PlaybackCollector::PlaybackCollector(std::shared_ptr<backend::SnapshotPublisher>
             paused_ = !paused_;
         }));
 
-    // Subscribe to ClearQueue for immediate stop
     subscriptions_.push_back(bus.subscribe(events::Event::Type::ClearQueue,
         [this](const events::Event&) {
             clear_requested_.store(true, std::memory_order_release);
             util::Logger::debug("PlaybackCollector: Clear requested (atomic flag set)");
         }));
 
-    // Initialize global audio context
     if (!audio_context_.init()) {
         util::Logger::error("Failed to initialize PipeWire context!");
     }
@@ -45,11 +43,37 @@ PlaybackCollector::~PlaybackCollector() {
     }
 }
 
+// Position interpolation methods
+
+void PlaybackCollector::update_position_anchor(audio::PipeWireOutput& output) {
+    size_t consumed = output.frames_consumed();
+    size_t delta_frames = consumed - anchor_consumed_frames_;
+
+    if (anchor_sample_rate_ > 0 && delta_frames > 0) {
+        int64_t delta_ms = (static_cast<int64_t>(delta_frames) * 1000) / anchor_sample_rate_;
+        anchor_position_ms_ += delta_ms;
+    }
+
+    anchor_consumed_frames_ = consumed;
+    anchor_time_ = std::chrono::steady_clock::now();
+}
+
+int64_t PlaybackCollector::get_interpolated_position_ms() const {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - anchor_time_).count();
+    return anchor_position_ms_ + elapsed;
+}
+
+void PlaybackCollector::reset_position_anchor(int64_t position_ms, audio::PipeWireOutput& output) {
+    anchor_position_ms_ = position_ms;
+    anchor_time_ = std::chrono::steady_clock::now();
+    anchor_consumed_frames_ = output.frames_consumed();
+}
+
 void PlaybackCollector::run(std::stop_token stop_token) {
     bool last_queue_empty_logged = false;
 
     // GAPLESS PLAYBACK: Persistent output - lives across tracks
-    // Only destroyed on format change or shutdown
     audio::PipeWireOutput output;
     int output_sample_rate = 0;
     int output_channels = 0;
@@ -62,10 +86,8 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             continue;
         }
 
-        // Working with shared pointers now
         const auto& snap = *snap_ptr;
 
-        // Two Stacks: Check if nothing is currently playing
         if (!snap.queue->current.has_value()) {
             if (!last_queue_empty_logged) {
                 util::Logger::debug("PlaybackCollector: No current track (queue empty or stopped)");
@@ -75,10 +97,8 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             continue;
         }
 
-        // Reset flag since we have a valid current track
         last_queue_empty_logged = false;
 
-        // Two Stacks: Get current track index directly
         int track_index = *snap.queue->current;
         if (track_index < 0 || track_index >= util::narrow_cast<int>(snap.library->tracks.size())) {
             util::Logger::error("PlaybackCollector: Track index out of bounds (idx=" +
@@ -90,16 +110,14 @@ void PlaybackCollector::run(std::stop_token stop_token) {
         const auto& track = snap.library->tracks[track_index];
         util::Logger::debug("PlaybackCollector: Starting track: " + track.title);
 
-        // DIAGNOSTIC: Log track details for debugging empty-metadata tracks
         util::Logger::debug("PlaybackCollector: Track details - path=" + track.path +
             ", is_valid=" + std::string(track.is_valid ? "true" : "false") +
             ", format=" + std::to_string(static_cast<int>(track.format)) +
             ", error=" + track.error_message);
 
-        // Two Stacks: Store current track for change detection
         int starting_track = track_index;
 
-        // VALIDATION: Check if track is valid before attempting playback
+        // VALIDATION: Skip invalid tracks
         if (!track.is_valid) {
             util::Logger::warn("PlaybackCollector: SKIPPING invalid track - path=" + track.path +
                 ", error=" + track.error_message);
@@ -110,7 +128,6 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                     std::chrono::steady_clock::now()
                 });
 
-                // Two Stacks: Advance to next track
                 auto new_queue = std::make_shared<model::QueueState>(*s.queue);
                 if (new_queue->current.has_value()) {
                     new_queue->history.push_back(*new_queue->current);
@@ -123,7 +140,6 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                         new_queue->current = new_queue->future[idx];
                         new_queue->future.erase(new_queue->future.begin() + idx);
                     } else {
-                        // Linear: pop from FRONT (FIFO order)
                         new_queue->current = new_queue->future.front();
                         new_queue->future.erase(new_queue->future.begin());
                     }
@@ -134,10 +150,9 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             });
             continue;
         }
-        
-        // METADATA-DRIVEN CODEC SELECTION
+
         std::unique_ptr<audio::AudioDecoder> decoder = create_decoder_for_track(track);
-        
+
         if (!decoder) {
             publisher_->update([&](model::Snapshot& s) {
                 s.alerts.push_back({
@@ -149,8 +164,7 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
             continue;
         }
-        
-        // Open decoder
+
         if (!decoder->open(track.path)) {
             publisher_->update([&](model::Snapshot& s) {
                 s.alerts.push_back({
@@ -163,13 +177,10 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             continue;
         }
 
-        // CRITICAL: Use decoder's ACTUAL sample rate, not metadata
-        // Decoder determines the real format after opening the file
         int actual_sample_rate = decoder->get_sample_rate();
         int actual_channels = decoder->get_channels();
 
-        // GAPLESS PLAYBACK: Only reinit output if format changed
-        // Same format = seamless transition, different format = acceptable gap
+        // GAPLESS: Only reinit output if format changed
         bool format_changed = (actual_sample_rate != output_sample_rate ||
                                actual_channels != output_channels);
 
@@ -178,7 +189,7 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 util::Logger::debug("PlaybackCollector: Format change detected (" +
                     std::to_string(output_sample_rate) + "Hz/" + std::to_string(output_channels) + "ch -> " +
                     std::to_string(actual_sample_rate) + "Hz/" + std::to_string(actual_channels) + "ch), reinitializing");
-                output.close();  // Drains before destroying
+                output.close();
             }
 
             util::Logger::debug("PlaybackCollector: Initializing PipeWire (" +
@@ -199,237 +210,176 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             util::Logger::debug("PlaybackCollector: Reusing PipeWire stream (gapless transition)");
         }
 
-        // Update snapshot with playing state and track index
+        // Initialize position anchor for this track
+        anchor_sample_rate_ = actual_sample_rate;
+        reset_position_anchor(0, output);
+
+        // Update snapshot with playing state
         publisher_->update([&track_index](model::Snapshot& s) {
             s.player.state = model::PlaybackState::Playing;
             s.player.current_track_index = track_index;
         });
-        
-        // Playback loop
-        constexpr int BUFFER_FRAMES = 16384; // Increased buffer size for high sample rates (85ms @ 192kHz)
-        std::vector<float> buffer(BUFFER_FRAMES * decoder->get_channels(), 0.0f);
+
+        // Decode loop: push PCM into ring buffer
+        constexpr int DECODE_CHUNK = 4096;
+        std::vector<float> buffer(DECODE_CHUNK * decoder->get_channels(), 0.0f);
+        auto& ring = output.ring_buffer();
 
         bool track_finished = false;
-
-        // STATE TRACKING: Only update snapshot when state actually changes
-        bool last_reported_paused = false;  // Track last pause state we reported
-        int last_reported_volume = -1;      // Track last volume we reported (-1 = not set)
+        bool was_paused = false;
+        auto last_position_update = std::chrono::steady_clock::now();
 
         while (!stop_token.stop_requested()) {
-            // Early exit check - prevents blocking on audio write during shutdown
-            if (stop_token.stop_requested()) {
-                break;
-            }
+            if (stop_token.stop_requested()) break;
 
-            // Check if clear requested (Ctrl+d)
+            // Check clear request
             if (clear_requested_.load(std::memory_order_acquire)) {
-                util::Logger::debug("PlaybackCollector: Clear detected in main loop - breaking");
+                util::Logger::debug("PlaybackCollector: Clear detected - flushing and breaking");
+                output.pause(true);
+                output.flush_ring();
+                output.pause(false);
                 break;
             }
 
-            // Check if paused
+            // Handle pause
             if (paused_) {
-                output.pause(true);
-                // GUARD: Only update snapshot when pause state changes
-                if (last_reported_paused != true) {
-                    publisher_->update([](model::Snapshot& s) {
+                if (!was_paused) {
+                    output.pause(true);
+                    update_position_anchor(output);
+                    frozen_position_ms_ = get_interpolated_position_ms();
+                    publisher_->update([this](model::Snapshot& s) {
                         s.player.state = model::PlaybackState::Paused;
+                        s.player.playback_position_ms = static_cast<int>(frozen_position_ms_);
                     });
-                    last_reported_paused = true;
+                    was_paused = true;
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 continue;
-            } else {
+            } else if (was_paused) {
+                // Resuming from pause
+                reset_position_anchor(frozen_position_ms_, output);
                 output.pause(false);
-                // GUARD: Only update snapshot when pause state changes
-                if (last_reported_paused != false) {
-                    publisher_->update([](model::Snapshot& s) {
-                        s.player.state = model::PlaybackState::Playing;
-                    });
-                    last_reported_paused = false;
-                }
+                publisher_->update([](model::Snapshot& s) {
+                    s.player.state = model::PlaybackState::Playing;
+                });
+                was_paused = false;
             }
 
-            // Check if track changed externally
+            // Check track change
             auto current_snap_ptr = publisher_->get_current();
             if (current_snap_ptr) {
                 // Handle seek
                 if (current_snap_ptr->player.seek_request_ms >= 0) {
                     int64_t target = current_snap_ptr->player.seek_request_ms;
+
+                    output.pause(true);
+                    output.flush_ring();
+
                     if (decoder->seek_to_ms(target)) {
+                        reset_position_anchor(target, output);
                         publisher_->update([target](model::Snapshot& s) {
-                             s.player.playback_position_ms = static_cast<int>(target);
-                             s.player.seek_request_ms = -1; // Clear request
+                            s.player.playback_position_ms = static_cast<int>(target);
+                            s.player.seek_request_ms = -1;
                         });
                     } else {
-                         publisher_->update([](model::Snapshot& s) {
-                             s.player.seek_request_ms = -1; // Clear request even if failed
+                        publisher_->update([](model::Snapshot& s) {
+                            s.player.seek_request_ms = -1;
                         });
                     }
+
+                    output.pause(false);
                 }
 
-                // Update volume - GUARD: Only call set_volume when it actually changes
+                // Volume update
                 int current_volume = current_snap_ptr->player.volume_percent;
-                if (last_reported_volume != current_volume) {
-                    output.set_volume(current_volume);
-                    last_reported_volume = current_volume;
-                }
-                
-                // Two Stacks: Check if current track changed
+                output.set_volume(current_volume);
+
+                // Track change detection
                 if (!current_snap_ptr->queue->current.has_value() ||
                     *current_snap_ptr->queue->current != starting_track) {
-                    // Track changed by user
                     util::Logger::debug("PlaybackCollector: Detected track change. Breaking loop.");
-                    track_finished = false; // Not finished naturally
+                    track_finished = false;
                     break;
                 }
             }
-            
-            // Update position BEFORE blocking write (10Hz for smooth time display)
-            // Placed here so PipeWire buffer stalls don't delay position updates
-            static auto last_position_update = std::chrono::steady_clock::now();
+
+            // Decode into ring buffer
+            if (ring.write_available_frames() >= static_cast<size_t>(DECODE_CHUNK)) {
+                std::fill(buffer.begin(), buffer.end(), 0.0f);
+                int frames_read = decoder->read_pcm(buffer.data(), DECODE_CHUNK);
+
+                if (frames_read <= 0) {
+                    track_finished = true;
+                    break;
+                }
+
+                // Clamp NaN/Inf on producer side (keeps on_process RT-safe)
+                size_t total_samples = static_cast<size_t>(frames_read) * decoder->get_channels();
+                for (size_t i = 0; i < total_samples; ++i) {
+                    float val = buffer[i];
+                    if (!std::isfinite(val)) {
+                        buffer[i] = 0.0f;
+                    } else if (val > 1.0f) {
+                        buffer[i] = 1.0f;
+                    } else if (val < -1.0f) {
+                        buffer[i] = -1.0f;
+                    }
+                }
+
+                ring.write(buffer.data(), frames_read);
+            } else {
+                // Ring buffer full - PipeWire will drain it
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+
+            // Position update at ~30Hz (interpolated from consumed frames)
             auto now = std::chrono::steady_clock::now();
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_position_update).count();
-            if (elapsed >= 100) {
-                // if (elapsed > 500) {
-                //     util::Logger::debug("PlaybackCollector: Position update delayed by " +
-                //                        std::to_string(elapsed) + "ms (possible PipeWire stall)");
-                // }
-                publisher_->update([&](model::Snapshot& s) {
-                    s.player.playback_position_ms = decoder->get_position_ms();
+            if (elapsed >= 33) {
+                update_position_anchor(output);
+                int64_t display_ms = get_interpolated_position_ms();
+                publisher_->update([display_ms](model::Snapshot& s) {
+                    s.player.playback_position_ms = static_cast<int>(display_ms);
                 });
                 last_position_update = now;
             }
-
-            // Clear buffer
-            std::fill(buffer.begin(), buffer.end(), 0.0f);
-
-            // Read PCM
-            int frames_read = decoder->read_pcm(buffer.data(), BUFFER_FRAMES);
-
-            if (frames_read <= 0) {
-                track_finished = true;
-                break;
-            }
-
-            // Check stop BEFORE blocking write operation
-            if (stop_token.stop_requested()) {
-                break;
-            }
-
-            // Write loop to handle partial writes
-            size_t frames_written_total = 0;
-            size_t frames_remaining = static_cast<size_t>(frames_read);
-            const int channels = decoder->get_channels();
-            bool write_error = false;
-
-            while (frames_remaining > 0 && !stop_token.stop_requested() &&
-                   !clear_requested_.load(std::memory_order_acquire)) {
-                // Calculate offset in buffer
-                const float* data_ptr = buffer.data() + (frames_written_total * channels);
-
-                // Write to PipeWire (can block for buffer drain)
-                size_t written = output.write(data_ptr, frames_remaining);
-
-                if (written == 0) {
-                    util::Logger::error("Failed to write audio data (0 frames) - Skipping track");
-                    write_error = true;
-                    break;
-                }
-
-                frames_written_total += written;
-                frames_remaining -= written;
-            }
-
-            // Check if clear was requested during write
-            if (clear_requested_.load(std::memory_order_acquire)) {
-                util::Logger::debug("PlaybackCollector: Clear detected in write loop - breaking");
-                break;
-            }
-
-            if (write_error) {
-                publisher_->update([&](model::Snapshot& s) {
-                    s.alerts.push_back({
-                        "error",
-                        "Audio output failed. Skipping track.",
-                        std::chrono::steady_clock::now()
-                    });
-
-                    // Two Stacks: Advance to next track
-                    auto new_queue = std::make_shared<model::QueueState>(*s.queue);
-                    if (new_queue->current.has_value()) {
-                        new_queue->history.push_back(*new_queue->current);
-                    }
-                    if (!new_queue->future.empty()) {
-                        if (s.player.shuffle_enabled) {
-                            uint64_t rand_val;
-                            getrandom(&rand_val, sizeof(rand_val), 0);
-                            size_t idx = rand_val % new_queue->future.size();
-                            new_queue->current = new_queue->future[idx];
-                            new_queue->future.erase(new_queue->future.begin() + idx);
-                        } else {
-                            // Linear: pop from FRONT (FIFO)
-                            new_queue->current = new_queue->future.front();
-                            new_queue->future.erase(new_queue->future.begin());
-                        }
-                    } else if (s.player.repeat_mode == model::RepeatMode::All) {
-                        // Repeat All: recycle history (maintain add order)
-                        new_queue->future = new_queue->history;
-                        new_queue->history.clear();
-                        if (!new_queue->future.empty()) {
-                            new_queue->current = new_queue->future.front();
-                            new_queue->future.erase(new_queue->future.begin());
-                        }
-                    } else {
-                        new_queue->current = std::nullopt;
-                        s.player.state = model::PlaybackState::Stopped;
-                    }
-                    s.queue = new_queue;
-                });
-
-                std::this_thread::sleep_for(std::chrono::milliseconds(200)); // Prevent CPU spin
-                break;
-            }
         }
 
-        util::Logger::debug("PlaybackCollector: Loop finished. Closing output...");
+        util::Logger::debug("PlaybackCollector: Loop finished.");
 
-        // Reset clear flag (it was consumed)
+        // Reset clear flag
         if (clear_requested_.load(std::memory_order_acquire)) {
             clear_requested_.store(false, std::memory_order_release);
             util::Logger::debug("PlaybackCollector: Clear flag reset");
         }
 
-        // Handle track finish (Two Stacks auto-advance)
+        // Handle track finish (auto-advance)
+        // No drain wait: ring buffer carries track N's tail samples while we
+        // set up track N+1. PipeWire plays continuously from the ring buffer,
+        // giving true gapless transitions (same format) without silence gaps.
         if (track_finished) {
             publisher_->update([&](model::Snapshot& s) {
                 if (s.player.repeat_mode == model::RepeatMode::One) {
-                    // Repeat One: just reset position, keep same current
                     s.player.playback_position_ms = 0;
                 } else {
-                    // Two Stacks: advance to next track
                     auto new_queue = std::make_shared<model::QueueState>(*s.queue);
 
-                    // Push current to history
                     if (new_queue->current.has_value()) {
                         new_queue->history.push_back(*new_queue->current);
                     }
 
                     if (!new_queue->future.empty()) {
                         if (s.player.shuffle_enabled) {
-                            // Shuffle: CSPRNG pick random from future
                             uint64_t rand_val;
                             getrandom(&rand_val, sizeof(rand_val), 0);
                             size_t idx = rand_val % new_queue->future.size();
                             new_queue->current = new_queue->future[idx];
                             new_queue->future.erase(new_queue->future.begin() + idx);
                         } else {
-                            // Linear: pop from FRONT (FIFO)
                             new_queue->current = new_queue->future.front();
                             new_queue->future.erase(new_queue->future.begin());
                         }
                     } else if (s.player.repeat_mode == model::RepeatMode::All) {
-                        // Repeat All: recycle history (maintain add order)
                         new_queue->future = new_queue->history;
                         new_queue->history.clear();
                         if (!new_queue->future.empty()) {
@@ -445,7 +395,6 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                             }
                         }
                     } else {
-                        // End of queue, stop
                         new_queue->current = std::nullopt;
                         s.player.state = model::PlaybackState::Stopped;
                     }
@@ -453,9 +402,7 @@ void PlaybackCollector::run(std::stop_token stop_token) {
                 }
             });
         }
-        
-        // Cleanup decoder only - output stays alive for gapless playback
-        // Output will be closed on format change or shutdown
+
         decoder->close();
         decoder.reset();
         util::Logger::debug("PlaybackCollector: Decoder closed. Ready for next track (gapless).");
@@ -467,11 +414,9 @@ void PlaybackCollector::run(std::stop_token stop_token) {
             output_channels = 0;
             util::Logger::debug("PlaybackCollector: Output closed due to clear request.");
         }
-
-        // If we broke out because track changed, the loop will restart and pick up new track
     }
 
-    // Final cleanup on shutdown
+    // Final cleanup
     if (output.is_initialized()) {
         output.close();
         util::Logger::debug("PlaybackCollector: Final output cleanup on shutdown.");
@@ -482,11 +427,11 @@ std::unique_ptr<audio::AudioDecoder> PlaybackCollector::create_decoder_for_track
     switch (track.format) {
         case model::AudioFormat::MP3:
             return std::make_unique<audio::MP3Decoder>();
-            
+
         case model::AudioFormat::FLAC:
         case model::AudioFormat::WAV:
             return std::make_unique<audio::FLACDecoder>();
-            
+
         case model::AudioFormat::OGG:
             return std::make_unique<audio::OGGDecoder>();
 
