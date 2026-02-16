@@ -41,7 +41,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
 
 ### Production-Grade Algorithms
-- **TimSort**: O(n) best-case sorting exploits natural runs in music libraries (adaptive, stable, galloping merges)
+- **PowerSort**: Near-optimal adaptive merge sort (Munro & Wild 2018, CPython 3.11+) with galloping mode for clustered data
 - **Boyer-Moore-Horspool**: Sublinear O(n/m) search with bad-character skip table (2-3x faster than naive, <5ms keystroke latency)
 - **Dual-Hash System**: Custom SHA-256 (NIST FIPS 180-4) + FNV-1a with adaptive sampling (>65KB files sampled for speed)
 
@@ -322,7 +322,7 @@ Built with:
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
-- **Production algorithms** (TimSort, Boyer-Moore-Horspool, SHA-256)
+- **Production algorithms** (PowerSort, Boyer-Moore-Horspool, SHA-256)
 - **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
 - **Multi-tier caching** (O(1) → O(dirs) → O(files))
 - **Hardware-aware parallelism** (thread pools, async decoding)
