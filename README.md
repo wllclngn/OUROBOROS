@@ -1,6 +1,7 @@
 # OUROBOROS, The Eternal Player
 
 An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 15,700 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+
 **Key Features:**
 
 ### Audio System
