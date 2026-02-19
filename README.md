@@ -1,13 +1,10 @@
 # OUROBOROS, The Eternal Player
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, ~13,100 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
-
-*An extension system for Foobar2000-style customization is planned - see [Future: Extension System](#future-extension-system).*
-
+An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 15,700 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 **Key Features:**
 
 ### Audio System
-- **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg) with full metadata extraction
+- **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg), DSD (DSF files, custom decimation engine) with full metadata extraction
 - **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
 - **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
 
@@ -59,7 +56,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
 
 ### Engineering Optimizations
-- **~13,100 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
+- **Approximately 23,700 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
@@ -130,7 +127,7 @@ sudo cmake --install build
 - **Compiler**: GCC 13+ or Clang 16+ with C++23 support
 - **Build System**: CMake 3.20+, Make
 - **Audio Output**: PipeWire (`libpipewire-0.3`, `libspa-0.2`)
-- **Audio Codecs**: libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG), FFmpeg (M4A/AAC)
+- **Audio Codecs**: libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG), FFmpeg (M4A/AAC, DSF metadata)
 - **Unicode**: ICU (`icu-uc`, `icu-i18n`) for case-insensitive sorting and diacritic normalization
 - **Image Support**: stb_image, stb_image_resize2 (vendored in vendor/stb/)
 
@@ -312,13 +309,13 @@ Built with:
 - **libmpg123** - MP3 decoding
 - **libsndfile** - FLAC/WAV decoding
 - **libvorbisfile** - OGG/Vorbis decoding
-- **FFmpeg** (`libavformat`, `libavcodec`, `libswresample`) - M4A/AAC decoding
+- **FFmpeg** (`libavformat`, `libavcodec`, `libswresample`) - M4A/AAC decoding, DSF metadata extraction
 - **stb_image** - Image loading (public domain)
 - **stb_image_resize2** - Image resizing (public domain)
 
 ## Technical Highlights
 
-- **13,112 lines** of production C++23
+- **Approximately 23,700 lines** of production C++23
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
@@ -328,12 +325,6 @@ Built with:
 - **Hardware-aware parallelism** (thread pools, async decoding)
 - **Full Unicode support** (ICU normalization, 150+ languages)
 - **30 FPS rendering** with sub-millisecond snapshot reads
-
-## Future: Extension System
-
-OUROBOROS is currently offline-only, driven entirely by local files. A future enhancement is planned to support Foobar2000-style extensibility - allowing the core player to be extended via user-defined Extensions and a Protocol layer.
-
-For a preview of this architecture, see [muEmacs-extensions](https://github.com/wllclngn/muEmacs-extensions).
 
 ## Technical Documentation
 
