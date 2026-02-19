@@ -28,6 +28,7 @@ private:
     static bool parse_mp3(const std::string& path, model::Track& track);
     static bool parse_sndfile(const std::string& path, model::Track& track);
     static bool parse_m4a(const std::string& path, model::Track& track);
+    static bool parse_dsf(const std::string& path, model::Track& track);
 
     // Determine audio format from extension
     static model::AudioFormat detect_format(const std::string& path);

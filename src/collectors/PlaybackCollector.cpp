@@ -3,6 +3,7 @@
 #include "audio/FLACDecoder.hpp"
 #include "audio/OGGDecoder.hpp"
 #include "audio/M4ADecoder.hpp"
+#include "audio/DSDDecoder.hpp"
 #include "audio/PipeWireOutput.hpp"
 #include "backend/MetadataParser.hpp"
 #include "util/Logger.hpp"
@@ -438,6 +439,9 @@ std::unique_ptr<audio::AudioDecoder> PlaybackCollector::create_decoder_for_track
         case model::AudioFormat::M4A:
             return std::make_unique<audio::M4ADecoder>();
 
+        case model::AudioFormat::DSD:
+            return std::make_unique<audio::DSDDecoder>();
+
         default:
             return nullptr;
     }
@@ -450,6 +454,7 @@ std::string PlaybackCollector::format_to_string(model::AudioFormat format) {
         case model::AudioFormat::OGG: return "OGG/Vorbis";
         case model::AudioFormat::WAV: return "WAV";
         case model::AudioFormat::M4A: return "M4A/AAC";
+        case model::AudioFormat::DSD: return "DSD";
         default: return "Unknown";
     }
 }

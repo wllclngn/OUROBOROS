@@ -312,6 +312,7 @@ void Library::scan_directory(const std::function<void(int scanned, int total)>& 
                         else if (path.extension() == ".flac") track.format = model::AudioFormat::FLAC;
                         else if (path.extension() == ".ogg") track.format = model::AudioFormat::OGG;
                         else if (path.extension() == ".wav") track.format = model::AudioFormat::WAV;
+                        else if (path.extension() == ".dsf") track.format = model::AudioFormat::DSD;
                     }
 
                     // Populate optimization fields
@@ -580,6 +581,7 @@ void Library::scan_for_changes(
                         else if (path.extension() == ".flac") track.format = model::AudioFormat::FLAC;
                         else if (path.extension() == ".ogg") track.format = model::AudioFormat::OGG;
                         else if (path.extension() == ".wav") track.format = model::AudioFormat::WAV;
+                        else if (path.extension() == ".dsf") track.format = model::AudioFormat::DSD;
                     }
 
                     // Populate optimization fields

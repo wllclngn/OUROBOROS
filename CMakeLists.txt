@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 3.1.0 LANGUAGES CXX)
+project(ouroboros VERSION 3.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -95,6 +95,7 @@ add_executable(ouroboros
     src/audio/FLACDecoder.cpp
     src/audio/OGGDecoder.cpp
     src/audio/M4ADecoder.cpp
+    src/audio/DSDDecoder.cpp
     src/audio/PipeWireOutput.cpp
     src/audio/PipeWireContext.cpp
 )

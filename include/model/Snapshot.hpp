@@ -28,6 +28,7 @@ enum class AudioFormat {
     OGG,
     WAV,
     M4A,
+    DSD,
 };
 
 struct Track {

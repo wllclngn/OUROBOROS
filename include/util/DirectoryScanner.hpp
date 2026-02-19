@@ -67,8 +67,8 @@ private:
     /**
      * Supported audio file extensions.
      */
-    static constexpr std::array<std::string_view, 5> AUDIO_EXTENSIONS = {
-        ".flac", ".m4a", ".mp3", ".ogg", ".wav"
+    static constexpr std::array<std::string_view, 6> AUDIO_EXTENSIONS = {
+        ".dsf", ".flac", ".m4a", ".mp3", ".ogg", ".wav"
     };
 
     /**

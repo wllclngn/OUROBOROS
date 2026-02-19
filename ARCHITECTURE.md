@@ -33,37 +33,60 @@ This document provides a comprehensive technical deep-dive into OUROBOROS's arch
 
 OUROBOROS achieves **zero deadlocks** through an immutable snapshot architecture using atomic double-buffering.
 
-#### Three-Buffer Pattern
+#### Ping-Pong Double-Buffer Pattern
 
-- **Front buffer**: Atomically readable by UI thread
-- **Back buffer**: Writeable by collector threads (mutex-protected)
-- **Spare buffer**: For atomic swap
+Two buffers (`a_` and `b_`) swap roles via an atomic pointer:
+
+- **Front buffer**: Atomically readable by UI thread (lock-free)
+- **Back buffer**: Writeable by collector threads (mutex-protected via `SnapshotPublisher`)
+
+```cpp
+model::Snapshot a_;
+model::Snapshot b_;
+std::atomic<model::Snapshot*> front_;  // Points to a_ or b_
+model::Snapshot* back_;                // Points to the other
+```
 
 #### Atomic Read Path (Lock-Free)
 
 ```cpp
-std::atomic<Snapshot*> front_;
-Snapshot* snapshot = front_.load(std::memory_order_acquire);  // No mutex!
+const model::Snapshot& front() const {
+    return *front_.load(std::memory_order_acquire);  // No mutex!
+}
 ```
 
-**Key Insight**: UI thread never blocks on mutex acquisition. Reads are instantaneous (<1μs).
+**Key Insight**: UI thread never blocks on mutex acquisition. Reads are instantaneous (<1us).
 
-#### Write Path
+#### Write Path (Serialized)
 
 ```cpp
-{
-    std::lock_guard lock(write_mutex_);
-    modify_back_buffer();
+// SnapshotPublisher::update() — mutex-protected
+void update(std::function<void(Snapshot&)> updater) {
+    std::lock_guard lock(mutex_);
+    auto& back = buffers_.back();
+    updater(back);
+    buffers_.publish();  // Atomic pointer swap + re-sync
+}
+```
+
+#### Publish: Swap + Re-Sync
+
+```cpp
+void publish() {
+    back_->seq = front_.load(std::memory_order_acquire)->seq + 1;
+    auto* old_front = front_.load(std::memory_order_relaxed);
     front_.store(back_, std::memory_order_release);  // Atomic swap
+    back_ = old_front;
+    *back_ = *front_.load(std::memory_order_acquire);  // Re-sync for next update
 }
 ```
 
 #### Guarantees
 
 - UI thread **never blocks** on mutex
-- Writes are serialized (only one collector modifies at a time)
+- Writes are serialized (only one collector modifies at a time via `SnapshotPublisher` mutex)
 - Sequence counter detects stale reads
-- State accumulation ensures back buffer stays current
+- Post-swap re-sync ensures back buffer starts with latest state
 
 ### Threading Model
 
@@ -78,10 +101,10 @@ OUROBOROS runs 4+ threads concurrently:
    - Artwork extraction
    - Cache management
 
-3. **PlaybackCollector**: Audio decoding thread
-   - Format-specific decoder instantiation
-   - PipeWire output management
-   - Playback state updates
+3. **PlaybackCollector**: Audio decode thread
+   - Pushes decoded PCM into SPSC ring buffer
+   - Wall-clock position interpolation
+   - Gapless track transitions
 
 4. **ArtworkLoader**: Async image decoding
    - Sliding window prefetch (20 items ahead/behind)
@@ -99,7 +122,7 @@ OUROBOROS runs 4+ threads concurrently:
 - `QueueState` (Two Stacks: history/current/future for deterministic Previous)
 - `UIState` (focus, search query, viewport)
 
-**Double Buffering**: Front buffer for reads, back buffer for atomic swap publishing
+**Double Buffering**: Front buffer for reads, back buffer for writes, atomic pointer swap to publish
 
 **Copy-On-Write**: `shared_ptr` for LibraryState/QueueState (cheap snapshot copies)
 
@@ -138,10 +161,67 @@ if (future.wait_for(0s) == std::future_status::ready) {
 ### Architecture Overview
 
 ```
-File → Format Detection → Decoder (MP3/FLAC/OGG/WAV/M4A) → PCM Float Buffer → PipeWire → Speakers
-         ↓                      ↓                               ↓
-    Extension + Magic        Per-track sample rate        Format negotiation
+File -> Format Detection -> Decoder (MP3/FLAC/OGG/M4A)
+                                |
+                           PCM Float32
+                                |
+                        [SPSC Ring Buffer]   (8192 frames, power-of-2, lock-free)
+                                |
+                     producer: decode thread writes
+                     consumer: PipeWire RT callback pulls
+                                |
+                           PipeWire -> Speakers
 ```
+
+### Callback-Driven Pull Model
+
+**File**: `src/audio/PipeWireOutput.cpp`
+
+PipeWire calls `on_process_callback` on its real-time thread. The callback **pulls** audio from the ring buffer -- the decode thread never touches PipeWire directly.
+
+```cpp
+// PipeWire RT callback: no allocations, no logging, no locks.
+void on_process_callback(void* userdata) {
+    auto* output = static_cast<PipeWireOutput*>(userdata);
+    struct pw_buffer* pw_buf = pw_stream_dequeue_buffer(output->stream_);
+    if (!pw_buf) return;
+
+    // Honor PipeWire's quantum request
+    size_t max_frames = buf->datas[0].maxsize / bytes_per_frame;
+    if (pw_buf->requested > 0)
+        max_frames = std::min(max_frames, static_cast<size_t>(pw_buf->requested));
+
+    // Pull from ring buffer
+    size_t frames_read = output->ring_.read(dst, max_frames);
+
+    // Volume scaling in-place
+    // Underrun: fill remainder with silence
+
+    pw_buf->size = frames_read;
+    pw_stream_queue_buffer(output->stream_, pw_buf);
+}
+```
+
+### SPSC Ring Buffer
+
+**File**: `include/audio/AudioRingBuffer.hpp`
+
+Lock-free single-producer, single-consumer ring buffer decoupling the decode thread from PipeWire's real-time callback.
+
+**Design:**
+- **Capacity**: 8192 frames (~42ms @ 192kHz, ~186ms @ 44.1kHz)
+- **Power-of-2 masking**: Bitwise `& mask_` for wrap-around (no modulo)
+- **Virtual indices**: `write_pos_` and `read_pos_` monotonically increase; wrap via mask
+- **Cache-line isolation**: `alignas(64)` on atomics to prevent false sharing
+- **Memory ordering**: `release`/`acquire` pairs for producer-consumer synchronization
+
+```cpp
+alignas(64) std::atomic<size_t> write_pos_{0};   // Producer: decode thread
+alignas(64) std::atomic<size_t> read_pos_{0};     // Consumer: PipeWire RT thread
+alignas(64) std::atomic<size_t> total_consumed_frames_{0};  // Position tracking
+```
+
+**Wrap-aware copy** handles split reads/writes across the buffer boundary with two `memcpy` segments.
 
 ### Format Detection
 
@@ -157,21 +237,16 @@ File → Format Detection → Decoder (MP3/FLAC/OGG/WAV/M4A) → PCM Float Buffe
 - Variable bitrate (VBR) support
 - Accurate seeking via frame positioning
 
-**FLACDecoder** (`src/audio/FlacDecoder.cpp`):
+**FLACDecoder** (`src/audio/FLACDecoder.cpp`):
 - Uses libsndfile
-- Lossless compression
+- Lossless compression (also handles WAV via same decoder)
 - Vorbis comment metadata
 - Native 16/24-bit depth support
 
-**OGGDecoder** (`src/audio/OggDecoder.cpp`):
+**OGGDecoder** (`src/audio/OGGDecoder.cpp`):
 - Uses libvorbisfile
 - Lossy compression (superior to MP3 at same bitrate)
 - Vorbis comments for metadata
-
-**WAVDecoder** (`src/audio/WavDecoder.cpp`):
-- Uses libsndfile
-- Uncompressed PCM
-- Fast decoding (no decompression)
 
 **M4ADecoder** (`src/audio/M4ADecoder.cpp`):
 - Uses FFmpeg (libavformat, libavcodec, libswresample)
@@ -185,22 +260,72 @@ File → Format Detection → Decoder (MP3/FLAC/OGG/WAV/M4A) → PCM Float Buffe
 - **Modern Linux Audio**: No ALSA/PulseAudio fallbacks
 - **Per-Track Format Negotiation**: Dynamically reconfigures stream for each track's sample rate/channels
 - **Shared Context Pattern**: Single `PipeWireContext` with thread-loop shared across streams
-- **Float32 Pipeline**: Native F32 audio processing (16384 frame buffer = 85ms @ 192kHz)
-- **Thread Safety**: All PipeWire operations protected by `pw_thread_loop_lock/unlock`
+- **Float32 Pipeline**: Native F32 audio processing through SPSC ring buffer (8192 frames)
+- **Thread Safety**: PipeWire operations protected by `pw_thread_loop_lock/unlock`; RT callback is lock-free
+
+### Gapless Playback
+
+**File**: `src/collectors/PlaybackCollector.cpp`
+
+True gapless transitions between tracks of the same format:
+
+1. **Persistent output**: `PipeWireOutput` lives across tracks, not recreated per-track
+2. **No drain wait**: When track N finishes decoding, PlaybackCollector immediately opens track N+1's decoder. The ring buffer carries track N's tail samples while N+1 begins filling.
+3. **Format-change detection**: Output is only reinitialized when sample rate or channel count changes
+4. **PipeWire continuity**: The RT callback pulls continuously from the ring buffer, unaware of track boundaries
+
+```cpp
+// GAPLESS: Only reinit output if format changed
+bool format_changed = (actual_sample_rate != output_sample_rate ||
+                       actual_channels != output_channels);
+
+if (format_changed) {
+    output.close();
+    output.init(audio_context_, actual_sample_rate, actual_channels);
+} else {
+    // Reusing PipeWire stream (gapless transition)
+}
+```
+
+### Wall-Clock Position Interpolation
+
+**File**: `src/collectors/PlaybackCollector.cpp`
+
+Position tracking uses `steady_clock` anchoring rather than polling the decoder's frame position. This provides smooth, jitter-free position display at 30Hz.
+
+**Anchor state:**
+```cpp
+std::chrono::steady_clock::time_point anchor_time_;
+int64_t anchor_position_ms_ = 0;
+size_t anchor_consumed_frames_ = 0;
+int anchor_sample_rate_ = 0;
+```
+
+**Update cycle** (~30Hz):
+1. Read `frames_consumed()` from the ring buffer's atomic counter
+2. Compute delta from last anchor in frames, convert to milliseconds
+3. Advance `anchor_position_ms_`, reset `anchor_time_` to now
+
+**Interpolation** (between updates):
+```cpp
+int64_t get_interpolated_position_ms() const {
+    auto elapsed = steady_clock::now() - anchor_time_;
+    return anchor_position_ms_ + duration_cast<milliseconds>(elapsed).count();
+}
+```
+
+**Seek handling**: Flushes ring buffer, resets anchor to target position.
 
 ### Audio Processing
 
-**Precision Seeking**:
-- Millisecond-accurate seek via frame-based API
-- Maintains audio sync during seeks
-
 **Volume Control**:
 - Software volume adjustment (0-100%, 5% increments)
-- Applied during audio callback (no separate DSP pass)
+- Applied in RT callback (no separate DSP pass): `dst[i] *= scale`
+- Atomic `volume_` load with `memory_order_relaxed` (no ordering needed)
 
-**Position Tracking**:
-- Real-time position reporting (ms and frames)
-- Duration calculation from decoder frame count
+**Sample Clamping**:
+- NaN/Inf clamping on producer side (decode thread), keeping RT callback branch-free
+- Clamps to [-1.0, 1.0] range
 
 ---
 
@@ -235,21 +360,21 @@ syscall(SYS_getdents64, fd, buffer, BUFFER_SIZE);
 
 Intelligent cache invalidation with three validation tiers:
 
-#### TIER 0: Tree Hash Validation — O(1)
+#### TIER 0: Tree Hash Validation -- O(1)
 
 - Concatenates all file paths, computes SHA-256 once
 - Truncates to `uint64_t` for quick equality check
 - **Cache hit**: Library loads in <100ms (no file I/O)
 - **Cache miss**: Proceeds to TIER 1
 
-#### TIER 1: Directory-Level Dirty Detection — O(directories)
+#### TIER 1: Directory-Level Dirty Detection -- O(directories)
 
 - Scans only directory mtimes using `getdents64`
 - Identifies changed directories without scanning files
 - **No changes**: Uses cache
 - **Changes detected**: Proceeds to TIER 2
 
-#### TIER 2 & 3: Incremental Parsing with Parallelism — O(changed files)
+#### TIER 2 & 3: Incremental Parsing with Parallelism -- O(changed files)
 
 - Compares inode/mtime pairs to skip unchanged tracks
 - **Parallel extraction** using hardware-aware thread pool:
@@ -260,7 +385,7 @@ Intelligent cache invalidation with three validation tiers:
 
 **Real-World Example**:
 - 10,000-track library, changed 50 tracks
-- TIER 0 fails → TIER 1 identifies 3 dirty directories → TIER 2 parses only 50 files
+- TIER 0 fails -> TIER 1 identifies 3 dirty directories -> TIER 2 parses only 50 files
 - **Result**: 500ms scan instead of 30-second full rescan
 
 ### Metadata Extraction
@@ -287,11 +412,48 @@ Intelligent cache invalidation with three validation tiers:
 
 ## Advanced Algorithms
 
-### TimSort Implementation
+### PowerSort Implementation
 
 **File**: `include/util/TimSort.hpp`
 
-OUROBOROS implements the TimSort algorithm (standard in Python/Java) for library sorting.
+OUROBOROS implements PowerSort (Munro & Wild 2018), the merge policy adopted by CPython 3.11+ as a drop-in improvement over classic TimSort. It replaces TimSort's ad-hoc stack invariant heuristic with a provably near-optimal merge tree.
+
+#### PowerSort Merge Policy
+
+The `powerloop()` function computes the depth in a conceptual nearly-optimal binary merge tree for the boundary between two adjacent runs:
+
+```cpp
+// s1: start of left run, n1: left length, n2: right length, n: total
+int powerloop(size_t s1, size_t n1, size_t n2, size_t n) {
+    int result = 0;
+    size_t a = 2 * s1 + n1;        // doubled midpoint of left run
+    size_t b = a + n1 + n2;         // doubled midpoint of right run
+    for (;;) {
+        ++result;
+        if (a >= n) { a -= n; b -= n; }
+        else if (b >= n) break;     // bits differ: this is the power
+        a <<= 1; b <<= 1;
+    }
+    return result;
+}
+```
+
+When a new run is found, runs with power >= the new boundary's power are merged first. This produces a merge order that is provably within O(n) comparisons of optimal.
+
+#### Galloping Mode
+
+When one run dominates during a merge (many consecutive elements from the same side), the algorithm switches from one-at-a-time comparison to **exponential search** (galloping):
+
+- **`gallop_left`**: Find leftmost insertion point via exponential search + binary search
+- **`gallop_right`**: Find rightmost insertion point
+- **Adaptive threshold**: `min_gallop` starts at 7, decreases when galloping succeeds (encouraging it), increases when it fails (discouraging it)
+- **Pre-merge trimming**: Skip elements already in position via `gallop_right`/`gallop_left` before merging
+
+#### Merge Operations
+
+- **`merge_lo`**: Left run smaller -- copy left to temp, merge left-to-right
+- **`merge_hi`**: Right run smaller -- copy right to temp, merge right-to-left
+- Both use `goto`-based epilogue for the one-element-remaining fast path (matching CPython's structure)
 
 #### Characteristics
 
@@ -299,19 +461,21 @@ OUROBOROS implements the TimSort algorithm (standard in Python/Java) for library
 - **O(n log n) worst case**: Guaranteed performance ceiling
 - **Stable sort**: Preserves relative order of equal elements
 - **Adaptive**: Automatically detects natural runs (already-sorted sequences)
-
-#### Key Optimizations
-
 - Binary insertion sort for small runs (<32 elements)
 - Automatic run reversal when descending order detected
-- Galloping mode for efficient merging of unequal-length runs
-- Min-run length computed via bit manipulation for optimal stack depth
+
+#### Parallel PowerSort
+
+`parallel_timsort` divides data into chunks, sorts each in parallel with `timsort`, then merges via parallel tree reduction:
+
+1. **Phase 1**: N worker threads each sort one chunk with PowerSort
+2. **Phase 2**: Tree-reduction merge -- chunk pairs merged in parallel at each level
 
 #### Why It Matters
 
-Real-world music libraries are often partially sorted (albums grouped together, artists alphabetized). TimSort outperforms std::sort by detecting and exploiting this existing order.
+Real-world music libraries are often partially sorted (albums grouped together, artists alphabetized). PowerSort outperforms std::sort by detecting and exploiting this existing order.
 
-**Library Sorting Order**: Artist → Year → Track
+**Library Sorting Order**: Artist -> Year -> Track
 
 ### Boyer-Moore-Horspool String Search
 
@@ -321,9 +485,9 @@ Fast substring matching for global search.
 
 #### Performance
 
-- **Average case**: O(n/m) — sublinear! (2-3x faster than naive search)
-- **Worst case**: O(n×m) — extremely rare in practice
-- **Space complexity**: O(1) — fixed 256-byte alphabet table (no heap allocations)
+- **Average case**: O(n/m) -- sublinear (2-3x faster than naive search)
+- **Worst case**: O(n*m) -- extremely rare in practice
+- **Space complexity**: O(1) -- fixed 256-byte alphabet table (no heap allocations)
 
 #### Implementation
 
@@ -349,12 +513,12 @@ Custom SHA-256 implementation for artwork deduplication.
 **Implementation**:
 - 512-bit chunk processing
 - 64 round constants (K[0..63])
-- Bitwise operations: rotr (rotate right), ch (choose), maj (majority), Σ (sigma), σ (gamma)
+- Bitwise operations: rotr (rotate right), ch (choose), maj (majority)
 - Proper padding and length encoding
 
 #### Application
 
-100 tracks from same album → 1 cached JPEG (99% deduplication)
+100 tracks from same album -> 1 cached JPEG (99% deduplication)
 
 ---
 
@@ -369,13 +533,13 @@ Uses `/dev/shm` (RAM filesystem) for Kitty protocol artwork.
 #### Fast Path (Kitty/WezTerm)
 
 ```
-Write JPEG → /dev/shm/ouroboros-art-XXXXXX → Send file path to terminal → Delete
+Write JPEG -> /dev/shm/ouroboros-art-XXXXXX -> Send file path to terminal -> Delete
 ```
 
 #### Slow Path (Ghostty, older terminals)
 
 ```
-Base64 encode (33% size increase) → Send full data via stdout
+Base64 encode (33% size increase) -> Send full data via stdout
 ```
 
 #### Performance Impact
@@ -397,8 +561,8 @@ Shared memory eliminates Base64 encoding overhead and reduces terminal I/O by 33
 ### Content-Addressed Storage
 
 **SHA-256 Deduplication**:
-- Hash artwork bytes → unique identifier
-- 100 tracks from same album → 1 cached JPEG
+- Hash artwork bytes -> unique identifier
+- 100 tracks from same album -> 1 cached JPEG
 - 99% space savings for typical album-based libraries
 
 **Reference Counting**:
@@ -459,12 +623,12 @@ Shared memory eliminates Base64 encoding overhead and reduces terminal I/O by 33
 
 4. **Unicode Blocks** (always works)
    - Character-based rendering
-   - 2×2 pixel per character
+   - 2x2 pixel per character
 
 **Automatic Detection**:
 - Query-based capability detection (DA1 responses, Kitty graphics query)
 - Environment variable checks (`KITTY_WINDOW_ID`, `TERM_PROGRAM`, `TERM`)
-- Fallback cascade (Kitty → Sixel → Unicode)
+- Fallback cascade (Kitty -> Sixel -> Unicode)
 - Manual override via `OUROBOROS_IMAGE_PROTOCOL`
 
 ---
@@ -478,11 +642,11 @@ The album grid uses a 5-phase rendering pipeline that eliminates flicker during 
 ### Phase Overview
 
 ```
-Phase 1: Slot Assignment + Request    → Assign visible albums to atomic slots, queue artwork requests
-Phase 2: Populate Slots               → Copy decoded pixels from ArtworkWindow to slots (mutex brief)
-Phase 3: Lock-Free Render             → Render from slots atomically, no mutex during draw
-Phase 4: Orphan Cleanup               → Delete images no longer on screen (AFTER all renders)
-Phase 5: Prefetch                     → Queue artwork for items just outside viewport (when idle)
+Phase 1: Slot Assignment + Request    -> Assign visible albums to atomic slots, queue artwork requests
+Phase 2: Populate Slots               -> Copy decoded pixels from ArtworkWindow to slots (mutex brief)
+Phase 3: Lock-Free Render             -> Render from slots atomically, no mutex during draw
+Phase 4: Orphan Cleanup               -> Delete images no longer on screen (AFTER all renders)
+Phase 5: Prefetch                     -> Queue artwork for items just outside viewport (when idle)
 ```
 
 ### Phase 1: Slot Assignment + Request
@@ -637,7 +801,7 @@ struct AlbumBrowserSlot {
     std::atomic<SlotState> state{SlotState::Empty};
     std::atomic<uint64_t> generation{0};  // Bumped on reassignment
 
-    // Data fields (only written during Empty→Ready transition)
+    // Data fields (only written during Empty->Ready transition)
     std::vector<uint8_t> decoded_pixels;
     int width, height;
     CachedFormat format;
@@ -709,11 +873,11 @@ Coordinates async artwork loading with request batching and priority queue.
 ### Architecture
 
 ```
-AlbumBrowser → request() → Priority Queue → Worker Threads → ArtworkCache
-                              ↓                    ↓
-                         flush_requests()     get_decoded()
-                              ↓                    ↓
-                         notify_all()        Slot Population
+AlbumBrowser -> request() -> Priority Queue -> Worker Threads -> ArtworkCache
+                                ↓                    ↓
+                           flush_requests()     get_decoded()
+                                ↓                    ↓
+                           notify_all()        Slot Population
 ```
 
 ### Request Batching
@@ -778,7 +942,7 @@ void worker_thread() {
             req = request_queue_.top();
             request_queue_.pop();
         }
-        // Process: extract/load JPEG → decode → resize → store in cache
+        // Process: extract/load JPEG -> decode -> resize -> store in cache
     }
 }
 ```
@@ -864,7 +1028,7 @@ bool is_scattered = title_count[album.normalized_title] > 1;
 Scattered albums are merged by **title only**, ignoring artist. This handles true compilations (soundtracks, Various Artists) where every track has a different artist.
 
 ```cpp
-std::unordered_map<std::string, size_t> merge_map;  // title → index
+std::unordered_map<std::string, size_t> merge_map;  // title -> index
 std::vector<AlbumGroup> merged_albums;
 
 for (auto& album : albums_) {
@@ -889,11 +1053,11 @@ for (auto& album : albums_) {
 
 ### Dual-Sort Strategy
 
-1. **TimSort** first: Artist → Year → Title (primary sort)
+1. **PowerSort** first: Artist -> Year -> Title (primary sort)
 2. **stable_sort** second: Group scattered albums by title instead of artist
 
 ```cpp
-// First: TimSort by artist/year/title
+// First: PowerSort by artist/year/title
 ouroboros::util::timsort(albums_, [](const AlbumGroup& a, const AlbumGroup& b) {
     int cmp = case_insensitive_compare(a.artist, b.artist);
     if (cmp != 0) return cmp < 0;
@@ -929,12 +1093,12 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 
 ### normalize_for_search()
 
-**Transliteration Chain**: `NFD → [:Nonspacing Mark:] Remove → NFC → Latin-ASCII`
+**Transliteration Chain**: `NFD -> [:Nonspacing Mark:] Remove -> NFC -> Latin-ASCII`
 
 **Examples**:
-- "Björk" → "bjork"
-- "José" → "jose"
-- "Motörhead" → "motorhead"
+- "Bjork" -> "bjork"
+- "Jose" -> "jose"
+- "Motorhead" -> "motorhead"
 
 **Purpose**: Enables ASCII search input to match international artist names.
 
@@ -943,7 +1107,7 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 **Uses ICU's foldCase()**:
 - Proper Unicode comparison
 - Groups "BUTTHOLE SURFERS", "Butthole Surfers", "butthole surfers" correctly
-- Handles Turkish İ/i, German ß, etc.
+- Handles Turkish I/i, German ss, etc.
 
 **Why ICU?**
 - Supports 150+ languages
@@ -960,17 +1124,19 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 | **Cache TIER 0 Validation** | O(1) | <100ms | Single SHA-256 tree hash comparison |
 | **Cache TIER 1 (dir scan)** | O(directories) | ~200ms | `getdents64` on directories only, `d_type` filtering |
 | **Cache TIER 2 (incremental)** | O(changed_files) | 500ms for 50 changes | Parallel metadata extraction (4-16 threads) |
-| **Snapshot Read** | O(1) | <1μs | Lock-free atomic pointer load with acquire semantics |
+| **Snapshot Read** | O(1) | <1us | Lock-free atomic pointer load with acquire semantics |
 | **UI Render (30 FPS)** | O(widgets) | ~33ms/frame | Only redraws on state change, canvas diffing |
-| **TimSort** | O(n) – O(n log n) | ~10ms for 10K tracks | O(n) for pre-sorted data, binary insertion for runs <32 |
+| **PowerSort** | O(n) -- O(n log n) | ~10ms for 10K tracks | O(n) for pre-sorted data, galloping for unequal runs |
 | **Boyer-Moore Search** | O(n/m) avg, O(nm) worst | ~1ms for 10K tracks | Sublinear: scans ~3,300 chars instead of 1M |
 | **SHA-256 Hash** | O(data_size) | ~1ms for 5MB JPEG | 512-bit chunks, 64 rounds per chunk |
-| **Artwork Cache Lookup** | O(1) | <1μs | `unordered_map` with SHA-256 keys |
+| **Artwork Cache Lookup** | O(1) | <1us | `unordered_map` with SHA-256 keys |
 | **Image Decode (JPEG)** | Async | 150-250ms for 32 images | Parallel pool (4-16 threads), stb_image + stb_resize |
-| **LRU Cache Hit** | O(1) | <1μs | 250-entry ImageRenderer cache, hash-based lookup |
-| **Canvas Draw** | O(width×height) | ~500μs for 120×40 | Linear buffer, UTF-8 aware, ANSI escape parsing |
-| **FlexLayout Compute** | O(items×iterations) | ~100μs for 8 widgets | Typically 2-3 constraint iterations |
-| **EventBus Publish** | O(subscribers) | ~10μs | Typically <10 subscribers per event type |
+| **LRU Cache Hit** | O(1) | <1us | 250-entry ImageRenderer cache, hash-based lookup |
+| **Canvas Draw** | O(width*height) | ~500us for 120x40 | Linear buffer, UTF-8 aware, ANSI escape parsing |
+| **FlexLayout Compute** | O(items*iterations) | ~100us for 8 widgets | Typically 2-3 constraint iterations |
+| **EventBus Publish** | O(subscribers) | ~10us | Typically <10 subscribers per event type |
+| **Ring Buffer Read/Write** | O(frames) | <1us per quantum | Lock-free SPSC, `alignas(64)` atomics, zero contention |
+| **Position Interpolation** | O(1) | <1us | `steady_clock` delta + integer arithmetic |
 
 ### Real-World Benchmarks
 
@@ -980,6 +1146,7 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 - **Warm start** (TIER 0 hit): 95ms to first render
 - **Album grid scroll**: 30 FPS sustained with 32 visible artworks
 - **Search latency**: <5ms per keystroke (real-time filtering)
+- **Gapless transition**: Zero-silence crossover between same-format tracks
 
 ---
 
@@ -1010,16 +1177,17 @@ While shuffle randomness doesn't require cryptographic strength, using CSPRNG is
 ### Concurrency Patterns
 
 - **Lock-Free Reading**: Atomic operations with `std::memory_order_acquire`/`release`
+- **SPSC Ring Buffer**: Lock-free producer-consumer for audio pipeline
 - **Mutex Discipline**: `std::lock_guard` for RAII-style locking, never manual lock/unlock
 - **Condition Variables**: Thread wake/sleep for worker pools (no busy-waiting)
 - **Atomic Counters**: Lock-free work distribution in parallel algorithms
-- **Thread Safety**: All shared state documented with ownership rules
+- **Cache-Line Isolation**: `alignas(64)` on contended atomics to prevent false sharing
 
 ### Error Handling
 
 - **std::optional**: Returns for operations that may fail (cache lookup, file read)
 - **Validation First**: Check preconditions before operations (bounds, null checks)
-- **Graceful Degradation**: Fallback paths (Sixel → Unicode blocks, cache miss → full scan)
+- **Graceful Degradation**: Fallback paths (Sixel -> Unicode blocks, cache miss -> full scan)
 - **Comprehensive Logging**: Every major operation logged for debugging
 
 ### Code Organization
@@ -1033,10 +1201,11 @@ While shuffle randomness doesn't require cryptographic strength, using CSPRNG is
 ### Performance Discipline
 
 - **Profile-Guided**: Optimizations justified by real-world measurements
-- **Algorithm Choice**: Uses theoretically optimal algorithms (TimSort for adaptive sort)
+- **Algorithm Choice**: Uses theoretically optimal algorithms (PowerSort for adaptive sort)
 - **System-Level**: Drops to syscalls when standard library insufficient
 - **Cache Locality**: Hot paths use contiguous memory (vector over list)
 - **Zero-Copy**: Move semantics, shared_ptr, avoid unnecessary clones
+- **RT-Safe Audio**: No allocations, no logging, no locks in PipeWire callback
 
 ### Documentation
 
@@ -1051,20 +1220,20 @@ While shuffle randomness doesn't require cryptographic strength, using CSPRNG is
 
 ```
 ouroboros/
-├── src/                      # 47 implementation files (~10,135 lines)
+├── src/                      # 45 implementation files (~10,878 lines)
 │   ├── main.cpp              # Entry point, event loop
-│   ├── audio/                # 5 decoders + PipeWire output
-│   ├── backend/              # Library, metadata, config, snapshot publisher
+│   ├── audio/                # 4 decoders + PipeWire context/output
+│   ├── backend/              # Library, metadata, config, snapshot publisher/buffers
 │   ├── collectors/           # LibraryCollector, PlaybackCollector threads
 │   ├── config/               # Theme and keybind management
-│   ├── events/               # EventBus (publish-subscribe)
+│   ├── events/               # EventBus (publish-subscribe), Scheduler
 │   ├── model/                # Snapshot, Track, PlayerState data models
 │   ├── ui/                   # Terminal, Canvas, Renderer, widgets, FlexLayout, ArtworkWindow
-│   └── util/                 # TimSort, BoyerMoore, DirectoryScanner, Logger, ImageDecoderPool
-├── include/                  # 50 header files (~2,977 lines) mirroring src/
-├── tests/                    # New C++ test framework
+│   └── util/                 # PowerSort, BoyerMoore, DirectoryScanner, Logger, ImageDecoderPool
+├── include/                  # 51 header files (~3,798 lines) mirroring src/
+├── tests/                    # C++ test framework
 │   ├── framework/            # SimpleTest.hpp (custom test runner)
-│   ├── unit/                 # TimSort, BoyerMoore, ArtworkHasher tests
+│   ├── unit/                 # PowerSort, BoyerMoore, ArtworkHasher tests
 │   └── integration/          # Metadata pipeline tests
 ├── config/                   # Example configuration files
 │   └── ouroboros.toml.example
@@ -1075,14 +1244,14 @@ ouroboros/
 
 ### Code Statistics
 
-- **Total Lines**: ~13,112 (10,135 implementation + 2,977 headers)
-- **Source Files**: 47 `.cpp` files
-- **Header Files**: 50 `.hpp` files
-- **Audio Decoders**: 5 (MP3, FLAC, OGG, WAV, M4A/AAC via FFmpeg)
+- **Total Lines**: ~14,676 (10,878 implementation + 3,798 headers)
+- **Source Files**: 45 `.cpp` files
+- **Header Files**: 51 `.hpp` files
+- **Audio Decoders**: 4 (MP3, FLAC/WAV via libsndfile, OGG, M4A/AAC via FFmpeg)
 - **Image Protocols**: 4 (Kitty, Sixel, iTerm2, Unicode blocks)
-- **UI Widgets**: 9 (Browser, Queue, NowPlaying, Controls, StatusBar, SearchBox, AlbumBrowser, DirectoryBrowser, HelpOverlay)
+- **UI Widgets**: 6 (Browser, Queue, NowPlaying, SearchBox, AlbumBrowser, HelpOverlay)
 - **Background Threads**: 4+ (Main, LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers)
-- **Test Files**: 3 suites (unit tests, core tests, integration tests)
+- **Test Suites**: 3 (unit/test_utils, unit/test_core, integration/test_pipeline)
 
 ---
 
@@ -1095,7 +1264,7 @@ ouroboros/
 - `Terminal` - Global terminal state
 
 ### Factory Pattern
-- Decoder creation based on audio format (MP3/FLAC/OGG/WAV)
+- Decoder creation based on audio format (MP3/FLAC/OGG/M4A)
 
 ### Observer Pattern
 - `EventBus` publish-subscribe for decoupled communication

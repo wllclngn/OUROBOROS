@@ -70,6 +70,10 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         case model::AudioFormat::FLAC: format_line << "FLAC"; break;
         case model::AudioFormat::OGG:  format_line << "OGG"; break;
         case model::AudioFormat::WAV:  format_line << "WAV"; break;
+        case model::AudioFormat::M4A:  format_line << "M4A"; break;
+        case model::AudioFormat::DSD:
+            format_line << "DSD" << (track.sample_rate / 44100);
+            break;
         default: format_line << "Unknown"; break;
     }
 
@@ -220,6 +224,12 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
             case model::AudioFormat::FLAC: draw_fmt("FLAC", uc.nowplaying_info); break;
             case model::AudioFormat::OGG:  draw_fmt("OGG", uc.nowplaying_info); break;
             case model::AudioFormat::WAV:  draw_fmt("WAV", uc.nowplaying_info); break;
+            case model::AudioFormat::M4A:  draw_fmt("M4A", uc.nowplaying_info); break;
+            case model::AudioFormat::DSD: {
+                std::string dsd_name = "DSD" + std::to_string(track.sample_rate / 44100);
+                draw_fmt(dsd_name.c_str(), uc.nowplaying_info);
+                break;
+            }
             default: draw_fmt("Unknown", uc.nowplaying_info); break;
         }
         if (track.sample_rate > 0) {
