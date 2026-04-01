@@ -261,9 +261,8 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
 
     int selected_row = selected_index_ / cols_;
 
-    // When search overlay is active, offset grid below the FIND box
-    // The search overlay covers 3 rows from rect.y; content starts at rect.y+1,
-    // so the grid needs to shift down by 2 content rows
+    // When search overlay is active, reduce visible rows to avoid overlap
+    // with the FIND box rendered at the bottom of the browser area
     const int search_offset = search_active_ ? 2 : 0;
 
     // Scrolling logic
@@ -281,7 +280,7 @@ void AlbumBrowser::render(Canvas& canvas, const LayoutRect& rect, const model::S
     int box_h = cell_h;
 
     // Render visible albums in grid
-    int y_offset = content_rect.y + search_offset;
+    int y_offset = content_rect.y;
 
     for (int r = scroll_offset_; r < total_rows; ++r) {
         // Allow partial rows to render - border will clip overflow naturally
@@ -571,7 +570,7 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     // When search overlay is active, offset below the FIND box (same as render())
     const int search_offset = search_active_ ? 2 : 0;
     int content_x = rect.x + 1;
-    int content_y = rect.y + 1 + search_offset;
+    int content_y = rect.y + 1;
     int content_width = rect.width - 2;
     int content_height = rect.height - 2 - search_offset;
 

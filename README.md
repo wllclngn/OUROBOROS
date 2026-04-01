@@ -39,7 +39,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
 
 ### Production-Grade Algorithms
-- **PowerSort**: Near-optimal adaptive merge sort (Munro & Wild 2018, CPython 3.11+) with galloping mode for clustered data
+- **PowerSort**: Near-optimal adaptive merge sort (Munro & Wild 2018, CPython 3.11+) with pattern detection (sorted/reversed/nearly-sorted/random adaptive dispatch) and galloping mode for clustered data
 - **Boyer-Moore-Horspool**: Sublinear O(n/m) search with bad-character skip table (2-3x faster than naive, <5ms keystroke latency)
 - **Dual-Hash System**: Custom SHA-256 (NIST FIPS 180-4) + FNV-1a with adaptive sampling (>65KB files sampled for speed)
 
@@ -234,7 +234,7 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 
 ## Keybindings
 
-**Press `?` in-app for the complete keybindings reference.** Here are the essentials:
+**Press `?` in-app for the full help view** — a scrollable reference with keybindings, configuration, troubleshooting, and more. Here are the essentials:
 
 - **Navigation**: `j`/`k` (up/down), `Shift+j`/`Shift+k` (multi-select)
 - **Playback**: `Space` (play/pause), `n` (next), `p` (previous), `←`/`→` (seek ±5s)
@@ -243,7 +243,7 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 - **Volume**: `+`/`-` (adjust ±5%)
 - **Modes**: `r` (cycle repeat), `s` (toggle shuffle)
 - **Views**: `Ctrl+a` (toggle album grid)
-- **Help**: `?` (toggle help overlay), `q` (quit)
+- **Help**: `?` (toggle help view, scrollable with `j`/`k`), `q` (quit)
 
 All keybindings are customizable via `~/.config/ouroboros/config.toml`
 

@@ -1,4 +1,4 @@
-.TH OUROBOROS 1 "January 2026" "v1.0 Moria" "User Commands"
+.TH OUROBOROS 1 "April 2026" "v3.3.0" "User Commands"
 .SH NAME
 ouroboros \- offline, metadata-driven music player for modern Linux terminals
 .SH SYNOPSIS
@@ -167,7 +167,7 @@ Volume down (-5%)
 Quit
 .TP
 .B ?
-Toggle help overlay
+Toggle help view (scrollable reference with keybindings, config, troubleshooting)
 .TP
 .B Ctrl+a
 Toggle album grid view
@@ -316,10 +316,13 @@ This handles true compilations where every track has a different artist.
 Dual-sort strategy: TimSort by artist/year, then stable_sort to group scattered albums by title.
 
 .SH ALGORITHMS
-.SS TimSort
-Adaptive sorting algorithm (Python/Java standard). O(n) best case for pre-sorted data,
-O(n log n) worst case. Features binary insertion sort for small runs (<32 elements),
-automatic run reversal, and galloping mode for efficient merging.
+.SS TimSort (PowerSort with Pattern Detection)
+Adaptive sorting algorithm (Munro & Wild 2018, CPython 3.11+). O(n) best case for
+pre-sorted data, O(n log n) worst case. Features adaptive pattern detection with
+four dispatch paths: already-sorted (skip), reversed (O(n) reverse), nearly-sorted
+(<5% inversions, delegate to std::stable_sort), and random (full PowerSort with
+galloping). Includes binary insertion sort for small runs (<32 elements),
+natural run detection, exponential gallop search, and near-optimal merge ordering.
 
 .SS Boyer-Moore-Horspool
 Sublinear string search with O(n/m) average case. Uses 256-byte bad-character skip table.
@@ -477,17 +480,17 @@ Written with C++23 for Linux terminal enthusiasts.
 See project LICENSE file for copyright and licensing information.
 
 .SH VERSION
-v1.0 "Moria" Performance Release
+v3.3.0
 .br
-January 2026
+April 2026
 
 .SH TECHNICAL DETAILS
 .SS Code Statistics
-13,112 lines of production C++23 (10,135 implementation + 2,977 headers)
+Approximately 15,700 lines of production C++23
 .br
-47 source files, 50 header files
+47 source files, 54 header files
 .br
-4 audio decoders, 4 image protocols, 9 UI widgets
+5 audio decoders, 4 image protocols, 9 UI widgets
 .br
 Custom test framework with zero external dependencies
 

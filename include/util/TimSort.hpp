@@ -5,9 +5,18 @@
 #include <iterator>
 #include <thread>
 #include <chrono>
+#include <cstdint>
 #include "Logger.hpp"
 
 namespace ouroboros::util {
+
+// Pattern detection results for adaptive sorting strategy selection
+enum class SortPattern : uint8_t {
+    AlreadySorted,  // O(n) detection -> instant return
+    Reversed,       // O(n) detection -> O(n) in-place reversal
+    NearlySorted,   // < 5% inversions -> delegate to std::stable_sort
+    Random          // Full adaptive TimSort with run detection & galloping
+};
 
 // Forward declaration
 size_t compute_min_run_length(size_t n);
@@ -416,18 +425,99 @@ void force_collapse(RandomIt first, std::vector<Run>& runs, Compare comp,
     }
 }
 
+// Inversion counting: merge step that counts inversions
+template<typename RandomIt, typename Compare>
+size_t merge_count_inversions(
+    std::vector<size_t>& positions, std::vector<size_t>& temp,
+    size_t left, size_t mid, size_t right,
+    RandomIt first, size_t stride, Compare comp
+) {
+    size_t i = left, j = mid + 1, k = left;
+    size_t inv_count = 0;
+
+    while (i <= mid && j <= right) {
+        auto it_i = first + (positions[i] * stride);
+        auto it_j = first + (positions[j] * stride);
+        if (!comp(*it_j, *it_i)) {
+            temp[k++] = positions[i++];
+        } else {
+            temp[k++] = positions[j++];
+            inv_count += (mid - i + 1);
+        }
+    }
+    while (i <= mid) temp[k++] = positions[i++];
+    while (j <= right) temp[k++] = positions[j++];
+    for (i = left; i <= right; i++) positions[i] = temp[i];
+    return inv_count;
+}
+
+// Recursive inversion counter O(n log n)
+template<typename RandomIt, typename Compare>
+size_t count_inversions_recursive(
+    std::vector<size_t>& positions, std::vector<size_t>& temp,
+    size_t left, size_t right,
+    RandomIt first, size_t stride, Compare comp
+) {
+    if (left >= right) return 0;
+    size_t mid = left + (right - left) / 2;
+    size_t inv = 0;
+    inv += count_inversions_recursive(positions, temp, left, mid, first, stride, comp);
+    inv += count_inversions_recursive(positions, temp, mid + 1, right, first, stride, comp);
+    inv += merge_count_inversions(positions, temp, left, mid, right, first, stride, comp);
+    return inv;
+}
+
+// Sample-based inversion counting for nearly-sorted detection
+template<typename RandomIt, typename Compare>
+size_t count_inversions_sample(RandomIt first, RandomIt last, Compare comp, size_t sample_size) {
+    const size_t n = std::distance(first, last);
+    if (n <= 1) return 0;
+
+    sample_size = std::min(sample_size, n);
+    const size_t stride = n / sample_size;
+
+    std::vector<size_t> positions(sample_size);
+    for (size_t i = 0; i < sample_size; ++i) positions[i] = i;
+
+    std::vector<size_t> temp(sample_size);
+    return count_inversions_recursive(positions, temp, 0, sample_size - 1, first, stride, comp);
+}
+
 } // namespace detail
 
+// Pattern detection: O(n) single-pass analysis with sampled inversion counting
+template<typename RandomIt, typename Compare>
+SortPattern detect_sort_pattern(RandomIt first, RandomIt last, Compare comp) {
+    const size_t n = std::distance(first, last);
+    if (n < 2) return SortPattern::AlreadySorted;
+
+    bool is_sorted = true;
+    bool is_reversed = true;
+
+    for (auto it = first; std::next(it) != last; ++it) {
+        if (comp(*std::next(it), *it)) is_sorted = false;
+        if (comp(*it, *std::next(it))) is_reversed = false;
+        if (!is_sorted && !is_reversed) break;
+    }
+
+    if (is_sorted) return SortPattern::AlreadySorted;
+    if (is_reversed) return SortPattern::Reversed;
+
+    // Sample-based inversion counting: < 5% inversions = nearly sorted
+    size_t sample_size = std::min<size_t>(100, n);
+    size_t inversions = detail::count_inversions_sample(first, last, comp, sample_size);
+    double max_inversions = static_cast<double>(sample_size) * static_cast<double>(sample_size - 1) / 2.0;
+    double inversion_ratio = static_cast<double>(inversions) / max_inversions;
+
+    return (inversion_ratio < 0.05) ? SortPattern::NearlySorted : SortPattern::Random;
+}
+
 /**
- * PowerSort implementation (TimSort with optimal merge policy + galloping).
- * Exploits natural runs in data for O(n) best case on sorted/nearly-sorted data.
- * O(n log n) worst case. Stable sort.
- *
- * Merge policy: PowerSort (Munro & Wild 2018, CPython 3.11+)
- * Merge operation: galloping mode with exponential search
+ * Full TimSort engine (PowerSort merge policy + galloping).
+ * Called by timsort() for Random pattern data.
  */
 template<typename RandomIt, typename Compare>
-void timsort(RandomIt first, RandomIt last, Compare comp) {
+void timsort_impl(RandomIt first, RandomIt last, Compare comp) {
     using ValueType = typename std::iterator_traits<RandomIt>::value_type;
     const size_t n = std::distance(first, last);
     if (n < 2) return;
@@ -467,6 +557,48 @@ void timsort(RandomIt first, RandomIt last, Compare comp) {
 
     // Final collapse
     detail::force_collapse(first, runs, comp, tmp, min_gallop);
+}
+
+/**
+ * PowerSort implementation (TimSort with optimal merge policy + galloping).
+ * Exploits natural runs in data for O(n) best case on sorted/nearly-sorted data.
+ * O(n log n) worst case. Stable sort.
+ *
+ * Adaptive dispatch via pattern detection:
+ *   AlreadySorted -> O(n) detect, skip
+ *   Reversed      -> O(n) detect, O(n) reverse
+ *   NearlySorted  -> O(n) detect, delegate to std::stable_sort
+ *   Random        -> Full TimSort with run detection & galloping
+ *
+ * Merge policy: PowerSort (Munro & Wild 2018, CPython 3.11+)
+ * Merge operation: galloping mode with exponential search
+ */
+template<typename RandomIt, typename Compare>
+void timsort(RandomIt first, RandomIt last, Compare comp) {
+    const size_t n = std::distance(first, last);
+    if (n < 2) return;
+
+    // Small arrays: binary insertion sort directly
+    if (n < 32) {
+        detail::binary_insertion_sort(first, last, comp);
+        return;
+    }
+
+    const SortPattern pattern = detect_sort_pattern(first, last, comp);
+
+    switch (pattern) {
+        case SortPattern::AlreadySorted:
+            break;
+        case SortPattern::Reversed:
+            std::reverse(first, last);
+            break;
+        case SortPattern::NearlySorted:
+            std::stable_sort(first, last, comp);
+            break;
+        case SortPattern::Random:
+            timsort_impl(first, last, comp);
+            break;
+    }
 }
 
 // Convenience overload for containers

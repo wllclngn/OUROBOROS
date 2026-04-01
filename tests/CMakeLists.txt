@@ -1,3 +1,4 @@
+cmake_minimum_required(VERSION 3.20)
 project(ouroboros_tests)
 
 # Include main source directory

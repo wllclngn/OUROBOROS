@@ -180,8 +180,8 @@ void Renderer::render_search_overlay(const LayoutRect& rect, const model::Snapsh
     (void)rect;
     if (focus_ != Focus::Search) return;
 
-    // Draw box over Browser area
-    LayoutRect search_rect = {browser_rect_.x, browser_rect_.y, browser_rect_.width, 3};
+    // Draw box at bottom of Browser area
+    LayoutRect search_rect = {browser_rect_.x, browser_rect_.y + browser_rect_.height - 3, browser_rect_.width, 3};
 
     // Clear area behind it
     canvas_.fill_rect(search_rect.x, search_rect.y, search_rect.width, search_rect.height, Cell{" ", config::ui_config().muted});
@@ -293,8 +293,10 @@ void Renderer::render(bool force_redraw) {
     compute_layout(cols, rows);
 
     // RENDER WIDGETS TO CANVAS
-    // Toggle between track list (Browser) and album grid (AlbumBrowser) with Ctrl+a
-    if (show_album_view_) {
+    // Help view replaces browser content; otherwise toggle Browser/AlbumBrowser
+    if (help_overlay_->is_visible()) {
+        help_overlay_->render(canvas_, browser_rect_, *snap);
+    } else if (show_album_view_) {
         album_browser_->set_search_active(focus_ == Focus::Search);
         album_browser_->render(canvas_, browser_rect_, *snap, focus_ == Focus::Browser);
     } else {
@@ -306,12 +308,6 @@ void Renderer::render(bool force_redraw) {
     // Only render Queue if visible (hidden in compact mode)
     if (queue_rect_.height > 0) {
         queue_->render(canvas_, queue_rect_, *snap, focus_ == Focus::Queue);
-    }
-
-    // Render help overlay (if visible)
-    if (help_overlay_->is_visible()) {
-        LayoutRect fullscreen_rect{0, 0, cols, rows};
-        help_overlay_->render(canvas_, fullscreen_rect, *snap);
     }
 
     // Global Search Overlay
@@ -338,7 +334,22 @@ void Renderer::render(bool force_redraw) {
     last_album_view_state = show_album_view_;
 
     if (show_album_view_) {
-        album_browser_->render_images_if_needed(browser_rect_, size_changed || album_view_activated || force_redraw);
+        static bool help_was_visible = false;
+        bool help_visible = help_overlay_->is_visible();
+
+        if (help_visible) {
+            // Hide album images once when help opens so they don't cover the overlay
+            if (!help_was_visible) {
+                album_browser_->clear_all_images();
+            }
+        } else {
+            // Force re-render when help just closed to restore artwork
+            bool help_just_closed = help_was_visible;
+            album_browser_->render_images_if_needed(browser_rect_,
+                size_changed || album_view_activated || force_redraw || help_just_closed);
+        }
+
+        help_was_visible = help_visible;
     }
 }
 
@@ -475,21 +486,25 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
-    // Help overlay (from TOML: help)
+    // Help view (from TOML: help)
     if (!input_captured && matches_keybind(event, "help")) {
         help_overlay_->set_visible(!help_overlay_->is_visible());
+        return;
+    }
+
+    // When help is visible, route scrolling input to it; Escape also closes
+    if (help_overlay_->is_visible()) {
+        if (event.key_name == "escape" || event.key == 27) {
+            help_overlay_->set_visible(false);
+        } else {
+            help_overlay_->handle_input(event);
+        }
         return;
     }
 
     // Tab: Switch focus between Browser and Queue (from TOML: tab)
     if (!input_captured && matches_keybind(event, "tab")) {
         focus_ = (focus_ == Focus::Browser) ? Focus::Queue : Focus::Browser;
-        return;
-    }
-
-    // If help overlay is visible, close it on any key press except help key
-    if (help_overlay_->is_visible() && !matches_keybind(event, "help")) {
-        help_overlay_->set_visible(false);
         return;
     }
 
