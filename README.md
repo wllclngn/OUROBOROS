@@ -1,6 +1,6 @@
 # OUROBOROS, The Eternal Player
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 15,700 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 16,100 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
 
@@ -57,7 +57,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
 
 ### Engineering Optimizations
-- **Approximately 23,700 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
+- **Approximately 16,100 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
@@ -72,11 +72,11 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 
 ## Screenshots
 
+### Main Interface: Album View
+![Main](2026-05-28_20-53.png)
+
 ### Main Interface: Album View, Large Display
 ![Main](2025-12-17_20-38.png)
-
-### Main Interface: Album View
-![Main](2025-12-17_12-23.png)
 
 ### Search: Track View
 ![Albums](2025-12-17_12-24_1.png)
@@ -316,7 +316,7 @@ Built with:
 
 ## Technical Highlights
 
-- **Approximately 23,700 lines** of production C++23
+- **Approximately 16,100 lines** of production C++23
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
