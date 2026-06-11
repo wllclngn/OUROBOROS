@@ -211,6 +211,7 @@ Config ConfigLoader::create_default_config() {
     cfg.keybinds["repeat_cycle"] = "r";
     cfg.keybinds["shuffle_toggle"] = "s";
     cfg.keybinds["toggle_album_view"] = "ctrl+a";
+    cfg.keybinds["toggle_now_playing_view"] = "v";
     cfg.keybinds["clear_queue"] = "ctrl+d";
     cfg.keybinds["search"] = "ctrl+f";
     cfg.keybinds["help"] = "?";

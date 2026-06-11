@@ -51,9 +51,11 @@ void HelpOverlay::build_content() {
 
     subheading("Library & Queue");
     kv("Enter",            "Add selected track(s) / album to queue");
+    kv("Enter (Queue)",    "Jump playback to the track under the cursor");
     kv("Ctrl+f",           "Toggle search / find");
     kv("Ctrl+d",           "Clear the queue");
     kv("Ctrl+a",           "Toggle album grid view");
+    kv("v",                "Toggle Now Playing view (artwork + spectrogram + full queue)");
     blank();
 
     subheading("Application");
@@ -192,6 +194,13 @@ void HelpOverlay::build_content() {
     kv("Boyer-Moore",       "Sublinear search O(n/m). <5ms per keystroke.");
     kv("SHA-256",           "FIPS 180-4. Content-addressed artwork storage.");
     kv("FNV-1a",            "Fast hash for lookups. Adaptive sampling >65KB.");
+    kv("Radix-2 FFT",       "In-house Cooley-Tukey, 1024-pt. Drives the spectrogram.");
+    blank();
+
+    subheading("Spectrogram (Now Playing view)");
+    text("Lock-free tap mirrors post-decode samples off the PipeWire RT path.");
+    text("Per frame: Hann window -> FFT -> log-frequency bins -> waterfall.");
+    text("Waterfall scrolls left at 30 FPS; Kitty graphics, block fallback.");
     blank();
     divider();
     blank();

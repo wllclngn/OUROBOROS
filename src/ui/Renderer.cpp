@@ -4,6 +4,7 @@
 #include "ui/ImageRenderer.hpp"
 #include "ui/FlexLayout.hpp"
 #include "ui/InputEvent.hpp"
+#include "audio/SpectroTap.hpp"
 #include "events/EventBus.hpp"
 #include "config/UIConfig.hpp"
 #include "util/Logger.hpp"
@@ -126,6 +127,13 @@ void Renderer::compute_layout(int cols, int rows) {
     right_area.y = content_area.y + horiz_rects[1].y;
     right_area.width = horiz_rects[1].width;
     right_area.height = horiz_rects[1].height;
+
+    // NOW PLAYING VIEW: left panel = Now Playing, right panel = full-height Queue
+    if (now_playing_view_) {
+        header_rect_ = {right_area.x, right_area.y, right_area.width, 0};
+        queue_rect_ = right_area;
+        return;
+    }
 
     // VERTICAL SPLIT (Right Column): [NowPlaying] + [Queue]
     // RESPONSIVE: Queue hidden in compact mode
@@ -264,6 +272,9 @@ void Renderer::render(bool force_redraw) {
     auto snap = publisher_->get_current();
     if (!snap) return;
 
+    // Snapshot is authoritative for the active layout
+    now_playing_view_ = (snap->ui.current_layout == "now_playing");
+
     auto& terminal = Terminal::instance();
 
     // Get terminal size EVERY FRAME for dynamic layout
@@ -296,6 +307,10 @@ void Renderer::render(bool force_redraw) {
     // Help view replaces browser content; otherwise toggle Browser/AlbumBrowser
     if (help_overlay_->is_visible()) {
         help_overlay_->render(canvas_, browser_rect_, *snap);
+    } else if (now_playing_view_) {
+        // Now Playing view: full Now Playing fills the left panel
+        header_->set_full_view(true);
+        header_->render(canvas_, browser_rect_, *snap);
     } else if (show_album_view_) {
         album_browser_->set_search_active(focus_ == Focus::Search);
         album_browser_->render(canvas_, browser_rect_, *snap, focus_ == Focus::Browser);
@@ -303,12 +318,19 @@ void Renderer::render(bool force_redraw) {
         browser_->render(canvas_, browser_rect_, *snap, focus_ == Focus::Browser);
     }
 
-    header_->render(canvas_, header_rect_, *snap);
+    if (!now_playing_view_) {
+        header_->set_full_view(false);
+        header_->render(canvas_, header_rect_, *snap);
+    }
 
     // Only render Queue if visible (hidden in compact mode)
     if (queue_rect_.height > 0) {
         queue_->render(canvas_, queue_rect_, *snap, focus_ == Focus::Queue);
     }
+
+    // Spectrogram pipeline: push the newest FFT column; block-character
+    // fallback draws onto the canvas here, graphics emit happens post-flush
+    update_spectrogram(*snap, false);
 
     // Global Search Overlay
     render_search_overlay({0, 0, canvas_.width(), canvas_.height()}, *snap);
@@ -323,7 +345,27 @@ void Renderer::render(bool force_redraw) {
     if (track_changed) {
         last_track_idx = snap->player.current_track_index;
     }
-    header_->render_image_if_needed(header_rect_, size_changed || track_changed || force_redraw);
+
+    // Artwork rect follows the active layout (left panel in Now Playing view)
+    LayoutRect art_rect = now_playing_view_ ? browser_rect_ : header_rect_;
+    if (now_playing_view_ && help_overlay_->is_visible()) {
+        // Help shares the left panel in this view - drop the placement
+        header_->clear_image();
+    } else {
+        header_->render_image_if_needed(art_rect,
+            size_changed || track_changed || force_redraw || view_just_toggled_);
+    }
+    view_just_toggled_ = false;
+
+    // Spectrogram graphics emit (post-flush, alongside artwork placement)
+    if (now_playing_view_ && !help_overlay_->is_visible() &&
+        snap->ui.show_spectrogram && snap->player.current_track_index.has_value() &&
+        ImageRenderer::instance().get_protocol() != ImageProtocol::None) {
+        const auto& srect = header_->spectrogram_rect();
+        if (srect.width > 0 && srect.height > 0) {
+            waterfall_.emit(srect.x, srect.y, srect.width, srect.height);
+        }
+    }
 
     // Render album grid artwork if in album view mode
     static bool last_album_view_state = false;
@@ -333,7 +375,7 @@ void Renderer::render(bool force_redraw) {
     }
     last_album_view_state = show_album_view_;
 
-    if (show_album_view_) {
+    if (show_album_view_ && !now_playing_view_) {
         static bool help_was_visible = false;
         bool help_visible = help_overlay_->is_visible();
 
@@ -350,6 +392,63 @@ void Renderer::render(bool force_redraw) {
         }
 
         help_was_visible = help_visible;
+    }
+}
+
+void Renderer::update_spectrogram(const model::Snapshot& snap, bool /*track_changed_hint*/) {
+    bool active = now_playing_view_ && !help_overlay_->is_visible() &&
+                  snap.ui.show_spectrogram &&
+                  snap.player.current_track_index.has_value();
+    if (!active) {
+        // View off, help over the panel, or nothing playing: drop the
+        // placement (montauk's visible -> hidden discipline)
+        waterfall_.hide();
+        if (!snap.player.current_track_index.has_value()) {
+            waterfall_.clear();
+        }
+        return;
+    }
+
+    auto& tap = audio::SpectroTap::instance();
+
+    // Track change: flush stale audio and pixel history
+    static std::optional<int> last_spectro_track;
+    if (snap.player.current_track_index != last_spectro_track) {
+        last_spectro_track = snap.player.current_track_index;
+        tap.reset();
+        waterfall_.clear();
+    }
+
+    const auto& rect = header_->spectrogram_rect();
+    if (rect.width <= 0 || rect.height <= 0) return;
+
+    auto& img = ImageRenderer::instance();
+    // Resize clears history; only fires when the cell rect actually changes
+    // (terminal resize or layout shift)
+    waterfall_.resize(rect.width * img.get_cell_width(),
+                      rect.height * img.get_cell_height());
+
+    // New column only while playing: paused playback stalls the waterfall,
+    // no fake data scrolls in
+    if (snap.player.state == model::PlaybackState::Playing) {
+        if (spectro_window_.size() < audio::SpectroTap::WINDOW) {
+            spectro_window_.resize(audio::SpectroTap::WINDOW);
+        }
+        int sample_rate = 0;
+        if (tap.read_latest(spectro_window_.data(), sample_rate) && sample_rate > 0) {
+            // FFT the most recent SPECTRO_FFT_SIZE samples of the tap window
+            float* tail = spectro_window_.data() +
+                          (audio::SpectroTap::WINDOW - SPECTRO_FFT_SIZE);
+            spectro_fft_.hann_window(tail);
+            spectro_fft_.transform(tail);
+            spectro_fft_.map_log_bins(spectro_bins_, SPECTRO_BINS, sample_rate);
+            waterfall_.push_column(spectro_bins_, SPECTRO_BINS);
+        }
+    }
+
+    // No graphics protocol: block-character spectrum onto the canvas
+    if (img.get_protocol() == ImageProtocol::None) {
+        waterfall_.render_blocks(canvas_, rect);
     }
 }
 
@@ -460,8 +559,28 @@ void Renderer::handle_input_event(const InputEvent& event) {
         return;
     }
 
+    // Toggle Now Playing view (from TOML: toggle_now_playing_view)
+    if (!input_captured && matches_keybind(event, "toggle_now_playing_view")) {
+        bool entering = !now_playing_view_;
+        if (entering && show_album_view_) {
+            // Album grid placements would linger over the left panel
+            album_browser_->clear_all_images();
+        }
+        now_playing_view_ = entering;
+        view_just_toggled_ = true;
+        focus_ = entering ? Focus::Queue : Focus::Browser;
+        publisher_->update([entering](model::Snapshot& s) {
+            s.ui.current_layout = entering ? "now_playing" : "default";
+        });
+        ouroboros::util::Logger::info(std::string("Renderer: Now Playing view ") +
+                                      (entering ? "ON" : "OFF"));
+        return;
+    }
+
     // Toggle album view (from TOML: toggle_album_view)
     if (matches_keybind(event, "toggle_album_view")) {
+        if (now_playing_view_) return;  // no browser panel in Now Playing view
+
         // If closing album view, clear only album browser images (not NowPlaying)
         if (show_album_view_) {
             album_browser_->clear_all_images();
@@ -481,6 +600,7 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Search (from TOML: search)
     if (matches_keybind(event, "search")) {
+        if (now_playing_view_) return;  // no browser to filter in Now Playing view
         focus_ = Focus::Search;
         global_search_box_->set_visible(true);
         return;
@@ -504,6 +624,10 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Tab: Switch focus between Browser and Queue (from TOML: tab)
     if (!input_captured && matches_keybind(event, "tab")) {
+        if (now_playing_view_) {
+            focus_ = Focus::Queue;  // Queue is the only interactive panel
+            return;
+        }
         focus_ = (focus_ == Focus::Browser) ? Focus::Queue : Focus::Browser;
         return;
     }

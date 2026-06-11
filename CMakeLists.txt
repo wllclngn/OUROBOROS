@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 3.3.1 LANGUAGES CXX)
+project(ouroboros VERSION 3.4.0 LANGUAGES CXX)
+
+enable_testing()
+add_subdirectory(tests)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +74,8 @@ add_executable(ouroboros
     src/ui/Animation.cpp
     src/ui/Formatting.cpp
     src/ui/VisualBlocks.cpp
+    src/ui/SpectroWaterfall.cpp
+    src/util/Fft.cpp
     src/ui/ImageRenderer.cpp
     src/ui/ArtworkWindow.cpp
     src/ui/widgets/Browser.cpp

@@ -24,15 +24,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     // Check if we have a current track
     if (!snap.player.current_track_index.has_value()) {
         ouroboros::util::Logger::debug("NowPlaying: No track currently playing");
-        // Clear artwork if one was displayed
-        if (last_art_image_id_ != 0) {
-            auto& img_renderer = ImageRenderer::instance();
-            img_renderer.delete_image_by_id(last_art_image_id_);
-            last_art_image_id_ = 0;
-            cached_path_.clear();
-            last_rendered_hash_.clear();
-            ouroboros::util::Logger::debug("NowPlaying: Cleared artwork (queue empty)");
-        }
+        clear_image();
         return;
     }
 
@@ -59,6 +51,24 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         // NOTE: Don't delete the old image here. Keep it visible until new artwork
         // is ready to render. Deletion happens in render_image_if_needed() right
         // before rendering the new image, preventing the flash of empty space.
+
+        // Album track count for the full view's TRACK row (nn / total)
+        cached_album_total_ = 0;
+        auto slash = track.path.rfind('/');
+        if (slash != std::string::npos && snap.library) {
+            std::string track_dir = track.path.substr(0, slash);
+            for (const auto& group : snap.library->albums) {
+                if (group.album_directory == track_dir) {
+                    cached_album_total_ = util::narrow_cast<int>(group.track_indices.size());
+                    break;
+                }
+            }
+        }
+    }
+
+    if (full_view_) {
+        render_full(canvas, content_rect, snap, track);
+        return;
     }
 
     // Prepare Format info early to determine layout
@@ -315,6 +325,153 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     draw_status_part(snap.player.shuffle_enabled ? "ON" : "OFF", uc.nowplaying_info);
 }
 
+void NowPlaying::full_art_geometry(int content_width, int content_height,
+                                   int& art_cols, int& art_rows) {
+    // Artwork fills the panel height minus the spectrogram strip reserved
+    // along the bottom; width-clamped so the data column keeps room to breathe
+    constexpr int MIN_DATA_COLS = 26;
+    constexpr int ART_LEFT_PAD = 1;
+    constexpr int COLUMN_GUTTER = 2;
+
+    art_rows = content_height - spectro_strip_height(content_height);
+    art_cols = art_rows * 2;
+
+    int max_art = content_width - MIN_DATA_COLS - ART_LEFT_PAD - COLUMN_GUTTER;
+    if (art_cols > max_art) art_cols = max_art;
+    if (art_cols < 4) art_cols = 4;
+    if (art_cols % 2 != 0) art_cols--;
+    art_rows = art_cols / 2;
+}
+
+int NowPlaying::spectro_strip_height(int content_height) {
+    // Bottom strip below the artwork: a fifth of the panel, at least 4 rows
+    return std::max(4, content_height / 5);
+}
+
+void NowPlaying::render_full(Canvas& canvas, const LayoutRect& content_rect,
+                             const model::Snapshot& snap, const model::Track& track) {
+    const auto& uc = config::ui_config();
+
+    int art_cols = 0, art_rows = 0;
+    full_art_geometry(content_rect.width, content_rect.height, art_cols, art_rows);
+
+    // Data column right of artwork: 1 col left pad + art + 2 col gutter
+    int col_x = content_rect.x + 1 + art_cols + 2;
+    int col_w = content_rect.x + content_rect.width - col_x - 1;
+    if (col_w < 10) return;  // degenerate terminal; artwork alone
+
+    int y = content_rect.y;
+
+    auto draw_row = [&](int row_y, const std::string& text, Style s) {
+        canvas.draw_text(col_x, row_y, truncate_text(text, col_w), s);
+    };
+
+    // Stacked metadata: label on its own line, value indented beneath
+    auto meta_row = [&](const std::string& label, const std::string& value, Style value_style) {
+        if (y + 1 >= content_rect.y + content_rect.height) return;
+        canvas.draw_text(col_x, y++, truncate_text(label + ":", col_w), uc.muted);
+        canvas.draw_text(col_x + 2, y++, truncate_text(value, col_w - 2), value_style);
+    };
+
+    meta_row("SONG", !track.title.empty() ? track.title : "Untitled", uc.title);
+
+    {
+        std::ostringstream trk;
+        trk << std::setfill('0') << std::setw(2) << track.track_number;
+        if (cached_album_total_ > 0) {
+            trk << " / " << std::setfill('0') << std::setw(2) << cached_album_total_;
+        }
+        if (track.track_number > 0) {
+            meta_row("TRACK", trk.str(), uc.nowplaying_info);
+        }
+    }
+
+    if (!track.album.empty())  meta_row("ALBUM", track.album, uc.album);
+    meta_row("ARTIST", !track.artist.empty() ? track.artist : "Unknown Artist", uc.artist);
+    if (!track.date.empty())   meta_row("YEAR", track.date, uc.album);
+    if (!track.genre.empty())  meta_row("GENRE", track.genre, uc.nowplaying_info);
+
+    // CODEC row: format, sample rate, bit depth, channels
+    {
+        std::ostringstream codec;
+        switch (track.format) {
+            case model::AudioFormat::MP3:  codec << "MP3"; break;
+            case model::AudioFormat::FLAC: codec << "FLAC"; break;
+            case model::AudioFormat::OGG:  codec << "OGG"; break;
+            case model::AudioFormat::WAV:  codec << "WAV"; break;
+            case model::AudioFormat::M4A:  codec << "M4A"; break;
+            case model::AudioFormat::DSD:
+                codec << "DSD" << (track.sample_rate / 44100);
+                break;
+            default: codec << "Unknown"; break;
+        }
+        if (track.sample_rate > 0) codec << " " << (track.sample_rate / 1000) << "kHz";
+        if (track.bit_depth > 0)   codec << " " << track.bit_depth << "bit";
+        if (track.channels == 2)   codec << " Stereo";
+        else if (track.channels == 1) codec << " Mono";
+        meta_row("CODEC", codec.str(), uc.nowplaying_info);
+    }
+
+    if (track.bitrate > 0) {
+        meta_row("BITRATE", std::to_string(track.bitrate) + "kbps", uc.nowplaying_info);
+    }
+
+    std::string repeat_str;
+    switch (snap.player.repeat_mode) {
+        case model::RepeatMode::Off:  repeat_str = "OFF"; break;
+        case model::RepeatMode::One:  repeat_str = "ONE"; break;
+        case model::RepeatMode::All:  repeat_str = "ALL"; break;
+        default: std::unreachable();
+    }
+    meta_row("REPEAT", repeat_str, uc.nowplaying_info);
+    meta_row("SHUFFLE", snap.player.shuffle_enabled ? "ON" : "OFF", uc.nowplaying_info);
+
+    y++;  // blank line before transport block
+
+    // PROGRESS: bar, then state icon with times
+    if (y + 2 < content_rect.y + content_rect.height) {
+        draw_row(y++, "PROGRESS:", uc.muted);
+
+        int position_pct = 0;
+        if (track.duration_ms > 0) {
+            position_pct = (snap.player.playback_position_ms * 100) / track.duration_ms;
+        }
+        draw_row(y++, ui::blocks::bar_chart(position_pct, col_w), uc.nowplaying_info);
+
+        const char* state_icon = "■";
+        if (snap.player.state == model::PlaybackState::Playing) {
+            state_icon = "▶";
+        } else if (snap.player.state == model::PlaybackState::Paused) {
+            state_icon = "⏸";
+        }
+        int pos_sec = snap.player.playback_position_ms / 1000;
+        int dur_sec = track.duration_ms / 1000;
+        draw_row(y++, std::string(state_icon) + " " + format_duration(pos_sec) +
+                          " / " + format_duration(dur_sec),
+                 uc.nowplaying_info);
+    }
+
+    // VOLUME: bar
+    if (y + 1 < content_rect.y + content_rect.height) {
+        draw_row(y++, "VOLUME:", uc.muted);
+        draw_row(y++, ui::blocks::bar_chart(snap.player.volume_percent, col_w),
+                 uc.nowplaying_info);
+    }
+
+    // Spectrogram strip: full panel width, from the artwork's bottom edge to
+    // the panel's end. Pushed down if the metadata column runs longer than
+    // the artwork. Rendered by the spectrogram pipeline; nothing drawn here.
+    int art_bottom = content_rect.y + art_rows;
+    int spectro_top = std::max(art_bottom + 1, y + 1);  // 1-row gap below artwork, matching panel padding
+    int spectro_h = content_rect.y + content_rect.height - spectro_top;
+    if (spectro_h >= 3) {
+        spectro_rect_ = {content_rect.x + 1, spectro_top,
+                         content_rect.width - 2, spectro_h};
+    } else {
+        spectro_rect_ = {0, 0, 0, 0};  // panel too short; pipeline skips
+    }
+}
+
 void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*force_render*/) {
     ouroboros::util::Logger::debug("NowPlaying: render_image_if_needed called for: " + cached_path_);
 
@@ -336,34 +493,46 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
     int content_width = widget_rect.width - 2;
     int content_height = widget_rect.height - 2;
 
-    // Calculate layout: artwork takes most space, metadata + statusline at bottom
-    int metadata_lines = 3;
-    int available_artwork_height = content_height - metadata_lines;
+    int art_cols = 0;
+    int art_rows = 0;
+    int art_x = 0;
+    int art_y = content_y;
+    int total_padding = 0;
+    int horizontal_padding = 0;
 
-    // ALGORITHM FOR SYMMETRY WITH PADDING
-    int art_cols = content_width - 2;
-    if (art_cols < 0) art_cols = 0;
-    int art_rows = art_cols / 2;
+    if (full_view_) {
+        // FULL VIEW: artwork fills panel height, left-anchored
+        full_art_geometry(content_width, content_height, art_cols, art_rows);
+        art_x = content_x + 1;
+    } else {
+        // Calculate layout: artwork takes most space, metadata + statusline at bottom
+        int metadata_lines = 3;
+        int available_artwork_height = content_height - metadata_lines;
 
-    if (art_rows > available_artwork_height) {
-        art_rows = available_artwork_height;
-        art_cols = art_rows * 2;
-        if ((content_width - art_cols) % 2 != 0) {
-            if (art_cols + 1 <= content_width - 2) {
-                art_cols++;
-            } else {
-                art_cols--;
+        // ALGORITHM FOR SYMMETRY WITH PADDING
+        art_cols = content_width - 2;
+        if (art_cols < 0) art_cols = 0;
+        art_rows = art_cols / 2;
+
+        if (art_rows > available_artwork_height) {
+            art_rows = available_artwork_height;
+            art_cols = art_rows * 2;
+            if ((content_width - art_cols) % 2 != 0) {
+                if (art_cols + 1 <= content_width - 2) {
+                    art_cols++;
+                } else {
+                    art_cols--;
+                }
             }
         }
+
+        if (art_cols < 4) art_cols = 4;
+        art_rows = art_cols / 2;
+
+        total_padding = content_width - art_cols;
+        horizontal_padding = total_padding / 2;
+        art_x = content_x + horizontal_padding;
     }
-
-    if (art_cols < 4) art_cols = 4;
-    art_rows = art_cols / 2;
-
-    int total_padding = content_width - art_cols;
-    int horizontal_padding = total_padding / 2;
-    int art_x = content_x + horizontal_padding;
-    int art_y = content_y;
 
     // Request artwork from ArtworkWindow with priority 0 (currently playing track)
     // Use force_extract=true to get per-track artwork (important for podcasts/mixes)
@@ -449,6 +618,17 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
         pending_render_path_.clear();
     } else {
         pending_render_path_ = cached_path_;
+    }
+}
+
+void NowPlaying::clear_image() {
+    if (last_art_image_id_ != 0) {
+        auto& img_renderer = ImageRenderer::instance();
+        img_renderer.delete_image_by_id(last_art_image_id_);
+        last_art_image_id_ = 0;
+        cached_path_.clear();
+        last_rendered_hash_.clear();
+        ouroboros::util::Logger::debug("NowPlaying: Cleared artwork");
     }
 }
 

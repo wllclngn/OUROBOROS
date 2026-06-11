@@ -129,7 +129,7 @@ struct UIState {
     bool show_controls = true;
     bool show_browser = true;
     bool show_queue = true;
-    bool show_spectrogram = false;
+    bool show_spectrogram = true;  // rendered only in the now_playing layout
     
     bool operator==(const UIState&) const = default;
 };

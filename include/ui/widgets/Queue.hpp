@@ -16,6 +16,8 @@ public:
 
 private:
     int scroll_offset_ = 0;
+    int cursor_index_ = 0;   // Cursor row in queue display order (Browser-style movement)
+    int total_items_ = 0;    // Display-list size from last render (clamps cursor in handle_input)
 };
 
 }  // namespace ouroboros::ui::widgets

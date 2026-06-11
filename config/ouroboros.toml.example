@@ -68,6 +68,9 @@ shuffle_toggle = "s"
 # Toggle album art grid view
 toggle_album_view = "ctrl+a"
 
+# Toggle Now Playing view (full-panel artwork + metadata, full-height queue)
+toggle_now_playing_view = "v"
+
 # Clear play queue
 clear_queue = "ctrl+d"
 

@@ -212,6 +212,48 @@ int main() {
                 });
             });
         
+        // Jump to queue position (Two Stacks: re-partition around the target)
+        // evt.index is a position in display order: history, then current, then future.
+        // Tracks before the target stay/become history (in play order); tracks after
+        // stay/become future. Previous therefore walks back through skipped tracks.
+        event_bus.subscribe(ouroboros::events::Event::Type::JumpToQueueIndex,
+            [publisher](const ouroboros::events::Event& evt) {
+                publisher->update([evt](ouroboros::model::Snapshot& snap) {
+                    if (!snap.queue) return;
+
+                    auto new_queue = std::make_shared<ouroboros::model::QueueState>(*snap.queue);
+                    int hist_size = ouroboros::util::narrow_cast<int>(new_queue->history.size());
+                    bool has_current = new_queue->current.has_value();
+                    int total = hist_size + (has_current ? 1 : 0) +
+                                ouroboros::util::narrow_cast<int>(new_queue->future.size());
+
+                    if (evt.index < 0 || evt.index >= total) {
+                        ouroboros::util::Logger::error("JumpToQueueIndex: index out of bounds: " +
+                            std::to_string(evt.index) + " (total=" + std::to_string(total) + ")");
+                        return;
+                    }
+                    if (has_current && evt.index == hist_size) {
+                        return;  // already the playing track
+                    }
+
+                    // Flatten to display order, then re-partition around the target
+                    std::vector<int> flat;
+                    flat.reserve(total);
+                    flat.insert(flat.end(), new_queue->history.begin(), new_queue->history.end());
+                    if (has_current) flat.push_back(*new_queue->current);
+                    flat.insert(flat.end(), new_queue->future.begin(), new_queue->future.end());
+
+                    new_queue->history.assign(flat.begin(), flat.begin() + evt.index);
+                    new_queue->current = flat[evt.index];
+                    new_queue->future.assign(flat.begin() + evt.index + 1, flat.end());
+
+                    snap.queue = new_queue;
+                    snap.player.state = ouroboros::model::PlaybackState::Playing;
+                    ouroboros::util::Logger::info("JumpToQueueIndex: jumped to display index " +
+                        std::to_string(evt.index) + " (track " + std::to_string(flat[evt.index]) + ")");
+                });
+            });
+
         // Next track (Two Stacks: push current to history, pop from future)
         event_bus.subscribe(ouroboros::events::Event::Type::NextTrack,
             [publisher](const ouroboros::events::Event&) {

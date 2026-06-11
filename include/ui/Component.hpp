@@ -3,6 +3,7 @@
 #include "ui/Canvas.hpp"
 #include "ui/LayoutConstraints.hpp"
 #include "ui/InputEvent.hpp"
+#include "ui/Formatting.hpp"
 #include "model/Snapshot.hpp"
 #include "config/UIConfig.hpp"
 
@@ -104,18 +105,21 @@ protected:
     }
 
     /**
-     * Helper: Truncate text to fit within max_width.
+     * Helper: Truncate text to fit within max_width display columns.
      *
-     * Adds "..." if truncated.
+     * Column-aware (wcwidth via display_cols/take_cols): multibyte UTF-8
+     * glyphs count as their rendered width, never split mid-sequence.
+     * Adds "…" if truncated.
      */
     std::string truncate_text(const std::string& text, int max_width) const {
-        if (static_cast<int>(text.length()) <= max_width) {
+        if (max_width <= 0) return "";
+        if (display_cols(text) <= max_width) {
             return text;
         }
-        if (max_width <= 3) {
-            return text.substr(0, max_width);
+        if (max_width <= 1) {
+            return take_cols(text, max_width);
         }
-        return text.substr(0, max_width - 3) + "...";
+        return take_cols(text, max_width - 1) + "…";
     }
 
     /**

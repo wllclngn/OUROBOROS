@@ -1,40 +1,17 @@
-cmake_minimum_required(VERSION 3.20)
-project(ouroboros_tests)
+# Test suites. Pulled in via add_subdirectory(tests) from the root CMakeLists;
+# CMAKE_SOURCE_DIR therefore refers to the repository root.
+# Framework: framework/SimpleTest.hpp (zero dependencies).
 
-# Include main source directory
 include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_SOURCE_DIR}/vendor)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Find Dependencies (Same as main project)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(MPG123 REQUIRED libmpg123)
-pkg_check_modules(SNDFILE REQUIRED sndfile)
+# Test targets register here as suites land. Pattern:
+#   add_executable(test_<area> unit/test_<area>.cpp <sources under test>)
+#   add_test(NAME <area> COMMAND test_<area>)
 
-include_directories(${MPG123_INCLUDE_DIRS} ${SNDFILE_INCLUDE_DIRS})
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/framework)
 
-# Link against common objects (or source files directly)
-set(UTIL_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/util/TimSort.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/BoyerMoore.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/ArtworkHasher.cpp
-    ${CMAKE_SOURCE_DIR}/src/util/Logger.cpp
-    ${CMAKE_SOURCE_DIR}/src/backend/MetadataParser.cpp
-)
-
-add_executable(test_utils unit/test_utils.cpp ${UTIL_SOURCES})
-target_link_libraries(test_utils ${MPG123_LIBRARIES} ${SNDFILE_LIBRARIES})
-
-add_executable(test_core unit/test_core.cpp ${UTIL_SOURCES})
-target_link_libraries(test_core ${MPG123_LIBRARIES} ${SNDFILE_LIBRARIES})
-
-add_executable(test_pipeline integration/test_pipeline.cpp ${UTIL_SOURCES})
-target_link_libraries(test_pipeline ${MPG123_LIBRARIES} ${SNDFILE_LIBRARIES})
-
-# Test runner script
-add_custom_target(run_tests
-    COMMAND ./test_utils
-    COMMAND ./test_core
-    COMMAND ./test_pipeline
-    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Running all tests..."
-)
+add_executable(test_fft unit/test_fft.cpp ${CMAKE_SOURCE_DIR}/src/util/Fft.cpp)
+target_compile_features(test_fft PRIVATE cxx_std_23)
+add_test(NAME fft COMMAND test_fft)

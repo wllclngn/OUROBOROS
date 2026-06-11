@@ -3,6 +3,7 @@
 #include "ui/VisualBlocks.hpp"
 #include "ui/InputEvent.hpp"
 #include "config/UIConfig.hpp"
+#include "events/EventBus.hpp"
 #include "util/Logger.hpp"
 #include "util/Platform.hpp"
 #include <algorithm>
@@ -20,7 +21,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     // Defensive: Check queue exists
     if (!snap.queue) {
         ouroboros::util::Logger::error("Queue::render: snap.queue is null!");
-        draw_box_border(canvas, rect, "PLAYLIST: ERROR");
+        draw_box_border(canvas, rect, "QUEUE: ERROR");
         return;
     }
 
@@ -42,7 +43,7 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
     }
 
     // Draw border and title (highlight when focused)
-    std::string title = "PLAYLIST: " + std::to_string(display_tracks.size()) + " TRACKS";
+    std::string title = "QUEUE: " + std::to_string(display_tracks.size()) + " TRACKS";
     auto content_rect = draw_box_border(canvas, rect, title, is_focused);
 
     // Empty queue
@@ -56,22 +57,30 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         return;
     }
 
-    // Bounds checking for scroll
-    if (scroll_offset_ >= util::narrow_cast<int>(display_tracks.size())) {
-        scroll_offset_ = std::max(0, util::narrow_cast<int>(display_tracks.size()) - 1);
+    // Clamp cursor to the display list and scroll-follow (Browser pattern)
+    total_items_ = util::narrow_cast<int>(display_tracks.size());
+    if (cursor_index_ >= total_items_) cursor_index_ = total_items_ - 1;
+    if (cursor_index_ < 0) cursor_index_ = 0;
+
+    int available_lines = content_rect.height;
+    if (cursor_index_ < scroll_offset_) {
+        scroll_offset_ = cursor_index_;
+    } else if (cursor_index_ >= scroll_offset_ + available_lines) {
+        scroll_offset_ = cursor_index_ - available_lines + 1;
     }
-    if (scroll_offset_ < 0) {
-        scroll_offset_ = 0;
+    if (scroll_offset_ > total_items_ - available_lines) {
+        scroll_offset_ = std::max(0, total_items_ - available_lines);
     }
+    if (scroll_offset_ < 0) scroll_offset_ = 0;
 
     // Render visible tracks
     int y = content_rect.y;
-    int available_lines = content_rect.height;
 
-    int end_index = std::min(util::narrow_cast<int>(display_tracks.size()), scroll_offset_ + available_lines);
+    int end_index = std::min(total_items_, scroll_offset_ + available_lines);
 
     for (int i = scroll_offset_; i < end_index; ++i) {
         const auto& [track_idx, is_current] = display_tracks[i];
+        bool is_cursor = (is_focused && i == cursor_index_);
 
         // Bounds check
         if (track_idx < 0 || track_idx >= util::narrow_cast<int>(snap.library->tracks.size())) {
@@ -81,9 +90,9 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         const auto& track = snap.library->tracks[track_idx];
 
         // Match Browser formatting: Artist Album: TrackNum Title
-        if (is_current) {
-            // Current track: single-color highlight (BrightYellow + Bold)
-            std::string prefix = "▶ ";
+        if (is_current || is_cursor) {
+            // Current track and cursor row: single-color highlight
+            std::string prefix = is_current ? "▶ " : "  ";
             std::ostringstream oss;
             oss << prefix;
 
@@ -164,12 +173,22 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 }
 
 void Queue::handle_input(const InputEvent& event) {
-    // Navigation (from TOML: nav_up, nav_down)
+    // Browser-style cursor movement (from TOML: nav_up, nav_down);
+    // scroll follows the cursor in render()
     if (matches_keybind(event, "nav_up")) {
-        if (scroll_offset_ > 0) scroll_offset_--;
+        if (cursor_index_ > 0) cursor_index_--;
     }
     else if (matches_keybind(event, "nav_down")) {
-        scroll_offset_++;
+        cursor_index_++;
+        if (cursor_index_ >= total_items_) cursor_index_ = std::max(0, total_items_ - 1);
+    }
+    // Jump playback to the track under the cursor (from TOML: select)
+    else if (matches_keybind(event, "select")) {
+        if (total_items_ <= 0) return;
+        events::Event evt;
+        evt.type = events::Event::Type::JumpToQueueIndex;
+        evt.index = cursor_index_;
+        events::EventBus::instance().publish(evt);
     }
 }
 

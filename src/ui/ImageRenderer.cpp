@@ -418,6 +418,7 @@ void ImageRenderer::delete_image_by_id(uint32_t image_id) {
     auto& term = Terminal::instance();
     std::string cmd = "\033_Ga=d,d=i,i=" + std::to_string(image_id) + "\033\\";
     term.write_raw(cmd);
+    ouroboros::util::Logger::debug("ImageRenderer: Deleted image_id=" + std::to_string(image_id));
 }
 
 void ImageRenderer::clear_image(int x, int y, int width_cols, int height_rows) {

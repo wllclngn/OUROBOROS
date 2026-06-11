@@ -18,6 +18,7 @@ struct Event {
         QueueUpdated,
         AddTrackToQueue,
         ClearQueue,
+        JumpToQueueIndex,  // index = position in queue display order (history, current, future)
         PlayPause,
         NextTrack,
         PrevTrack,

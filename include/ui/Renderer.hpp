@@ -2,12 +2,15 @@
 
 #include "backend/SnapshotPublisher.hpp"
 #include "ui/Canvas.hpp"
+#include "ui/SpectroWaterfall.hpp"
 #include "ui/widgets/NowPlaying.hpp"
 #include "ui/widgets/Browser.hpp"
 #include "ui/widgets/Queue.hpp"
 #include "ui/widgets/SearchBox.hpp"
 #include "ui/widgets/AlbumBrowser.hpp"
 #include "ui/widgets/HelpOverlay.hpp"
+#include "util/Fft.hpp"
+#include <vector>
 
 namespace ouroboros::ui {
 
@@ -43,6 +46,21 @@ private:
     std::unique_ptr<widgets::HelpOverlay> help_overlay_;
 
     bool show_album_view_ = false;
+
+    // Now Playing view (UIState.current_layout == "now_playing"):
+    // left panel = full Now Playing, right panel = full-height Queue.
+    // Snapshot is authoritative; cached here each frame for layout/input.
+    bool now_playing_view_ = false;
+    bool view_just_toggled_ = false;  // forces artwork re-render after toggle
+
+    // Spectrogram pipeline: SpectroTap window -> FFT -> log bins -> waterfall
+    static constexpr size_t SPECTRO_FFT_SIZE = 1024;
+    static constexpr size_t SPECTRO_BINS = 64;
+    util::Fft spectro_fft_{SPECTRO_FFT_SIZE};
+    SpectroWaterfall waterfall_;
+    std::vector<float> spectro_window_;  // tap read scratch
+    float spectro_bins_[SPECTRO_BINS] = {};
+    void update_spectrogram(const model::Snapshot& snap, bool track_changed);
 
     // Layout computation
     void compute_layout(int width, int height);

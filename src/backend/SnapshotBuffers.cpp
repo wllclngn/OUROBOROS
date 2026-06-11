@@ -5,18 +5,18 @@
 namespace ouroboros::backend {
 
 SnapshotBuffers::SnapshotBuffers() {
-    // Initialize default states
-    auto empty_lib = std::make_shared<model::LibraryState>();
-    auto empty_queue = std::make_shared<model::QueueState>();
-    
-    a_.library = empty_lib;
-    a_.queue = empty_queue;
+    // Initialize default states. make_shared results move directly into the
+    // members (no named locals): locals dying at scope end emit dead
+    // refcount-dispose paths at -O3, which GCC 16's -Warray-bounds cross-wires
+    // into a false positive. Both buffers share the same empty states.
+    a_.library = std::make_shared<model::LibraryState>();
+    a_.queue = std::make_shared<model::QueueState>();
     a_.seq = 0;
-    
-    b_.library = empty_lib;
-    b_.queue = empty_queue;
+
+    b_.library = a_.library;
+    b_.queue = a_.queue;
     b_.seq = 0;
-    
+
     front_.store(&a_);
     back_ = &b_;
 }

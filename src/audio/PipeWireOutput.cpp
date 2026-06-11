@@ -1,4 +1,5 @@
 #include "audio/PipeWireOutput.hpp"
+#include "audio/SpectroTap.hpp"
 #include "util/Logger.hpp"
 #include <pipewire/pipewire.h>
 #include <spa/utils/result.h>
@@ -31,6 +32,12 @@ void on_process_callback(void* userdata) {
 
     // Pull from ring buffer
     size_t frames_read = output->ring_.read(dst, max_frames);
+
+    // Spectrogram tap: mirror pre-volume samples (signal, not the volume knob)
+    if (frames_read > 0) {
+        SpectroTap::instance().publish(dst, frames_read, output->channels_,
+                                       output->sample_rate_);
+    }
 
     // Apply volume scaling in-place
     int vol = output->volume_.load(std::memory_order_relaxed);

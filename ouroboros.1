@@ -1,4 +1,4 @@
-.TH OUROBOROS 1 "May 2026" "v3.3.1" "User Commands"
+.TH OUROBOROS 1 "June 2026" "v3.4.0" "User Commands"
 .SH NAME
 ouroboros \- offline, metadata-driven music player for modern Linux terminals
 .SH SYNOPSIS
@@ -172,6 +172,11 @@ Toggle help view (scrollable reference with keybindings, config, troubleshooting
 .B Ctrl+a
 Toggle album grid view
 .TP
+.B v
+Toggle Now Playing view: artwork fills the left panel beside a live waterfall
+spectrogram, volume/transport, and full metadata; the queue takes the full
+right panel with Browser-style cursor navigation (Enter jumps playback)
+.TP
 .B Ctrl+C
 Force quit
 
@@ -333,6 +338,17 @@ NIST FIPS 180-4 compliant implementation for content-addressed artwork storage.
 512-bit chunk processing with 64 round constants. Enables 99% deduplication
 for albums with shared artwork.
 
+.SS Waterfall Spectrogram (Now Playing view)
+In-house iterative radix-2 Cooley-Tukey FFT (1024-point, precomputed twiddle
+factors and bit-reversal, zero allocations per transform). A lock-free
+seqlock-style tap mirrors post-decode samples off the PipeWire RT callback
+(pre-volume, mono-mixed); the UI thread applies a Hann window, transforms,
+folds magnitudes into 64 log-frequency bins (dB-scaled against a -72 dB floor),
+and scrolls them into a persistent RGBA waterfall emitted at 30 FPS via the
+Kitty graphics protocol (/dev/shm path transmission). Sixel/iTerm2 re-emit
+full frames; terminals without graphics fall back to block-character bars.
+The waterfall stalls on pause and clears on track change.
+
 .SH UNICODE SUPPORT
 Full Unicode normalization via ICU (International Components for Unicode):
 
@@ -480,15 +496,15 @@ Written with C++23 for Linux terminal enthusiasts.
 See project LICENSE file for copyright and licensing information.
 
 .SH VERSION
-v3.3.1
+v3.4.0
 .br
-May 2026
+June 2026
 
 .SH TECHNICAL DETAILS
 .SS Code Statistics
-Approximately 16,100 lines of production C++23
+Approximately 17,000 lines of production C++23
 .br
-46 source files, 52 header files
+48 source files, 55 header files
 .br
 5 audio decoders, 4 image protocols, 9 UI widgets
 .br

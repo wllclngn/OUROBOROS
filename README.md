@@ -1,6 +1,6 @@
 # OUROBOROS, The Eternal Player
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 16,100 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 17,000 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
 
@@ -8,6 +8,12 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg), DSD (DSF files, custom decimation engine) with full metadata extraction
 - **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
 - **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
+
+### Now Playing View
+- **Dedicated Lean-Back Layout** (`v`): artwork fills the left panel, full-height interactive queue on the right
+- **Live Waterfall Spectrogram**: lock-free tap off the PipeWire RT path → in-house radix-2 FFT (1024-pt, Hann) → log-frequency bins → scrolling RGBA waterfall at 30 FPS (Kitty graphics, block-character fallback)
+- **Full Metadata Column**: title, track, album, artist, year, genre, codec, bitrate, repeat/shuffle, volume + transport
+- **Interactive Queue Everywhere**: Browser-style cursor in the queue panel — `j`/`k` move, `Enter` jumps playback with deterministic Two Stacks re-partition (Previous still walks back through skipped tracks)
 
 ### Terminal Graphics & UI
 - **Terminal Support**: Kitty, WezTerm, Konsole, Ghostty, xterm, mlterm, iTerm2. As of December 2025, Kitty is recommended for its performance.
@@ -57,7 +63,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
 
 ### Engineering Optimizations
-- **Approximately 16,100 Lines of C++23**: RAII everywhere, move semantics, smart pointers, zero raw new/delete
+- **Approximately 17,000 Lines of C++23**: RAII everywhere, move semantics, smart pointers; raw allocation confined to the audio ring buffer and decoder scratch paths
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
@@ -72,14 +78,14 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 
 ## Screenshots
 
+### Now Playing View: Artwork, Live Spectrogram, Full Queue
+![Now Playing](2026-06-10_19-51.png)
+
 ### Main Interface: Album View
 ![Main](2026-05-28_20-53.png)
 
 ### Main Interface: Album View, Large Display
 ![Main](2025-12-17_20-38.png)
-
-### Search: Track View
-![Albums](2025-12-17_12-24_1.png)
 
 ### Search: Album View
 ![Albums](2025-12-17_12-24.png)
@@ -238,11 +244,11 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 
 - **Navigation**: `j`/`k` (up/down), `Shift+j`/`Shift+k` (multi-select)
 - **Playback**: `Space` (play/pause), `n` (next), `p` (previous), `←`/`→` (seek ±5s)
-- **Queue**: `Enter` (add to queue, or jump to album during search), `Ctrl+d` (clear queue), `Tab` (switch focus)
+- **Queue**: `Enter` (add to queue, or jump to album during search; in the queue panel, jump playback to the cursor), `Ctrl+d` (clear queue), `Tab` (switch focus)
 - **Search**: `Ctrl+f` (toggle search box)
 - **Volume**: `+`/`-` (adjust ±5%)
 - **Modes**: `r` (cycle repeat), `s` (toggle shuffle)
-- **Views**: `Ctrl+a` (toggle album grid)
+- **Views**: `Ctrl+a` (toggle album grid), `v` (toggle Now Playing view)
 - **Help**: `?` (toggle help view, scrollable with `j`/`k`), `q` (quit)
 
 All keybindings are customizable via `~/.config/ouroboros/config.toml`
@@ -316,11 +322,11 @@ Built with:
 
 ## Technical Highlights
 
-- **Approximately 16,100 lines** of production C++23
+- **Approximately 17,000 lines** of production C++23
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
-- **Production algorithms** (PowerSort, Boyer-Moore-Horspool, SHA-256)
+- **Production algorithms** (PowerSort, Boyer-Moore-Horspool, SHA-256, radix-2 FFT)
 - **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
 - **Multi-tier caching** (O(1) → O(dirs) → O(files))
 - **Hardware-aware parallelism** (thread pools, async decoding)
