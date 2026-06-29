@@ -1,8 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 3.4.0 LANGUAGES CXX)
-
-enable_testing()
-add_subdirectory(tests)
+project(ouroboros VERSION 4.0.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +11,13 @@ file(WRITE "${CMAKE_BINARY_DIR}/build_timestamp.txt" "${BUILD_TIME}\n")
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
+# Tests build only in Debug builds (./install.py --debug). A default Release
+# install never compiles the test_* targets. The add_subdirectory call lives at
+# the END of this file so test targets can link the sublimation target.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  enable_testing()
 endif()
 
 # Debug logging option (off by default)
@@ -57,12 +61,15 @@ add_executable(ouroboros
     ${OUROBOROS_HEADERS}
     src/main.cpp
     src/model/Snapshot.cpp
+    src/model/QueueOps.cpp
     src/backend/SnapshotBuffers.cpp
     src/backend/SnapshotPublisher.cpp
     src/backend/PipeWireClient.cpp
     src/backend/Library.cpp
+    src/backend/CacheValidation.cpp
     src/backend/MetadataCache.cpp
     src/backend/MetadataParser.cpp
+    src/backend/GenreDecode.cpp
     src/backend/Config.cpp
     src/collectors/LibraryCollector.cpp
     src/collectors/PlaybackCollector.cpp
@@ -76,6 +83,7 @@ add_executable(ouroboros
     src/ui/VisualBlocks.cpp
     src/ui/SpectroWaterfall.cpp
     src/util/Fft.cpp
+    src/util/SortDispatch.cpp
     src/ui/ImageRenderer.cpp
     src/ui/ArtworkWindow.cpp
     src/ui/widgets/Browser.cpp
@@ -88,11 +96,9 @@ add_executable(ouroboros
     src/events/Scheduler.cpp
     src/config/KeyMap.cpp
     src/config/UIConfig.cpp
-    src/util/TimSort.cpp
     src/util/Logger.cpp
     src/util/Platform.cpp
     src/util/ArtworkHasher.cpp
-    src/util/BoyerMoore.cpp
     src/util/DirectoryScanner.cpp
     src/util/ImageDecoderPool.cpp
     src/backend/ArtworkCache.cpp
@@ -156,7 +162,46 @@ endif()
 if(OUROBOROS_DEBUG_LOG)
     target_compile_definitions(ouroboros PRIVATE OUROBOROS_ENABLE_LOGGING)
 endif()
+# sublimation: OUROBOROS's sort core, built in-tree from its permanent home in the
+# montauk checkout (sibling tree). NOT copied or vendored here -- compiled straight
+# from there. See montauk/sublimation's README: https://github.com/wllclngn/montauk
+set(MONTAUK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../montauk" CACHE PATH
+    "Path to the montauk checkout (sublimation is built from MONTAUK_DIR/sublimation)")
+set(SUBLIMATION_DIR "${MONTAUK_DIR}/sublimation")
+if(NOT EXISTS "${SUBLIMATION_DIR}/src/include/sublimation.h")
+    message(FATAL_ERROR "sublimation not found at ${SUBLIMATION_DIR} -- set -DMONTAUK_DIR=<path to montauk checkout>")
+endif()
+add_library(sublimation STATIC
+    ${SUBLIMATION_DIR}/src/classify.c
+    ${SUBLIMATION_DIR}/src/merge.c
+    ${SUBLIMATION_DIR}/src/pack.c
+    ${SUBLIMATION_DIR}/src/randomness.c
+    ${SUBLIMATION_DIR}/src/search.c
+    ${SUBLIMATION_DIR}/src/select.c
+    ${SUBLIMATION_DIR}/src/small.c
+    ${SUBLIMATION_DIR}/src/sort.c
+    ${SUBLIMATION_DIR}/src/spectral.c
+    ${SUBLIMATION_DIR}/src/text/bmh.c
+    ${SUBLIMATION_DIR}/src/text/nfa.c
+    ${SUBLIMATION_DIR}/src/parallel/pool.c
+    ${SUBLIMATION_DIR}/src/strings/msd_radix.c
+    ${SUBLIMATION_DIR}/src/strings/sort_strings.c
+)
+set_target_properties(sublimation PROPERTIES
+    C_STANDARD 23
+    C_STANDARD_REQUIRED ON
+    POSITION_INDEPENDENT_CODE ON)
+target_include_directories(sublimation
+    PUBLIC  ${SUBLIMATION_DIR}/src/include
+    PRIVATE ${SUBLIMATION_DIR}/src)
+target_compile_options(sublimation PRIVATE
+    -O2 -march=native -fvisibility=hidden
+    -fstack-protector-strong -fstack-clash-protection -fcf-protection)
+target_link_libraries(sublimation PUBLIC pthread m)
+message(STATUS "sublimation: in-tree build from ${SUBLIMATION_DIR}")
+
 target_link_libraries(ouroboros PRIVATE
+    sublimation
     ${PIPEWIRE_LIBRARIES}
     ${SPA_LIBRARIES}
     ${MPG123_LIBRARIES}
@@ -183,5 +228,10 @@ add_custom_target(distclean
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}
     COMMENT "Cleaning all build artifacts for fresh rebuild"
 )
+
+# Test suite (Debug only). Placed last so targets can link `sublimation`.
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    add_subdirectory(tests)
+endif()
 
 

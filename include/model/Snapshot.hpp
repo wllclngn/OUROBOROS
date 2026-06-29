@@ -104,10 +104,6 @@ struct LibraryState {
     int scanned_count = 0;
     int total_count = 0;
 
-    // Hierarchical cache: directory browsing support
-    std::optional<std::string> current_directory;
-    bool is_browsing_by_directory = false;
-
     bool operator==(const LibraryState&) const = default;
 };
 
@@ -122,6 +118,13 @@ struct QueueState {
 
     bool operator==(const QueueState&) const = default;
 };
+
+// Re-partition the queue around a display-order index (history, then current,
+// then future): tracks before the index become history, the indexed track
+// becomes current, tracks after become future. Returns true if the queue
+// changed, false if the index is out of range or is already the current track.
+// Defined in src/model/QueueOps.cpp; unit-tested in tests/unit/test_queue.cpp.
+bool jump_queue_to_index(QueueState& q, int display_index);
 
 struct UIState {
     std::string current_layout = "default";

@@ -475,7 +475,7 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Global quit (from TOML: quit)
     if (!input_captured && matches_keybind(event, "quit")) {
-        ouroboros::util::Logger::info("=== QUIT KEY PRESSED ===");
+        ouroboros::util::Logger::info("QUIT KEY PRESSED");
         should_quit_ = true;
         return;
     }

@@ -7,8 +7,7 @@
 #include "backend/Config.hpp"
 #include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
-#include "util/TimSort.hpp"
-#include "util/BoyerMoore.hpp"
+#include "sublimation_text.hpp"
 #include "util/Logger.hpp"
 #include "util/UnicodeUtils.hpp"
 #include "util/Platform.hpp"
@@ -22,9 +21,7 @@
 
 namespace ouroboros::ui::widgets {
 
-// ============================================================================
 // Atomic Slot Helper Methods
-// ============================================================================
 
 size_t AlbumBrowser::get_slot_index(int visible_row, int col) const {
     size_t idx = static_cast<size_t>(visible_row * cols_ + col);
@@ -126,7 +123,7 @@ void AlbumBrowser::update_filtered_albums() {
 
     // Normalize query once for Unicode-aware search (bjork matches Björk)
     std::string normalized_query = util::normalize_for_search(filter_query_);
-    util::BoyerMooreSearch searcher(normalized_query);
+    sublimation::BMH searcher(normalized_query);
 
     for (size_t i = 0; i < albums_.size(); ++i) {
         const auto& album = albums_[i];
@@ -605,11 +602,9 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     int selected_row = selected_index_ / cols_available;
     int selected_col = selected_index_ % cols_available;
 
-    // ========================================================================
     // PHASE 1: SLOT ASSIGNMENT + REQUEST (with progressive batching)
     // Assign visible albums to atomic slots, request artwork from ArtworkWindow
     // Progressive loading: limit requests per frame for responsive initial display
-    // ========================================================================
 
     // Progressive batching: limit new requests per frame to prevent overwhelming workers
     // This allows top rows to render while lower rows load in background
@@ -684,11 +679,9 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     }
     artwork_window.flush_requests();
 
-    // ========================================================================
     // PHASE 2: POPULATE SLOTS
     // Copy decoded artwork from ArtworkWindow to slots (takes mutex briefly)
     // This is the ONLY place we take the ArtworkWindow mutex
-    // ========================================================================
 
     int populated_count = 0;
     for (int r = start_row; r < end_row && r < total_filtered / cols_available + 1; ++r) {
@@ -742,11 +735,9 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         ouroboros::util::Logger::debug("AlbumBrowser: Populated " + std::to_string(populated_count) + " slots");
     }
 
-    // ========================================================================
     // PHASE 3: RENDER FROM SLOTS (LOCK-FREE)
     // Read from slots atomically, render to terminal
     // Use displayed_images_ map for proper cleanup (delete AFTER render)
-    // ========================================================================
 
     int ready_count = 0;
     int rendered_count = 0;
@@ -846,10 +837,8 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         }
     }
 
-    // ========================================================================
     // PHASE 4: CLEANUP - Delete images no longer on screen (AFTER all renders)
     // This is the key to no-flash: render new first, then delete old
-    // ========================================================================
 
     int deleted_count = 0;
     for (const auto& [key, info] : displayed_images_) {
@@ -867,10 +856,8 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
     // Update displayed images map
     displayed_images_ = std::move(new_displayed_images);
 
-    // ========================================================================
     // PHASE 5: PREFETCH (when idle AND visible slots mostly loaded)
     // Don't prefetch until at least 80% of visible slots are Ready
-    // ========================================================================
 
     auto time_since_scroll = std::chrono::duration_cast<std::chrono::milliseconds>(
         now - last_scroll_time_

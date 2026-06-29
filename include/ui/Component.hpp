@@ -126,47 +126,6 @@ protected:
      * Helper: Format duration in seconds as "MM:SS" or "H:MM:SS".
      */
     std::string format_duration(int total_seconds) const;
-
-    /**
-     * Helper: Format track for display (e.g., "Artist - Title [3:45]").
-     *
-     * @param track         The track to format
-     * @param max_width     Maximum width for display
-     * @param show_duration Whether to include duration in brackets
-     * @return Formatted track string
-     */
-    std::string format_track_display(
-        const model::Track& track,
-        int max_width,
-        bool show_duration = false
-    ) const;
-
-    /**
-     * Helper: Format track metadata line (e.g., "Artist - Album (2023)").
-     *
-     * @param track         The track to format
-     * @param include_album Whether to include album name
-     * @return Formatted metadata string
-     */
-    std::string format_track_metadata_line(
-        const model::Track& track,
-        bool include_album = true
-    ) const;
-
-    /**
-     * Helper: Center text within given width.
-     */
-    std::string center_text(const std::string& text, int width) const;
-
-    /**
-     * Helper: Pad text to width (right-aligned).
-     */
-    std::string pad_right(const std::string& text, int width) const;
-
-    /**
-     * Helper: Format file size (e.g., "3.5 MB").
-     */
-    std::string format_filesize(size_t bytes) const;
 };
 
 }  // namespace ouroboros::ui

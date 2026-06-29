@@ -62,4 +62,18 @@ inline int case_insensitive_compare(const std::string& a, const std::string& b) 
     return ua.compare(ub);
 }
 
+/// Case-folded form of a string (ICU foldCase) as UTF-8. Byte-order comparison
+/// of two fold_case() results matches case_insensitive_compare() for all BMP
+/// text -- UTF-8 byte order equals Unicode code-point order, which equals the
+/// UTF-16 code-unit order ICU's compare() uses below the surrogate range. This
+/// is what lets a precomputed byte-order sort key reproduce the ICU ordering.
+inline std::string fold_case(const std::string& text) {
+    if (text.empty()) return text;
+    icu::UnicodeString u = icu::UnicodeString::fromUTF8(text);
+    u.foldCase();
+    std::string out;
+    u.toUTF8String(out);
+    return out;
+}
+
 } // namespace ouroboros::util

@@ -1,7 +1,6 @@
 #include "ui/widgets/SearchBox.hpp"
 #include "ui/Formatting.hpp"
 #include "config/UIConfig.hpp"
-#include "util/BoyerMoore.hpp"
 #include "util/Logger.hpp"
 
 namespace ouroboros::ui::widgets {

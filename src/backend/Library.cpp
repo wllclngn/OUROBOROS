@@ -1,6 +1,7 @@
 #include "backend/Library.hpp"
 #include "backend/MetadataParser.hpp"
 #include "backend/ArtworkCache.hpp"
+#include "backend/GenreDecode.hpp"
 #include "util/Logger.hpp"
 #include "util/DirectoryScanner.hpp"
 #include <fstream>
@@ -174,7 +175,9 @@ bool Library::load_from_cache(const std::filesystem::path& cache_path) {
             t.title = read_string(in);
             t.artist = read_string(in);
             t.album = read_string(in);
-            t.genre = read_string(in);
+            // Normalize numeric ID3 genre refs on load so caches written before the
+            // decode existed get fixed without a rescan (idempotent on plain names).
+            t.genre = decode_id3_genre(read_string(in));
             t.date = read_string(in);
             
             in.read(reinterpret_cast<char*>(&t.track_number), sizeof(t.track_number));
@@ -427,17 +430,15 @@ bool Library::is_scanning() const {
     return is_scanning_;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
 // MULTI-TIER CACHE VALIDATION (Phase 3)
-// ═══════════════════════════════════════════════════════════════════════════
+
+// classify_tier0 is defined in CacheValidation.cpp (pure, dependency-light, unit-tested).
 
 Library::CacheValidationResult Library::validate_cache_tier0(const std::filesystem::path& cache_path) {
-    (void)cache_path;  // Unused for now
-    util::Logger::info("TIER 0: Validating cache with tree hash");
+    (void)cache_path;  // monolithic cache is directory-agnostic; nothing to read here
+    util::Logger::info("TIER 0: Validating cache (membership + count + mtime)");
 
-    // Load cache header only (first 256 bytes would contain tree_hash in future)
-    // For now, we'll do a quick directory scan and compare
-    // Scan all configured directories and merge results
+    // Single-pass scan of the configured directories: file list, dir mtimes, file mtimes.
     util::DirectoryScanner::ScanResult scan_result;
     for (const auto& music_dir : music_dirs_) {
         auto dir_result = util::DirectoryScanner::scan_directory(music_dir);
@@ -446,49 +447,32 @@ Library::CacheValidationResult Library::validate_cache_tier0(const std::filesyst
                                         dir_result.audio_files.end());
         scan_result.dir_mtimes.insert(dir_result.dir_mtimes.begin(), dir_result.dir_mtimes.end());
         scan_result.file_mtimes.insert(dir_result.file_mtimes.begin(), dir_result.file_mtimes.end());
-        scan_result.tree_hash ^= dir_result.tree_hash;  // XOR combine
+        scan_result.tree_hash ^= dir_result.tree_hash;
     }
 
-    // Store for future use
     last_tree_hash_ = scan_result.tree_hash;
     dir_mtimes_ = scan_result.dir_mtimes;
 
-    // Check if all scanned files exist in cache (monolithic cache - directory agnostic)
-    size_t cached_count = 0;
-    size_t missing_count = 0;
-    for (const auto& file_path : scan_result.audio_files) {
-        if (tracks_.find(file_path) != tracks_.end()) {
-            cached_count++;
-        } else {
-            missing_count++;
-            if (missing_count <= 3) {  // Log first few missing files
-                util::Logger::debug("TIER 0: File not in cache: " + file_path);
-            }
-        }
+    auto result = classify_tier0(scan_result.audio_files, scan_result.file_mtimes,
+                                 scan_result.dir_mtimes, tracks_);
+
+    switch (result) {
+        case CacheValidationResult::CountMismatch:
+            util::Logger::info("TIER 0: file added/removed (count mismatch) -> rescan");
+            break;
+        case CacheValidationResult::MetadataMismatch:
+            util::Logger::info("TIER 0: file edited or removed since cache -> incremental reparse");
+            break;
+        case CacheValidationResult::Valid:
+            util::Logger::info("TIER 0: cache validation passed");
+            break;
+        default:
+            break;
     }
 
-    if (missing_count > 0) {
-        util::Logger::info("TIER 0: " + std::to_string(missing_count) + " files not in cache (" +
-                          std::to_string(cached_count) + "/" + std::to_string(scan_result.audio_files.size()) + " cached)");
-        // Cache the scan result to avoid re-scanning in scan_directory()
-        cached_scan_result_ = std::move(scan_result);
-        return CacheValidationResult::CountMismatch;
-    }
-
-    // Quick check: all relevant cached files still exist on disk
-    for (const auto& file_path : scan_result.audio_files) {
-        if (!std::filesystem::exists(file_path)) {
-            util::Logger::info("TIER 0: Cached file no longer exists: " + file_path);
-            // Cache the scan result to avoid re-scanning in scan_directory()
-            cached_scan_result_ = std::move(scan_result);
-            return CacheValidationResult::MissingFiles;
-        }
-    }
-
-    // Cache the scan result even on success (for subsequent scan_directory() calls)
+    // Reuse this scan in scan_directory() regardless of outcome.
     cached_scan_result_ = std::move(scan_result);
-    util::Logger::info("TIER 0: Cache validation passed");
-    return CacheValidationResult::Valid;
+    return result;
 }
 
 std::vector<std::string> Library::find_dirty_directories(

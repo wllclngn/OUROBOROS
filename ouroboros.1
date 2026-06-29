@@ -1,4 +1,4 @@
-.TH OUROBOROS 1 "June 2026" "v3.4.0" "User Commands"
+.TH OUROBOROS 1 "June 2026" "v4.0.0" "User Commands"
 .SH NAME
 ouroboros \- offline, metadata-driven music player for modern Linux terminals
 .SH SYNOPSIS
@@ -10,10 +10,11 @@ is a high-performance music player built in C++23 for modern Linux terminals.
 It features a lock-free snapshot architecture that guarantees deadlock-free operation,
 native PipeWire audio output, and smart album artwork rendering with shared memory optimization.
 
-The player supports multiple audio formats (MP3, FLAC, OGG/Vorbis, WAV) and multiple
-terminal image protocols (Kitty, Sixel, iTerm2, Unicode blocks). It delivers 30 FPS
-rendering with production-grade algorithms including TimSort for library organization
-and Boyer-Moore-Horspool for sublinear string searching.
+The player supports multiple audio formats (MP3, FLAC, OGG/Vorbis, WAV, M4A/AAC,
+DSD/DSF) and multiple terminal image protocols (Kitty, Sixel, iTerm2, Unicode
+blocks). It delivers 30 FPS rendering with production-grade algorithms including
+sublimation (montauk's in-tree flow-model sort and search core) for library
+organization and string searching.
 
 .SH KEY FEATURES
 .TP
@@ -21,20 +22,22 @@ and Boyer-Moore-Horspool for sublinear string searching.
 Zero-deadlock snapshot system with atomic reads. UI thread never blocks on mutex acquisition.
 .TP
 .B Multi-Format Audio
-MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis with per-track format negotiation.
+MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis (libvorbisfile), M4A/AAC
+(FFmpeg) and DSD/DSF (FFmpeg metadata, custom decimation engine), with per-track
+format negotiation.
 .TP
 .B Album Artwork Engine
 Multi-protocol support (Kitty/Sixel/iTerm2/Unicode) with /dev/shm shared memory transmission,
 async decoding pool, and 250-entry LRU cache.
 .TP
 .B Production-Grade Algorithms
-TimSort (O(n) best case), Boyer-Moore-Horspool search (O(n/m) average), SHA-256 content addressing.
+sublimation flow-model sort and substring search (montauk in-tree), SHA-256 content addressing.
 .TP
 .B Kernel-Level Optimizations
 Direct getdents64 syscalls (2-3x faster than std::filesystem), 256KB batching, d_type filtering.
 .TP
 .B Multi-Tier Cache System
-O(1) tree hash validation → O(directories) dirty detection → O(changed files) parallel parsing.
+O(files) membership and count validation, O(directories) dirty detection, O(changed files) parallel parsing.
 
 .SH CONFIGURATION
 .B OUROBOROS
@@ -262,8 +265,8 @@ Real-world benchmarks (Ryzen 7 5800X, 721-track library):
 .B Library scan (10K tracks)
 <500ms with direct getdents64 syscalls
 .TP
-.B TimSort (10K tracks)
-~10ms (O(n) on pre-sorted data)
+.B sublimation sort (46K tracks)
+~30ms (about 2x the previous parallel TimSort)
 .TP
 .B Boyer-Moore search (10K tracks)
 ~1ms (sublinear: scans ~3,300 chars instead of 1M)
@@ -288,8 +291,10 @@ Hardware-aware thread pool (typically 4-16 threads) for parallel image decoding.
 
 .SS Multi-Tier Cache Validation
 .TP
-.B TIER 0: O(1)
-Single SHA-256 tree hash comparison. <100ms cache hit.
+.B TIER 0: O(files)
+Membership, count and mtime check against the cache (no hashing). Detects added
+files, removed files (in scanned directories) and in-place edits via mtime, so a
+retagged file is picked up. Fast cache hit, no metadata parsing.
 .TP
 .B TIER 1: O(directories)
 getdents64 on directory mtimes only. ~200ms for directory scan.
@@ -318,20 +323,21 @@ Automatic detection and merging of scattered albums (soundtracks, compilations).
 Uses title occurrence counting to identify albums that appear multiple times.
 All entries with matching titles are merged by title only, ignoring artist.
 This handles true compilations where every track has a different artist.
-Dual-sort strategy: TimSort by artist/year, then stable_sort to group scattered albums by title.
+Dual-sort strategy: sublimation by artist/year, then stable_sort to group scattered albums by title.
 
 .SH ALGORITHMS
-.SS TimSort (PowerSort with Pattern Detection)
-Adaptive sorting algorithm (Munro & Wild 2018, CPython 3.11+). O(n) best case for
-pre-sorted data, O(n log n) worst case. Features adaptive pattern detection with
-four dispatch paths: already-sorted (skip), reversed (O(n) reverse), nearly-sorted
-(<5% inversions, delegate to std::stable_sort), and random (full PowerSort with
-galloping). Includes binary insertion sort for small runs (<32 elements),
-natural run detection, exponential gallop search, and near-optimal merge ordering.
+.SS sublimation (flow-model sort)
+The library and album orderings run through sublimation, a flow-model sort that
+routes by disorder, built in-tree from the montauk checkout. Multi-key orderings
+(artist, then date/year, then directory/title) are expressed as precomputed
+composite keys and sorted in one byte-order pass; the case-folded artist key
+reproduces the ICU case-insensitive order. At a 46K-track library it measured ~2x
+the throughput of the previous parallel TimSort. See the montauk repository.
 
-.SS Boyer-Moore-Horspool
-Sublinear string search with O(n/m) average case. Uses 256-byte bad-character skip table.
-Right-to-left pattern matching with case-sensitive and case-insensitive modes.
+.SS Boyer-Moore-Horspool (sublimation)
+The global search filter runs on sublimation's Boyer-Moore-Horspool substring engine
+(the same in-tree core as the sort). Sublinear O(n/m) average case via a 256-byte
+bad-character table, ASCII case-insensitive, literal substring matching.
 
 .SS SHA-256
 NIST FIPS 180-4 compliant implementation for content-addressed artwork storage.
@@ -443,13 +449,15 @@ CMake 3.20+, Make
 PipeWire (libpipewire-0.3, libspa-0.2)
 .TP
 .B Audio Codecs
-libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG)
+libmpg123 (MP3), libsndfile (FLAC/WAV), libvorbisfile (OGG), FFmpeg
+(libavformat, libavcodec, libswresample -- M4A/AAC decoding, DSF metadata)
 .TP
 .B Unicode
 ICU (icu-uc, icu-i18n) for case-insensitive sorting and normalization
 .TP
-.B Crypto
-OpenSSL for SHA-256 content-addressed storage
+.B Content Addressing
+Custom SHA-256 (NIST FIPS 180-4, in-tree -- no external crypto dependency) for
+content-addressed artwork storage
 .TP
 .B Image Support
 stb_image, stb_image_resize2 (auto-downloaded by CMake)
@@ -464,15 +472,9 @@ sudo pacman -S cmake gcc pipewire libpipewire \\
 .fi
 
 .SH BUGS
-Report bugs at: https://github.com/anthropics/ouroboros/issues
+Report bugs at: https://github.com/wllclngn/OUROBOROS/issues
 
 Known limitations:
-.TP
-\(bu
-Shuffle mode flag exists but collector logic needs implementation
-.TP
-\(bu
-No gapless playback (buffer boundaries between tracks)
 .TP
 \(bu
 No ReplayGain/normalization support
@@ -496,17 +498,17 @@ Written with C++23 for Linux terminal enthusiasts.
 See project LICENSE file for copyright and licensing information.
 
 .SH VERSION
-v3.4.0
+v4.0.0
 .br
 June 2026
 
 .SH TECHNICAL DETAILS
 .SS Code Statistics
-Approximately 17,000 lines of production C++23
+Approximately 16,500 lines of production C++23 (excludes the in-tree sublimation C core)
 .br
-48 source files, 55 header files
+51 source files, 57 header files
 .br
-5 audio decoders, 4 image protocols, 9 UI widgets
+5 audio decoders, 4 image protocols, 6 UI widgets
 .br
 Custom test framework with zero external dependencies
 

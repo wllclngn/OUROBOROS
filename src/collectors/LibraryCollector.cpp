@@ -3,9 +3,10 @@
 #include "backend/Config.hpp"
 #include "util/Platform.hpp"
 #include "util/Logger.hpp"
-#include "util/TimSort.hpp"
 #include "util/DirectoryScanner.hpp"
 #include "util/UnicodeUtils.hpp"
+#include "util/SortDispatch.hpp"
+#include "util/SortKeys.hpp"
 #include <thread>
 #include <fstream>
 #include <map>
@@ -14,8 +15,75 @@
 #include <filesystem>
 #include <algorithm>
 #include <atomic>
+#include <functional>
+#include <cstdint>
 
 namespace ouroboros::collectors {
+
+namespace {
+
+// Sort tracks by (artist, date, [directory], track number) through sublimation's
+// byte-order string sort, using one precomputed composite key per track (see
+// util/SortKeys.hpp). fold_case() makes the artist component sort exactly as
+// case_insensitive_compare would, so the order matches the previous comparator.
+// Index permutation -- no Track is copied until the final gather. group_by_dir
+// adds the directory tiebreak (only the cache-hit path used it historically; the
+// flag preserves each call site's exact order).
+void sort_tracks_by_artist(std::vector<model::Track>& tracks,
+                           const std::function<std::string(const std::string&)>& artist_key,
+                           bool group_by_dir) {
+    const size_t n = tracks.size();
+    if (n < 2) return;
+
+    std::vector<std::string> keys(n);
+    std::vector<const char*> ptrs(n);
+    std::vector<uint32_t> idx(n);
+    for (size_t i = 0; i < n; ++i) {
+        const auto& t = tracks[i];
+        size_t slash = t.path.rfind('/');
+        std::string dir = (slash != std::string::npos) ? t.path.substr(0, slash) : std::string();
+        keys[i] = util::track_sort_key(util::fold_case(artist_key(t.artist)),
+                                       t.date, dir, t.track_number, group_by_dir);
+        ptrs[i] = keys[i].c_str();
+        idx[i] = static_cast<uint32_t>(i);
+    }
+    util::sort_by_string(ptrs, idx);
+
+    std::vector<model::Track> sorted;
+    sorted.reserve(n);
+    for (uint32_t k : idx) sorted.push_back(std::move(tracks[k]));
+    tracks = std::move(sorted);
+}
+
+// Sort album groups by (scattered ? title : artist), then optional year, then
+// title -- the previous album comparator, as a composite byte-order key.
+void sort_albums(std::vector<model::AlbumGroup>& albums, bool sort_by_year,
+                 const std::function<std::string(const std::string&)>& artist_key,
+                 const std::function<int(const std::string&)>& year_to_int) {
+    const size_t n = albums.size();
+    if (n < 2) return;
+
+    std::vector<std::string> keys(n);
+    std::vector<const char*> ptrs(n);
+    std::vector<uint32_t> idx(n);
+    for (size_t i = 0; i < n; ++i) {
+        const auto& g = albums[i];
+        std::string primary = g.is_scattered ? util::fold_case(g.normalized_title)
+                                              : util::fold_case(artist_key(g.artist));
+        std::string year_field = sort_by_year ? util::zeropad(year_to_int(g.year), 5) : std::string();
+        keys[i] = util::album_sort_key(primary, year_field, util::fold_case(g.normalized_title));
+        ptrs[i] = keys[i].c_str();
+        idx[i] = static_cast<uint32_t>(i);
+    }
+    util::sort_by_string(ptrs, idx);
+
+    std::vector<model::AlbumGroup> sorted;
+    sorted.reserve(n);
+    for (uint32_t k : idx) sorted.push_back(std::move(albums[k]));
+    albums = std::move(sorted);
+}
+
+}  // namespace
 
 // Extract primary artist by stripping featuring/collaboration suffixes
 static std::string extract_primary_artist(const std::string& artist) {
@@ -112,10 +180,8 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
         }
     };
 
-    // ═══════════════════════════════════════════════════════════════════════
     // STEP 1: Group tracks by DIRECTORY (not artist+album)
     // Directory is truth. All tracks in same folder = same album.
-    // ═══════════════════════════════════════════════════════════════════════
     std::map<std::string, model::AlbumGroup> groups;
 
     for (size_t i = 0; i < lib_state.tracks.size(); ++i) {
@@ -154,11 +220,9 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
 
     util::Logger::info("Grouped into " + std::to_string(albums.size()) + " directory-based albums");
 
-    // ═══════════════════════════════════════════════════════════════════════
     // STEP 2: Sort tracks + detect scattered albums IN PARALLEL
     // Each album is independent - perfect for parallel processing
     // Uses atomic work-stealing pattern for load balancing across cores
-    // ═══════════════════════════════════════════════════════════════════════
     const size_t num_threads = std::thread::hardware_concurrency();
     const size_t num_albums = albums.size();
     std::atomic<size_t> work_index{0};
@@ -175,8 +239,10 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
 
                 auto& album = albums[idx];
 
-                // Sort tracks within this album by track number (TimSort for natural runs)
-                ouroboros::util::timsort(album.track_indices,
+                // Sort tracks within this album by track number. Tiny N (a handful
+                // to a few dozen per album); std::stable_sort keeps equal track
+                // numbers in their prior order, matching the old stable sort.
+                std::stable_sort(album.track_indices.begin(), album.track_indices.end(),
                     [&lib_state](int a, int b) {
                         return lib_state.tracks[a].track_number < lib_state.tracks[b].track_number;
                     });
@@ -195,34 +261,12 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
         [](const model::AlbumGroup& a) { return a.is_scattered; });
     util::Logger::info("Detected " + std::to_string(scattered_count) + " scattered (compilation) albums");
 
-    // ═══════════════════════════════════════════════════════════════════════
     // STEP 3: Sort albums (parallel)
     // Scattered: by title | Unified: by artist, then year, then title
-    // ═══════════════════════════════════════════════════════════════════════
     bool sort_by_year = config.sort_albums_by_year;
 
-    util::Logger::info("Sorting " + std::to_string(albums.size()) + " albums (parallel)");
-    ouroboros::util::parallel_timsort(albums,
-        [sort_by_year, &get_artist_sort_key, &year_to_int](
-            const model::AlbumGroup& a, const model::AlbumGroup& b) {
-
-            // Scattered albums sort by title, unified by artist
-            std::string key_a = a.is_scattered ? a.normalized_title : get_artist_sort_key(a.artist);
-            std::string key_b = b.is_scattered ? b.normalized_title : get_artist_sort_key(b.artist);
-
-            int cmp = util::case_insensitive_compare(key_a, key_b);
-            if (cmp != 0) return cmp < 0;
-
-            // Same primary key, compare by year
-            if (sort_by_year) {
-                int ya = year_to_int(a.year);
-                int yb = year_to_int(b.year);
-                if (ya != yb) return ya < yb;
-            }
-
-            // Finally by title
-            return util::case_insensitive_compare(a.normalized_title, b.normalized_title) < 0;
-        });
+    util::Logger::info("Sorting " + std::to_string(albums.size()) + " albums (sublimation)");
+    sort_albums(albums, sort_by_year, get_artist_sort_key, year_to_int);
 
     lib_state.albums = std::move(albums);
     util::Logger::info("Album groups computed: " + std::to_string(lib_state.albums.size()) + " albums");
@@ -297,9 +341,7 @@ void LibraryCollector::run(std::stop_token stop_token) {
 
     bool cache_valid = false;
 
-    // ═══════════════════════════════════════════════════════════════════════
     // TIER 0: Load Monolithic Cache + Tree Hash Validation
-    // ═══════════════════════════════════════════════════════════════════════
     backend::Library::CacheValidationResult tier0_result = backend::Library::CacheValidationResult::GenericFailure;
 
     if (std::filesystem::exists(cache_file)) {
@@ -318,19 +360,8 @@ void LibraryCollector::run(std::stop_token stop_token) {
                 new_lib_state->tracks = library.get_all_tracks();
 
                 // Sort library (parallel)
-                util::Logger::info("Sorting library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-                ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
-                    int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
-                    if (cmp != 0) return cmp < 0;
-                    if (a.date != b.date) return a.date < b.date;
-                    // Group by directory (matches album view's directory-based grouping)
-                    size_t a_slash = a.path.rfind('/');
-                    size_t b_slash = b.path.rfind('/');
-                    std::string_view a_dir(a.path.data(), a_slash != std::string::npos ? a_slash : 0);
-                    std::string_view b_dir(b.path.data(), b_slash != std::string::npos ? b_slash : 0);
-                    if (a_dir != b_dir) return a_dir < b_dir;
-                    return a.track_number < b.track_number;
-                });
+                util::Logger::info("Sorting library (sublimation): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
+                sort_tracks_by_artist(new_lib_state->tracks, get_artist_sort_key, /*group_by_dir=*/true);
                 util::Logger::info("Library sorted successfully");
 
                 new_lib_state->is_scanning = false;
@@ -355,12 +386,14 @@ void LibraryCollector::run(std::stop_token stop_token) {
         }
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
     // TIER 1: Directory-Level Scan (O(dirs))
-    // ═══════════════════════════════════════════════════════════════════════
     // Optimization: Only try TIER 1 if TIER 0 failed gently (e.g. Generic/Missing).
-    // If TIER 0 said CountMismatch, we KNOW files were added/removed, so we must scan.
-    bool skip_tier1 = (tier0_result == backend::Library::CacheValidationResult::CountMismatch);
+    // CountMismatch (files added/removed) and MetadataMismatch (in-place edit or
+    // removal in a scanned dir) both skip TIER 1 and go straight to the incremental
+    // reparse -- TIER 1 keys on directory mtime, which an in-place edit does not change,
+    // so routing an edit through TIER 1 would wrongly clear it.
+    bool skip_tier1 = (tier0_result == backend::Library::CacheValidationResult::CountMismatch ||
+                       tier0_result == backend::Library::CacheValidationResult::MetadataMismatch);
 
     if (!cache_valid && !skip_tier1 && std::filesystem::exists(cache_file) && library.get_track_count() > 0) {
         util::Logger::info("TIER 0 failed - trying TIER 1 directory scan");
@@ -387,12 +420,7 @@ void LibraryCollector::run(std::stop_token stop_token) {
             new_lib_state->tracks = library.get_all_tracks();
 
             util::Logger::info("Sorting library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-            ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
-                int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
-                if (cmp != 0) return cmp < 0;
-                if (a.date != b.date) return a.date < b.date;
-                return a.track_number < b.track_number;
-            });
+            sort_tracks_by_artist(new_lib_state->tracks, get_artist_sort_key, /*group_by_dir=*/false);
             util::Logger::info("Library sorted successfully");
 
             new_lib_state->is_scanning = false;
@@ -418,9 +446,7 @@ void LibraryCollector::run(std::stop_token stop_token) {
         util::Logger::info("Skipping TIER 1 because TIER 0 detected Count Mismatch (files added/removed)");
     }
 
-    // ═══════════════════════════════════════════════════════════════════════
     // TIER 2 + TIER 3: Full Scan with getdents64 + Parallel Parsing
-    // ═══════════════════════════════════════════════════════════════════════
     if (!cache_valid) {
         util::Logger::info("Cache invalid - performing full scan with optimizations");
 
@@ -458,12 +484,7 @@ void LibraryCollector::run(std::stop_token stop_token) {
         new_lib_state->tracks = library.get_all_tracks();
 
         util::Logger::info("Sorting scanned library (parallel): " + std::to_string(new_lib_state->tracks.size()) + " tracks");
-        ouroboros::util::parallel_timsort(new_lib_state->tracks, [&get_artist_sort_key](const model::Track& a, const model::Track& b) {
-            int cmp = util::case_insensitive_compare(get_artist_sort_key(a.artist), get_artist_sort_key(b.artist));
-            if (cmp != 0) return cmp < 0;
-            if (a.date != b.date) return a.date < b.date;
-            return a.track_number < b.track_number;
-        });
+        sort_tracks_by_artist(new_lib_state->tracks, get_artist_sort_key, /*group_by_dir=*/false);
         util::Logger::info("Library sorted successfully");
 
         new_lib_state->is_scanning = false;

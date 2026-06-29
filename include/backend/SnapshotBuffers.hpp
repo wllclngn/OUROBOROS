@@ -6,6 +6,15 @@
 
 namespace ouroboros::backend {
 
+// Double-buffered snapshot store: two Snapshot slots (a_, b_), an atomic front
+// pointer for lock-free readers, and a back pointer the producer writes.
+//
+// NOT internally synchronized against concurrent writers. SnapshotPublisher owns
+// the only writer mutex and is the sole caller of back()/publish(); see the
+// invariant documented there. back()/publish() must be called only under that
+// lock. front() is the lock-free read path (atomic-pointer load) and is safe to
+// call concurrently with a publish() in progress -- it returns either the old or
+// the new snapshot whole, never a mix.
 class SnapshotBuffers {
 public:
     SnapshotBuffers();

@@ -4,7 +4,7 @@
 #include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
-#include "util/BoyerMoore.hpp"
+#include "sublimation_text.hpp"
 #include "util/Platform.hpp"
 #include <algorithm>
 #include <sstream>
@@ -32,8 +32,8 @@ void Browser::update_filtered_indices(const model::Snapshot& snap) {
         return;
     }
 
-    // Case 2: Filter active -> Search
-    ouroboros::util::BoyerMooreSearch searcher(filter_query_, false); // Case-insensitive
+    // Case 2: Filter active -> Search (case-insensitive substring via sublimation BMH)
+    sublimation::BMH searcher(filter_query_);
     
     for (size_t i = 0; i < tracks.size(); ++i) {
         const auto& t = tracks[i];

@@ -75,6 +75,14 @@ private:
     static void full_art_geometry(int content_width, int content_height,
                                   int& art_cols, int& art_rows);
     static int spectro_strip_height(int content_height);
+
+    // Artwork geometry for the compact (default-layout) view: square art
+    // anchored to fill the width minus symmetric padding, height-capped to
+    // leave the bottom metadata/statusline lines. Shared by render() and
+    // render_image_if_needed() so the two never drift.
+    static void compact_art_geometry(int content_width, int content_height,
+                                     int& art_cols, int& art_rows,
+                                     int& horizontal_padding);
 };
 
 }  // namespace ouroboros::ui::widgets

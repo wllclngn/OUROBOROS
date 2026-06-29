@@ -1,6 +1,6 @@
 # OUROBOROS, The Eternal Player
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 17,000 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 16,500 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
 
 **Key Features:**
 
@@ -19,14 +19,14 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Terminal Support**: Kitty, WezTerm, Konsole, Ghostty, xterm, mlterm, iTerm2. As of December 2025, Kitty is recommended for its performance.
 - **Multi-Protocol Album Artwork**: Kitty, Sixel, iTerm2, Unicode blocks with automatic terminal detection and fallback cascade
 - **Shared Memory Transmission**: `/dev/shm` for Kitty protocol (33% CPU reduction vs Base64 encoding)
-- **9 Specialized Widgets**: Browser, Queue, NowPlaying, Controls, StatusBar, SearchBox, AlbumBrowser, DirectoryBrowser, HelpOverlay
+- **6 Specialized Widgets**: Browser, Queue, NowPlaying, SearchBox, AlbumBrowser, HelpOverlay
 - **Flexbox Layout Engine**: CSS-inspired constraint solver for responsive terminal UI (dynamic sizing, alignment, spacing)
 - **Modern Rendering**: Canvas-based with differential updates, 30 FPS target, ANSI escape sequence parsing
 
 ### Library Management
 - **Kernel-Level Syscalls**: Direct `getdents64` implementation (2-3x faster than std::filesystem)
 - **Hardware-Aware Parallelism**: Metadata extraction with 4-16 thread pool (hardware_concurrency)
-- **Three-Tier Cache Validation**: O(1) tree hash → O(dirs) dirty detection → O(files) incremental parsing
+- **Three-Tier Cache Validation**: O(files) membership, count and mtime (detects retags) → O(dirs) dirty detection → O(changed files) incremental parsing
 - **Real-World Performance**: 10K track library scans in <500ms (warm start: 95ms)
 - **Compilation/Soundtrack Grouping**: Directory-based album boundaries with automatic compilation detection (TCMP flag, "Various Artists", artist diversity thresholds)
 
@@ -45,8 +45,8 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
 
 ### Production-Grade Algorithms
-- **PowerSort**: Near-optimal adaptive merge sort (Munro & Wild 2018, CPython 3.11+) with pattern detection (sorted/reversed/nearly-sorted/random adaptive dispatch) and galloping mode for clustered data
-- **Boyer-Moore-Horspool**: Sublinear O(n/m) search with bad-character skip table (2-3x faster than naive, <5ms keystroke latency)
+- **sublimation**: the library and album orderings run through sublimation, a flow-model sort that routes by disorder, built in-tree from the [montauk](https://github.com/wllclngn/montauk) checkout. Multi-key orderings are precomputed composite keys sorted in one byte-order pass; ~2x the throughput of the previous parallel TimSort at a 46K-track library
+- **Boyer-Moore-Horspool** (via sublimation): Sublinear O(n/m) substring search with bad-character skip table (<5ms keystroke latency); the same in-tree core as the sort
 - **Dual-Hash System**: Custom SHA-256 (NIST FIPS 180-4) + FNV-1a with adaptive sampling (>65KB files sampled for speed)
 
 ### Lock-Free Concurrency
@@ -63,7 +63,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
 
 ### Engineering Optimizations
-- **Approximately 17,000 Lines of C++23**: RAII everywhere, move semantics, smart pointers; raw allocation confined to the audio ring buffer and decoder scratch paths
+- **Approximately 16,500 Lines of C++23**: RAII everywhere, move semantics, smart pointers; raw allocation confined to the audio ring buffer and decoder scratch paths (excludes the in-tree sublimation C core)
 - **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
 - **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
 - **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
@@ -159,15 +159,15 @@ sudo apt install pkg-config libpipewire-0.3-dev libmpg123-dev libsndfile1-dev li
 
 ### Run Tests
 
-```bash
-# Build and run all tests
-cmake -B build
-cd build && make run_tests
+Tests are built only in debug builds and run via ctest:
 
-# Run individual test suites
-./build/test_utils      # TimSort, BoyerMoore, ArtworkHasher
-./build/test_core       # Core utilities
-./build/test_pipeline   # Metadata parser integration
+```bash
+./install.py --debug    # debug build with the test suite
+./install.py test       # build (debug) and run all tests via ctest
+
+# Suites: cache (TIER 0 validation), queue (Two Stacks jump),
+# concurrency (ring buffer / seqlock / snapshot), genre (ID3 decode),
+# fft (radix-2 transform), sort (sublimation composite-key parity + scale)
 ```
 
 ## Configuration
@@ -288,19 +288,21 @@ All keybindings are customizable via `~/.config/ouroboros/config.toml`
 
 ### Test Framework
 
-OUROBOROS uses a custom C++ test framework (`tests/framework/SimpleTest.hpp`) with no external dependencies.
+OUROBOROS uses a custom C++ test framework (`tests/framework/SimpleTest.hpp`) with no external dependencies. The test targets build only in debug builds and run under ctest.
 
 **Run All Tests:**
 ```bash
-cmake -B build
-cd build && make run_tests
+./install.py test       # builds debug + runs ctest
 ```
 
-**Run Individual Suites:**
-```bash
-./build/test_utils      # TimSort, BoyerMoore, ArtworkHasher
-./build/test_core       # Core utilities
-./build/test_pipeline   # Metadata parser integration
+**Suites:**
+```text
+cache         TIER 0 cache validation (membership/mtime/removal)
+queue         Two Stacks queue + JumpToQueueIndex re-partition
+concurrency   AudioRingBuffer SPSC, SpectroTap seqlock, SnapshotBuffers
+genre         ID3 numeric genre decode
+fft           radix-2 FFT (impulse/DC/tone/Parseval)
+sort          sublimation composite-key parity vs ICU + scale
 ```
 
 **Test Macros:**
@@ -322,11 +324,11 @@ Built with:
 
 ## Technical Highlights
 
-- **Approximately 17,000 lines** of production C++23
+- **Approximately 16,500 lines** of production C++23
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
-- **Production algorithms** (PowerSort, Boyer-Moore-Horspool, SHA-256, radix-2 FFT)
+- **Production algorithms** (sublimation flow-model sort/search, Boyer-Moore-Horspool, SHA-256, radix-2 FFT)
 - **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
 - **Multi-tier caching** (O(1) → O(dirs) → O(files))
 - **Hardware-aware parallelism** (thread pools, async decoding)
@@ -338,7 +340,7 @@ Built with:
 For detailed technical documentation, see **[ARCHITECTURE.md](ARCHITECTURE.md)**:
 
 - **Concurrency Architecture**: Lock-free snapshot system, threading model, atomic operations
-- **Algorithm Implementations**: TimSort, Boyer-Moore-Horspool, SHA-256 deep-dives
+- **Algorithm Implementations**: sublimation sort/search, Boyer-Moore-Horspool, SHA-256 deep-dives
 - **Kernel-Level Optimizations**: Direct syscalls, performance analysis, benchmarks
 - **Audio Pipeline**: Format detection, decoders, PipeWire integration
 - **Artwork System**: Content addressing, multi-tier caching, async decoding

@@ -122,6 +122,61 @@ REQUIRED_DEPS = [
 
 
 # =============================================================================
+# SUBLIMATION SOURCE
+# =============================================================================
+#
+# OUROBOROS's sort/search core is sublimation, which lives in the montauk repo
+# (montauk/sublimation). Rather than hard-link to a sibling checkout in the
+# developer's tree, the installer fetches it into /tmp and points the build at
+# it via -DMONTAUK_DIR. A sparse, shallow clone pulls only the sublimation/
+# subtree. See montauk/sublimation's README: https://github.com/wllclngn/montauk
+
+MONTAUK_REPO = "https://github.com/wllclngn/montauk.git"
+SUBLIMATION_MONTAUK_DIR = Path("/tmp/ouroboros-montauk")
+
+
+def ensure_sublimation() -> Path | None:
+    """Fetch sublimation (vendored in montauk) into /tmp; return the montauk dir.
+
+    Build-time source dependency, not a system package. Sparse-checks out only
+    montauk/sublimation so the clone stays small. Re-uses an existing /tmp clone
+    (refreshing it) when present.
+    """
+    marker = SUBLIMATION_MONTAUK_DIR / "sublimation" / "src" / "include" / "sublimation.h"
+
+    if marker.exists():
+        log_info(f"sublimation source present, refreshing: {SUBLIMATION_MONTAUK_DIR}")
+        if run_cmd(["git", "-C", str(SUBLIMATION_MONTAUK_DIR), "pull", "--ff-only"]) == 0 and marker.exists():
+            return SUBLIMATION_MONTAUK_DIR
+        # Refresh failed (e.g. shallow/sparse state); fall through to a clean clone.
+        shutil.rmtree(SUBLIMATION_MONTAUK_DIR, ignore_errors=True)
+
+    log_info(f"Fetching sublimation (montauk) into {SUBLIMATION_MONTAUK_DIR}")
+    if SUBLIMATION_MONTAUK_DIR.exists():
+        shutil.rmtree(SUBLIMATION_MONTAUK_DIR, ignore_errors=True)
+
+    # Sparse, shallow: only the sublimation/ subtree, latest commit.
+    ok = run_cmd(["git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
+                  MONTAUK_REPO, str(SUBLIMATION_MONTAUK_DIR)]) == 0
+    if ok:
+        ok = run_cmd(["git", "-C", str(SUBLIMATION_MONTAUK_DIR),
+                      "sparse-checkout", "set", "sublimation"]) == 0
+
+    if not ok or not marker.exists():
+        # Fall back to a plain shallow clone if sparse/filter is unsupported.
+        shutil.rmtree(SUBLIMATION_MONTAUK_DIR, ignore_errors=True)
+        if run_cmd(["git", "clone", "--depth", "1", MONTAUK_REPO,
+                    str(SUBLIMATION_MONTAUK_DIR)]) != 0:
+            log_error("Failed to fetch sublimation (montauk). Is git available / network up?")
+            return None
+
+    if not marker.exists():
+        log_error(f"sublimation not found under {SUBLIMATION_MONTAUK_DIR} after clone")
+        return None
+    return SUBLIMATION_MONTAUK_DIR
+
+
+# =============================================================================
 # COMMANDS
 # =============================================================================
 
@@ -131,7 +186,14 @@ def cmd_build(args, source_dir: Path) -> bool:
 
     log_info("CONFIGURING BUILD")
 
-    cmake_args = ["cmake", "-S", str(source_dir), "-B", str(build_dir)]
+    # Fetch sublimation (the sort/search core) into /tmp so the build is not tied
+    # to a sibling montauk checkout in the developer's tree.
+    montauk_dir = ensure_sublimation()
+    if montauk_dir is None:
+        return False
+
+    cmake_args = ["cmake", "-S", str(source_dir), "-B", str(build_dir),
+                  f"-DMONTAUK_DIR={montauk_dir}"]
 
     if args.debug or args.debug_log:
         cmake_args.append("-DCMAKE_BUILD_TYPE=Debug")
@@ -250,15 +312,17 @@ def cmd_uninstall(args, source_dir: Path) -> bool:
 
 
 def cmd_test(args, source_dir: Path) -> bool:
-    """Run tests."""
+    """Run tests. Tests only exist in Debug builds, so force a Debug build."""
     build_dir = source_dir / "build"
 
     log_info("RUNNING TESTS")
 
-    if not (build_dir / "Makefile").exists():
-        log_info("Project not built. Building first...")
-        if not cmd_build(args, source_dir):
-            return False
+    # The test_* targets are gated to Debug builds (see CMakeLists.txt), so a
+    # Release build dir has nothing to run. Force Debug for the test command.
+    args.debug = True
+    log_info("Test build: Debug (required for the test suite)")
+    if not cmd_build(args, source_dir):
+        return False
 
     ret = run_cmd(["ctest", "--test-dir", str(build_dir), "--output-on-failure"])
 
@@ -300,9 +364,9 @@ Examples:
                        choices=["install", "build", "clean", "uninstall", "test"],
                        help="Command to run (default: install)")
     parser.add_argument("--debug", action="store_true",
-                       help="Build with debug symbols")
+                       help="Debug build: symbols, sanitizers, and the test suite (test_* + ctest)")
     parser.add_argument("--debug-log", action="store_true",
-                       help="Build with debug symbols and logging enabled")
+                       help="Debug build (incl. test suite) with logging enabled")
     parser.add_argument("--prefix", type=str, default=None,
                        help="Installation prefix (default: /usr/local)")
 

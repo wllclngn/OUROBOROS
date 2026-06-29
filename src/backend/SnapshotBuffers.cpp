@@ -1,6 +1,4 @@
 #include "backend/SnapshotBuffers.hpp"
-#include "util/Logger.hpp"
-#include <mutex>
 
 namespace ouroboros::backend {
 
@@ -27,45 +25,24 @@ model::Snapshot& SnapshotBuffers::back() {
 }
 
 void SnapshotBuffers::publish() {
-    // NOTE: This method is called by SnapshotPublisher::update which HOLDs a lock.
-    // However, to be absolutely safe against other potential callers,
-    // the caller (Publisher) MUST ensure mutual exclusion on the write side.
-    //
-    // The previous implementation did a dangerous copy: *back_ = *front_
-    // This overwrote any partial state if multiple threads were racing.
-    //
-    // The CORRECT fix here depends on SnapshotPublisher ensuring serialization.
-    // Assuming SnapshotPublisher::update is locked (it is), then 'publish'
-    // is safe from other producers.
-    //
-    // BUT, the copy back (*back_ = *front_) is still conceptually wrong for a
-    // true triple-buffer or history-based system, but for this "ping-pong"
-    // state accumulation, we MUST copy the valid state forward to keep the
-    // 'back' buffer up to date with what was just published.
-    //
-    // To fix the "race" mentioned in CONFLICTS.md:
-    // The issue was multiple producers. SnapshotPublisher::update uses a mutex,
-    // so `back()` and `publish()` are serialized.
-    //
-    // We just need to ensure the atomic swap is correct.
-
-    // LOGGING DISABLED: Called many times/second, creates I/O overhead
-    // util::Logger::debug("SnapshotBuffers::publish - START");
+    // Caller (SnapshotPublisher::update/publish) holds the writer mutex, so this
+    // runs single-writer; readers race only on the atomic front_ load in front().
+    // The three steps below bump seq, atomically swap front, then re-sync the new
+    // back buffer to the just-published state so the next producer accumulates
+    // from the latest. seq is incremented before the swap, keeping it monotonic
+    // for readers. See the invariant in SnapshotPublisher.hpp.
 
     // 1. Update sequence
     back_->seq = front_.load(std::memory_order_acquire)->seq + 1;
-    // util::Logger::debug("SnapshotBuffers::publish - Updated seq to " + std::to_string(back_->seq));
 
     // 2. Swap pointers
     auto* old_front = front_.load(std::memory_order_relaxed);
     front_.store(back_, std::memory_order_release);
     back_ = old_front;
-    // util::Logger::debug("SnapshotBuffers::publish - Swapped front/back buffers");
 
-    // 3. CRITICAL: Re-sync the NEW back buffer with the NEW front buffer
-    // This ensures the next producer starts with the latest state.
+    // 3. Re-sync the NEW back buffer with the NEW front buffer so the next
+    // producer starts from the latest published state.
     *back_ = *front_.load(std::memory_order_acquire);
-    // util::Logger::debug("SnapshotBuffers::publish - COMPLETE (seq=" + std::to_string(back_->seq) + ")");
 }
 
 const model::Snapshot& SnapshotBuffers::front() const {

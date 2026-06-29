@@ -13,6 +13,22 @@
 
 namespace ouroboros::ui::widgets {
 
+namespace {
+// Base codec name for a track (DSD encodes its rate multiple, e.g. "DSD2").
+// One source for the three places NowPlaying prints the format.
+std::string codec_name(const model::Track& track) {
+    switch (track.format) {
+        case model::AudioFormat::MP3:  return "MP3";
+        case model::AudioFormat::FLAC: return "FLAC";
+        case model::AudioFormat::OGG:  return "OGG";
+        case model::AudioFormat::WAV:  return "WAV";
+        case model::AudioFormat::M4A:  return "M4A";
+        case model::AudioFormat::DSD:  return "DSD" + std::to_string(track.sample_rate / 44100);
+        default:                       return "Unknown";
+    }
+}
+}  // namespace
+
 void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap) {
     const auto& uc = config::ui_config();
     // Cache the actual rect for dynamic calculations
@@ -73,19 +89,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
     // Prepare Format info early to determine layout
     std::ostringstream format_line;
-
-    // Format type
-    switch (track.format) {
-        case model::AudioFormat::MP3:  format_line << "MP3"; break;
-        case model::AudioFormat::FLAC: format_line << "FLAC"; break;
-        case model::AudioFormat::OGG:  format_line << "OGG"; break;
-        case model::AudioFormat::WAV:  format_line << "WAV"; break;
-        case model::AudioFormat::M4A:  format_line << "M4A"; break;
-        case model::AudioFormat::DSD:
-            format_line << "DSD" << (track.sample_rate / 44100);
-            break;
-        default: format_line << "Unknown"; break;
-    }
+    format_line << codec_name(track);
 
     // Sample rate
     if (track.sample_rate > 0) {
@@ -111,53 +115,11 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
 
     std::string format_str = format_line.str();
 
-    // Calculate layout: artwork takes most space, metadata + statusline at bottom
-    // Reserve 3 lines at bottom for track info, format, and statusline
-    int metadata_lines = 3;
-
-    // Calculate artwork dimensions to align text with artwork left edge
+    // Artwork geometry (shared with render_image_if_needed so they never drift)
     int content_width = content_rect.width;
     int content_height = content_rect.height;
-    int available_artwork_height = content_height - metadata_lines;
-
-    // ALGORITHM FOR SYMMETRY WITH PADDING:
-    // Reserve 1 col padding each side -> 2 cols total
-    // 1. Start with width constraint
-    int art_cols = content_width - 2;
-    if (art_cols < 0) art_cols = 0;
-    int art_rows = art_cols / 2;
-
-    // 2. Apply height constraint
-    if (art_rows > available_artwork_height) {
-        art_rows = available_artwork_height;
-        art_cols = art_rows * 2;
-        // Adjust parity to match content_width for symmetric padding
-        // If (width - cols) is odd, padding is asymmetric.
-        // We want (width - cols) to be even.
-        if ((content_width - art_cols) % 2 != 0) {
-            // Adjust cols. We must NOT exceed content_width - 2.
-            // Since we reduced from height, art_cols is likely smaller than width-2.
-            // Incrementing keeps us safe usually, unless we hit the limit.
-            if (art_cols + 1 <= content_width - 2) {
-                art_cols++;
-            } else {
-                art_cols--;
-            }
-        }
-    }
-
-    if (art_cols < 4) art_cols = 4;
-    art_rows = art_cols / 2;
-
-    // 3. Split padding evenly (now guaranteed symmetric due to matching parity)
-    int total_padding = content_width - art_cols;
-    int horizontal_padding = total_padding / 2;
-    // art_rows calculated above is correct
-
-    ouroboros::util::Logger::debug("NowPlaying::render - content_width=" + std::to_string(content_width) +
-                                   " art_cols=" + std::to_string(art_cols) +
-                                   " total_padding=" + std::to_string(total_padding) +
-                                   " horizontal_padding=" + std::to_string(horizontal_padding));
+    int art_cols = 0, art_rows = 0, horizontal_padding = 0;
+    compact_art_geometry(content_width, content_height, art_cols, art_rows, horizontal_padding);
 
     // Position text anchored to BOTTOM
     // This ensures consistent bottom padding (0) and keeps statusline fixed
@@ -229,19 +191,7 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
         };
 
         // Codec
-        switch (track.format) {
-            case model::AudioFormat::MP3:  draw_fmt("MP3", uc.nowplaying_info); break;
-            case model::AudioFormat::FLAC: draw_fmt("FLAC", uc.nowplaying_info); break;
-            case model::AudioFormat::OGG:  draw_fmt("OGG", uc.nowplaying_info); break;
-            case model::AudioFormat::WAV:  draw_fmt("WAV", uc.nowplaying_info); break;
-            case model::AudioFormat::M4A:  draw_fmt("M4A", uc.nowplaying_info); break;
-            case model::AudioFormat::DSD: {
-                std::string dsd_name = "DSD" + std::to_string(track.sample_rate / 44100);
-                draw_fmt(dsd_name.c_str(), uc.nowplaying_info);
-                break;
-            }
-            default: draw_fmt("Unknown", uc.nowplaying_info); break;
-        }
+        draw_fmt(codec_name(track), uc.nowplaying_info);
         if (track.sample_rate > 0) {
             draw_fmt(" • ", uc.separator);
             draw_fmt(std::to_string(track.sample_rate / 1000) + "kHz", uc.nowplaying_info);
@@ -325,6 +275,37 @@ void NowPlaying::render(Canvas& canvas, const LayoutRect& rect, const model::Sna
     draw_status_part(snap.player.shuffle_enabled ? "ON" : "OFF", uc.nowplaying_info);
 }
 
+void NowPlaying::compact_art_geometry(int content_width, int content_height,
+                                      int& art_cols, int& art_rows,
+                                      int& horizontal_padding) {
+    // Reserve 3 lines at the bottom for track info, format and statusline.
+    constexpr int metadata_lines = 3;
+    int available_artwork_height = content_height - metadata_lines;
+
+    // Start from the width constraint (1 col padding each side), square it,
+    // then cap by height; keep (width - cols) even so padding stays symmetric.
+    art_cols = content_width - 2;
+    if (art_cols < 0) art_cols = 0;
+    art_rows = art_cols / 2;
+
+    if (art_rows > available_artwork_height) {
+        art_rows = available_artwork_height;
+        art_cols = art_rows * 2;
+        if ((content_width - art_cols) % 2 != 0) {
+            if (art_cols + 1 <= content_width - 2) {
+                art_cols++;
+            } else {
+                art_cols--;
+            }
+        }
+    }
+
+    if (art_cols < 4) art_cols = 4;
+    art_rows = art_cols / 2;
+
+    horizontal_padding = (content_width - art_cols) / 2;
+}
+
 void NowPlaying::full_art_geometry(int content_width, int content_height,
                                    int& art_cols, int& art_rows) {
     // Artwork fills the panel height minus the spectrogram strip reserved
@@ -344,8 +325,10 @@ void NowPlaying::full_art_geometry(int content_width, int content_height,
 }
 
 int NowPlaying::spectro_strip_height(int content_height) {
-    // Bottom strip below the artwork: a fifth of the panel, at least 4 rows
-    return std::max(4, content_height / 5);
+    // Bottom strip below the artwork: a quarter of the panel, at least 4 rows.
+    // Enough for the full-width waterfall to have presence without starving the
+    // album artwork of vertical space.
+    return std::max(4, content_height / 4);
 }
 
 void NowPlaying::render_full(Canvas& canvas, const LayoutRect& content_rect,
@@ -366,11 +349,11 @@ void NowPlaying::render_full(Canvas& canvas, const LayoutRect& content_rect,
         canvas.draw_text(col_x, row_y, truncate_text(text, col_w), s);
     };
 
-    // Stacked metadata: label on its own line, value indented beneath
+    // Stacked metadata: label on its own line, value flush beneath it
     auto meta_row = [&](const std::string& label, const std::string& value, Style value_style) {
         if (y + 1 >= content_rect.y + content_rect.height) return;
         canvas.draw_text(col_x, y++, truncate_text(label + ":", col_w), uc.muted);
-        canvas.draw_text(col_x + 2, y++, truncate_text(value, col_w - 2), value_style);
+        canvas.draw_text(col_x, y++, truncate_text(value, col_w), value_style);
     };
 
     meta_row("SONG", !track.title.empty() ? track.title : "Untitled", uc.title);
@@ -391,20 +374,10 @@ void NowPlaying::render_full(Canvas& canvas, const LayoutRect& content_rect,
     if (!track.date.empty())   meta_row("YEAR", track.date, uc.album);
     if (!track.genre.empty())  meta_row("GENRE", track.genre, uc.nowplaying_info);
 
-    // CODEC row: format, sample rate, bit depth, channels
+    // Format: CODEC (format, sample rate, bit depth, channels), BITRATE
     {
         std::ostringstream codec;
-        switch (track.format) {
-            case model::AudioFormat::MP3:  codec << "MP3"; break;
-            case model::AudioFormat::FLAC: codec << "FLAC"; break;
-            case model::AudioFormat::OGG:  codec << "OGG"; break;
-            case model::AudioFormat::WAV:  codec << "WAV"; break;
-            case model::AudioFormat::M4A:  codec << "M4A"; break;
-            case model::AudioFormat::DSD:
-                codec << "DSD" << (track.sample_rate / 44100);
-                break;
-            default: codec << "Unknown"; break;
-        }
+        codec << codec_name(track);
         if (track.sample_rate > 0) codec << " " << (track.sample_rate / 1000) << "kHz";
         if (track.bit_depth > 0)   codec << " " << track.bit_depth << "bit";
         if (track.channels == 2)   codec << " Stereo";
@@ -416,17 +389,22 @@ void NowPlaying::render_full(Canvas& canvas, const LayoutRect& content_rect,
         meta_row("BITRATE", std::to_string(track.bitrate) + "kbps", uc.nowplaying_info);
     }
 
-    std::string repeat_str;
-    switch (snap.player.repeat_mode) {
-        case model::RepeatMode::Off:  repeat_str = "OFF"; break;
-        case model::RepeatMode::One:  repeat_str = "ONE"; break;
-        case model::RepeatMode::All:  repeat_str = "ALL"; break;
-        default: std::unreachable();
-    }
-    meta_row("REPEAT", repeat_str, uc.nowplaying_info);
-    meta_row("SHUFFLE", snap.player.shuffle_enabled ? "ON" : "OFF", uc.nowplaying_info);
+    y++;  // blank before the playback block
 
-    y++;  // blank line before transport block
+    // Playback modes, one compact line just above the progress bar (playback state,
+    // not track metadata). Clamped to col_w so it never bleeds into the queue.
+    if (y < content_rect.y + content_rect.height) {
+        const char* repeat_str = "OFF";
+        switch (snap.player.repeat_mode) {
+            case model::RepeatMode::Off:  repeat_str = "OFF"; break;
+            case model::RepeatMode::One:  repeat_str = "ONE"; break;
+            case model::RepeatMode::All:  repeat_str = "ALL"; break;
+            default: std::unreachable();
+        }
+        std::string modes = std::string("REPEAT: ") + repeat_str +
+                            "   SHUFFLE: " + (snap.player.shuffle_enabled ? "ON" : "OFF");
+        draw_row(y++, modes, uc.nowplaying_info);
+    }
 
     // PROGRESS: bar, then state icon with times
     if (y + 2 < content_rect.y + content_rect.height) {
@@ -505,32 +483,8 @@ void NowPlaying::render_image_if_needed(const LayoutRect& widget_rect, bool /*fo
         full_art_geometry(content_width, content_height, art_cols, art_rows);
         art_x = content_x + 1;
     } else {
-        // Calculate layout: artwork takes most space, metadata + statusline at bottom
-        int metadata_lines = 3;
-        int available_artwork_height = content_height - metadata_lines;
-
-        // ALGORITHM FOR SYMMETRY WITH PADDING
-        art_cols = content_width - 2;
-        if (art_cols < 0) art_cols = 0;
-        art_rows = art_cols / 2;
-
-        if (art_rows > available_artwork_height) {
-            art_rows = available_artwork_height;
-            art_cols = art_rows * 2;
-            if ((content_width - art_cols) % 2 != 0) {
-                if (art_cols + 1 <= content_width - 2) {
-                    art_cols++;
-                } else {
-                    art_cols--;
-                }
-            }
-        }
-
-        if (art_cols < 4) art_cols = 4;
-        art_rows = art_cols / 2;
-
+        compact_art_geometry(content_width, content_height, art_cols, art_rows, horizontal_padding);
         total_padding = content_width - art_cols;
-        horizontal_padding = total_padding / 2;
         art_x = content_x + horizontal_padding;
     }
 

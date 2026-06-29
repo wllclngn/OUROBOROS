@@ -185,9 +185,14 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) {
     try {
         std::filesystem::create_directories(cache_path.parent_path());
 
-        std::ofstream out(cache_path, std::ios::binary);
+        // Write to a temp file then atomically rename, so a partial/failed write
+        // (disk full, I/O error) never corrupts the live cache.
+        std::filesystem::path tmp_path = cache_path;
+        tmp_path += ".tmp";
+
+        std::ofstream out(tmp_path, std::ios::binary | std::ios::trunc);
         if (!out) {
-            util::Logger::error("ArtworkCache: Failed to open cache file for writing: " + cache_path.string());
+            util::Logger::error("ArtworkCache: Failed to open temp cache file for writing: " + tmp_path.string());
             return false;
         }
 
@@ -263,7 +268,28 @@ bool ArtworkCache::save(const std::filesystem::path& cache_path) {
             out.write(hash.data(), hash_len);
         }
 
-        dirty_ = false;  // Mark as clean after successful save
+        // Verify every write landed before committing. A failed stream here
+        // (e.g. ENOSPC) means the temp is incomplete -- discard it and keep the
+        // existing cache untouched (do NOT clear dirty_, so a later save retries).
+        out.flush();
+        if (!out.good()) {
+            util::Logger::error("ArtworkCache: Write failed (disk full?), discarding temp; cache left intact");
+            out.close();
+            std::error_code ec;
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+        out.close();
+
+        std::error_code ec;
+        std::filesystem::rename(tmp_path, cache_path, ec);
+        if (ec) {
+            util::Logger::error("ArtworkCache: Failed to commit cache (rename): " + ec.message());
+            std::filesystem::remove(tmp_path, ec);
+            return false;
+        }
+
+        dirty_ = false;  // Mark as clean only after a fully-written, committed file
         util::Logger::info("ArtworkCache: Saved " + std::to_string(count) + " entries, " +
                           std::to_string(dir_hash_count) + " dirs, " +
                           std::to_string(track_hash_count) + " unique tracks to " + cache_path.string());
@@ -291,17 +317,23 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             return false;
         }
 
+        // Upper bound for any count/length read from the file: nothing inside can
+        // exceed the file's byte size. Guards against a corrupt length triggering
+        // a huge allocation or a runaway loop.
+        const uint64_t file_size = std::filesystem::file_size(cache_path);
+        auto bounded = [file_size](uint64_t n) { return n <= file_size; };
+
         // Read and validate header
         uint64_t magic;
         uint32_t version;
         in.read(reinterpret_cast<char*>(&magic), sizeof(magic));
-        if (magic != CACHE_MAGIC) {
+        if (!in || magic != CACHE_MAGIC) {
             util::Logger::error("ArtworkCache: Invalid cache magic number");
             return false;
         }
 
         in.read(reinterpret_cast<char*>(&version), sizeof(version));
-        if (version != CACHE_VERSION) {
+        if (!in || version != CACHE_VERSION) {
             util::Logger::warn("ArtworkCache: Cache version mismatch (file=" + std::to_string(version) +
                               ", expected=" + std::to_string(CACHE_VERSION) + "), will rebuild");
             return false;
@@ -310,22 +342,38 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
         // Read entry count
         uint64_t count;
         in.read(reinterpret_cast<char*>(&count), sizeof(count));
+        if (!in || !bounded(count)) {
+            util::Logger::error("ArtworkCache: Corrupt entry count, will rebuild");
+            return false;
+        }
 
         std::lock_guard<std::mutex> lock(mutex_);
         cache_.clear();
         cache_.reserve(count);
+
+        // On any corruption mid-parse, abandon the partial load and rebuild.
+        auto corrupt = [&](const char* what) {
+            util::Logger::error(std::string("ArtworkCache: Corrupt cache (") + what + "), will rebuild");
+            cache_.clear();
+            verified_tracks_.clear();
+            track_to_hash_.clear();
+            dir_to_hash_.clear();
+            return false;
+        };
 
         // Read each entry
         for (uint64_t i = 0; i < count; ++i) {
             // Hash
             uint32_t hash_len;
             in.read(reinterpret_cast<char*>(&hash_len), sizeof(hash_len));
+            if (!in || !bounded(hash_len)) return corrupt("entry hash length");
             std::string hash(hash_len, '\0');
             in.read(hash.data(), hash_len);
 
             // MIME type
             uint32_t mime_len;
             in.read(reinterpret_cast<char*>(&mime_len), sizeof(mime_len));
+            if (!in || !bounded(mime_len)) return corrupt("entry mime length");
             std::string mime_type;
             if (mime_len > 0) {
                 mime_type.resize(mime_len);
@@ -335,6 +383,7 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             // Source directory
             uint32_t dir_len;
             in.read(reinterpret_cast<char*>(&dir_len), sizeof(dir_len));
+            if (!in || !bounded(dir_len)) return corrupt("entry dir length");
             std::string source_dir;
             if (dir_len > 0) {
                 source_dir.resize(dir_len);
@@ -344,12 +393,14 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
             // Artwork data
             uint64_t data_len;
             in.read(reinterpret_cast<char*>(&data_len), sizeof(data_len));
+            if (!in || !bounded(data_len)) return corrupt("entry data length");
             std::vector<uint8_t> data(data_len);
             in.read(reinterpret_cast<char*>(data.data()), data_len);
 
             // Ref count (read as uint64_t for portability, but ignore - reset to 0 at startup)
             uint64_t ref_count_ignored;
             in.read(reinterpret_cast<char*>(&ref_count_ignored), sizeof(ref_count_ignored));
+            if (!in) return corrupt("entry truncated");
 
             // Store entry with ref_count=0 (no LRU entries reference it yet)
             cache_[hash] = RawArtworkEntry{std::move(data), std::move(mime_type), source_dir, 0};
@@ -359,9 +410,11 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
         verified_tracks_.clear();
         uint64_t verified_count;
         in.read(reinterpret_cast<char*>(&verified_count), sizeof(verified_count));
+        if (!in || !bounded(verified_count)) return corrupt("verified count");
         for (uint64_t i = 0; i < verified_count; ++i) {
             uint32_t path_len;
             in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+            if (!in || !bounded(path_len)) return corrupt("verified path length");
             std::string path(path_len, '\0');
             in.read(path.data(), path_len);
             verified_tracks_.insert(std::move(path));
@@ -371,13 +424,16 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
         track_to_hash_.clear();
         uint64_t track_hash_count;
         in.read(reinterpret_cast<char*>(&track_hash_count), sizeof(track_hash_count));
+        if (!in || !bounded(track_hash_count)) return corrupt("track-hash count");
         for (uint64_t i = 0; i < track_hash_count; ++i) {
             uint32_t path_len;
             in.read(reinterpret_cast<char*>(&path_len), sizeof(path_len));
+            if (!in || !bounded(path_len)) return corrupt("track-hash path length");
             std::string path(path_len, '\0');
             in.read(path.data(), path_len);
             uint32_t hash_len;
             in.read(reinterpret_cast<char*>(&hash_len), sizeof(hash_len));
+            if (!in || !bounded(hash_len)) return corrupt("track-hash hash length");
             std::string hash(hash_len, '\0');
             in.read(hash.data(), hash_len);
             track_to_hash_[std::move(path)] = std::move(hash);
@@ -387,13 +443,16 @@ bool ArtworkCache::load(const std::filesystem::path& cache_path) {
         dir_to_hash_.clear();
         uint64_t dir_hash_count;
         in.read(reinterpret_cast<char*>(&dir_hash_count), sizeof(dir_hash_count));
+        if (!in || !bounded(dir_hash_count)) return corrupt("dir-hash count");
         for (uint64_t i = 0; i < dir_hash_count; ++i) {
             uint32_t dir_len;
             in.read(reinterpret_cast<char*>(&dir_len), sizeof(dir_len));
+            if (!in || !bounded(dir_len)) return corrupt("dir-hash dir length");
             std::string dir(dir_len, '\0');
             in.read(dir.data(), dir_len);
             uint32_t hash_len;
             in.read(reinterpret_cast<char*>(&hash_len), sizeof(hash_len));
+            if (!in || !bounded(hash_len)) return corrupt("dir-hash hash length");
             std::string hash(hash_len, '\0');
             in.read(hash.data(), hash_len);
             dir_to_hash_[std::move(dir)] = std::move(hash);

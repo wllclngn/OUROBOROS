@@ -190,7 +190,7 @@ void HelpOverlay::build_content() {
     blank();
 
     subheading("Algorithms");
-    kv("TimSort",           "Adaptive merge sort. O(n) best, O(n log n) worst.");
+    kv("sublimation",       "Flow-model sort core (montauk in-tree). Library/album ordering.");
     kv("Boyer-Moore",       "Sublinear search O(n/m). <5ms per keystroke.");
     kv("SHA-256",           "FIPS 180-4. Content-addressed artwork storage.");
     kv("FNV-1a",            "Fast hash for lookups. Adaptive sampling >65KB.");

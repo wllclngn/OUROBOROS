@@ -17,11 +17,13 @@ This document provides a comprehensive technical deep-dive into OUROBOROS's arch
 9. [Atomic Slot System](#atomic-slot-system)
 10. [ArtworkWindow Coordinator](#artworkwindow-coordinator)
 11. [Scattered Album Detection & Merging](#scattered-album-detection--merging)
-12. [Unicode Support](#unicode-support)
-13. [Performance Characteristics](#performance-characteristics)
-14. [Security](#security)
-15. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
-16. [Project Structure](#project-structure)
+12. [Now Playing View](#now-playing-view)
+13. [Queue: Two Stacks Model](#queue-two-stacks-model)
+14. [Unicode Support](#unicode-support)
+15. [Performance Characteristics](#performance-characteristics)
+16. [Security](#security)
+17. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
+18. [Project Structure](#project-structure)
 
 ---
 
@@ -254,6 +256,14 @@ alignas(64) std::atomic<size_t> total_consumed_frames_{0};  // Position tracking
 - iTunes-style metadata extraction
 - Accurate seeking via FFmpeg's timestamp API
 
+**DSDDecoder** (`src/audio/DSDDecoder.cpp`):
+- DSD/DSF (1-bit Direct Stream Digital) playback via a custom decimation engine --
+  the 1-bit DSD bitstream is low-pass filtered and decimated down to PCM for the
+  PipeWire path (DSD64 -> 352.8 kHz source rate, etc.)
+- FFmpeg supplies the container/metadata; the decimation is in-house
+- The largest single decoder (~880 LOC) because the filter and block handling are
+  hand-rolled
+
 ### PipeWire Integration
 
 **Native PipeWire Output** (`src/audio/PipeWireOutput.cpp`):
@@ -360,12 +370,23 @@ syscall(SYS_getdents64, fd, buffer, BUFFER_SIZE);
 
 Intelligent cache invalidation with three validation tiers:
 
-#### TIER 0: Tree Hash Validation -- O(1)
+#### TIER 0: Membership + Count Validation -- O(files)
 
-- Concatenates all file paths, computes SHA-256 once
-- Truncates to `uint64_t` for quick equality check
-- **Cache hit**: Library loads in <100ms (no file I/O)
-- **Cache miss**: Proceeds to TIER 1
+- Single-pass `getdents64` walk of the configured directories, collecting the
+  audio-file list plus directory and file mtimes
+- The decision (`Library::classify_tier0`, factored out and unit-tested) is:
+  - **Addition** -- an on-disk file not in the cache (CountMismatch)
+  - **In-place edit** -- a cached file whose on-disk mtime is newer than the
+    cached mtime (MetadataMismatch); this catches a retag, which leaves the path
+    and count unchanged
+  - **Removal** -- a cached file gone from a directory that was actually scanned
+    (MetadataMismatch); a directory absent from the scan is an unmounted drive,
+    not a deletion, so the cumulative cache keeps those entries
+  - otherwise **Valid**
+- Both CountMismatch and MetadataMismatch route straight to the incremental
+  reparse (skipping TIER 1, whose directory-mtime check cannot see an in-place edit)
+- **Cache hit**: Library loads from cache with no metadata parsing
+- **Cache miss**: Proceeds to the incremental scan, reparsing only changed files
 
 #### TIER 1: Directory-Level Dirty Detection -- O(directories)
 
@@ -395,6 +416,13 @@ Intelligent cache invalidation with three validation tiers:
 - **FLAC/OGG**: Vorbis comments via libsndfile
 - **WAV**: Metadata via libsndfile
 
+**Genre normalization**: ID3 stores genre either as a string or as a legacy
+numeric reference into the ID3v1 genre table (`(52)` or bare `52`). `decode_genre()`
+in `MetadataParser.cpp` resolves these at parse time -- `(52)` -> "Electronic",
+honoring an ID3v2.3 refinement string when present (`(52)Ambient` -> "Ambient") and
+passing non-numeric values through unchanged. Applied in the post-parse step so
+every format path benefits.
+
 **Parallel Parsing**:
 - Hardware-aware thread pool (std::thread::hardware_concurrency)
 - Lock-free work distribution with atomic counters
@@ -412,93 +440,65 @@ Intelligent cache invalidation with three validation tiers:
 
 ## Advanced Algorithms
 
-### PowerSort Implementation
+### Sorting: sublimation
 
-**File**: `include/util/TimSort.hpp`
+**Files**: `include/util/SortDispatch.hpp`, `src/util/SortDispatch.cpp`, `include/util/SortKeys.hpp`
 
-OUROBOROS implements PowerSort (Munro & Wild 2018), the merge policy adopted by CPython 3.11+ as a drop-in improvement over classic TimSort. It replaces TimSort's ad-hoc stack invariant heuristic with a provably near-optimal merge tree.
+OUROBOROS sorts through **sublimation** -- a flow-model sort that routes by disorder,
+built in-tree from its permanent home in the montauk checkout (`MONTAUK_DIR/sublimation`,
+not copied here). It is the sort everywhere the library and album views are ordered;
+there is no second backend and no fallback. For the full design, see
+montauk/sublimation's README: https://github.com/wllclngn/montauk
 
-#### PowerSort Merge Policy
+#### How OUROBOROS uses it
 
-The `powerloop()` function computes the depth in a conceptual nearly-optimal binary merge tree for the boundary between two adjacent runs:
+- A thin typed adapter (`SortDispatch`) wraps sublimation's C entry points:
+  `sort_by_key_{f32,u32,i32}` over `sublimation_pack_sort_*` and `sort_by_string`
+  over `sublimation_strings_indices`. Everything is index-permutation -- the adapter
+  reorders a `uint32_t` index array; Track and AlbumGroup payloads are never moved
+  during the sort, only gathered once at the end.
+- sublimation's string sort is byte-order, single-key and unstable, while the
+  library/album orderings are multi-key ICU comparisons (artist, then date/year, then
+  directory/title, with case-insensitive prefix-stripped artist keys). The bridge is a
+  **precomputed composite key** (`SortKeys.hpp`): `fold_case(artist_key)` + separators
+  + the remaining fields (zero-padded so byte order equals numeric order). `fold_case`
+  makes the artist component sort exactly as `case_insensitive_compare` would -- UTF-8
+  byte order equals Unicode code-point order, which equals the UTF-16 code-unit order
+  ICU's compare uses below the surrogate range. A unit test (`test_sort`) asserts the
+  composite-key order matches the old ICU comparator exactly.
 
-```cpp
-// s1: start of left run, n1: left length, n2: right length, n: total
-int powerloop(size_t s1, size_t n1, size_t n2, size_t n) {
-    int result = 0;
-    size_t a = 2 * s1 + n1;        // doubled midpoint of left run
-    size_t b = a + n1 + n2;         // doubled midpoint of right run
-    for (;;) {
-        ++result;
-        if (a >= n) { a -= n; b -= n; }
-        else if (b >= n) break;     // bits differ: this is the power
-        a <<= 1; b <<= 1;
-    }
-    return result;
-}
-```
+#### Why it replaced the in-tree PowerSort/TimSort
 
-When a new run is found, runs with power >= the new boundary's power are merged first. This produces a merge order that is provably within O(n) comparisons of optimal.
+The previous sort was a parallel PowerSort (`TimSort.hpp`, ~700 LOC, retired in v4.0.0).
+A head-to-head at a real library size (46K tracks) measured sublimation at **~2x** the
+throughput of the multi-threaded parallel TimSort -- single-threaded sublimation winning
+because the parallel TimSort's thread-spawn overhead dominates at this N. Precomputing
+the sort keys once is also O(n) ICU work versus the comparator's O(n log n) re-folding.
 
-#### Galloping Mode
+**Library Sorting Order**: Artist -> Date -> (directory) -> Track
 
-When one run dominates during a merge (many consecutive elements from the same side), the algorithm switches from one-at-a-time comparison to **exponential search** (galloping):
+The per-album track-number sort (tiny N) uses `std::stable_sort`; the per-frame album
+distance sort uses `std::sort`. sublimation owns the library-scale orderings.
 
-- **`gallop_left`**: Find leftmost insertion point via exponential search + binary search
-- **`gallop_right`**: Find rightmost insertion point
-- **Adaptive threshold**: `min_gallop` starts at 7, decreases when galloping succeeds (encouraging it), increases when it fails (discouraging it)
-- **Pre-merge trimming**: Skip elements already in position via `gallop_right`/`gallop_left` before merging
+### Boyer-Moore-Horspool String Search (sublimation)
 
-#### Merge Operations
-
-- **`merge_lo`**: Left run smaller -- copy left to temp, merge left-to-right
-- **`merge_hi`**: Right run smaller -- copy right to temp, merge right-to-left
-- Both use `goto`-based epilogue for the one-element-remaining fast path (matching CPython's structure)
+The global search filter runs on sublimation's Boyer-Moore-Horspool substring
+engine (`sublimation_text.h`, wrapped by `sublimation::BMH`), the same in-tree core
+as the sort -- OUROBOROS's own hand-rolled BMH was retired in v4.0.0 in favor of it.
+The SearchBox compiles the query once and tests it against each track's artist,
+album and title (and each album's normalized title/artist) on every keystroke.
 
 #### Characteristics
 
-- **O(n) best case**: Exploits existing order in pre-sorted music libraries
-- **O(n log n) worst case**: Guaranteed performance ceiling
-- **Stable sort**: Preserves relative order of equal elements
-- **Adaptive**: Automatically detects natural runs (already-sorted sequences)
-- Binary insertion sort for small runs (<32 elements)
-- Automatic run reversal when descending order detected
+- **Average case**: O(n/m) -- sublinear (a fixed 256-byte bad-character table)
+- **Worst case**: O(n*m) -- rare in practice
+- **Space**: O(1) -- no heap allocation; compile-once, search-many
+- **ASCII case-insensitive** match; literal substring (not regex)
 
-#### Parallel PowerSort
-
-`parallel_timsort` divides data into chunks, sorts each in parallel with `timsort`, then merges via parallel tree reduction:
-
-1. **Phase 1**: N worker threads each sort one chunk with PowerSort
-2. **Phase 2**: Tree-reduction merge -- chunk pairs merged in parallel at each level
-
-#### Why It Matters
-
-Real-world music libraries are often partially sorted (albums grouped together, artists alphabetized). PowerSort outperforms std::sort by detecting and exploiting this existing order.
-
-**Library Sorting Order**: Artist -> Year -> Track
-
-### Boyer-Moore-Horspool String Search
-
-**File**: `include/util/BoyerMoore.hpp`
-
-Fast substring matching for global search.
-
-#### Performance
-
-- **Average case**: O(n/m) -- sublinear (2-3x faster than naive search)
-- **Worst case**: O(n*m) -- extremely rare in practice
-- **Space complexity**: O(1) -- fixed 256-byte alphabet table (no heap allocations)
-
-#### Implementation
-
-- Precomputed bad-character skip table
-- Right-to-left pattern matching
-- Case-sensitive and case-insensitive modes
-- Real-time filtering (updates on every keystroke)
-
-#### Real-World Impact
-
-Searching 10,000 tracks for "Radiohead" scans ~3,300 characters instead of ~1,000,000 (naive approach).
+sublimation also ships a Thompson NFA / RE2-lineage regex beside the substring
+engine; OUROBOROS uses the substring path (a music-library filter wants literal
+matching, and plain queries carry punctuation that regex metacharacters would
+misread).
 
 ### SHA-256 Content Addressing
 
@@ -1051,39 +1051,81 @@ for (auto& album : albums_) {
 }
 ```
 
-### Dual-Sort Strategy
+### Album Sort
 
-1. **PowerSort** first: Artist -> Year -> Title (primary sort)
-2. **stable_sort** second: Group scattered albums by title instead of artist
+Albums sort by a single composite key through sublimation: the primary field is the
+album title for scattered (compilation) albums and the artist otherwise, then the
+optional year, then the title. The scattered/unified branch and the key construction
+live in `sort_albums` (LibraryCollector); the composite key is built with
+`util::album_sort_key` and folded so byte order reproduces the ICU case-insensitive
+order, then sorted with one `sort_by_string` pass.
 
 ```cpp
-// First: PowerSort by artist/year/title
-ouroboros::util::timsort(albums_, [](const AlbumGroup& a, const AlbumGroup& b) {
-    int cmp = case_insensitive_compare(a.artist, b.artist);
-    if (cmp != 0) return cmp < 0;
-    if (sort_by_year) {
-        if (year_to_int(a.year) != year_to_int(b.year))
-            return year_to_int(a.year) < year_to_int(b.year);
-    }
-    return case_insensitive_compare(a.title, b.title) < 0;
-});
-
-// Second: stable_sort to group scattered albums by title
-std::stable_sort(albums_.begin(), albums_.end(), [&](const AlbumGroup& a, const AlbumGroup& b) {
-    bool a_scattered = title_count[a.normalized_title] > 1;
-    bool b_scattered = title_count[b.normalized_title] > 1;
-
-    // Scattered albums sort by title, others by artist
-    std::string key_a = a_scattered ? a.normalized_title : a.artist;
-    std::string key_b = b_scattered ? b.normalized_title : b.artist;
-
-    return case_insensitive_compare(key_a, key_b) < 0;
-});
+// Composite key per album; one byte-order sort via sublimation.
+std::string primary = g.is_scattered ? fold_case(g.normalized_title)
+                                      : fold_case(artist_key(g.artist));
+std::string year_field = sort_by_year ? zeropad(year_to_int(g.year), 5) : "";
+keys[i] = util::album_sort_key(primary, year_field, fold_case(g.normalized_title));
+// ... build identity indices, util::sort_by_string(ptrs, idx), gather.
 ```
 
 This groups all "Guardians of the Galaxy" tracks together while keeping regular albums sorted by artist.
 
 ---
+
+## Now Playing View
+
+A dedicated full-screen layout (toggled with `v`, keybind `toggle_now_playing_view`)
+for listening rather than browsing. The snapshot's `UIState.current_layout` is
+authoritative -- `"now_playing"` flips `Renderer::compute_layout` so the left panel
+becomes a full NowPlaying render and the right panel becomes the full-height queue.
+Browser and album-grid keys are inert in this layout; the help overlay still works
+and drops the artwork placement while open.
+
+The left panel renders artwork filling the panel height (minus a bottom strip),
+left-anchored, with a data column to its right: a full-width progress bar, the
+play/pause state and times, a VOLUME bar, then the labeled metadata block (SONG,
+TRACK nn/total, ALBUM, ARTIST, YEAR, GENRE, CODEC, BITRATE, REPEAT, SHUFFLE). The
+waterfall spectrogram occupies the full-width strip along the panel bottom.
+
+### Waterfall Spectrogram
+
+A live frequency-over-time waterfall, fed without touching the audio RT path:
+
+- **SpectroTap** (`include/audio/SpectroTap.hpp`) -- a lock-free seqlock. The
+  PipeWire `on_process` callback mirrors post-decode, pre-volume samples (mono-mixed)
+  into a ring; the UI thread reads the latest window with a sequence-counter retry
+  that rejects torn reads. No locks or allocations on either side.
+- **Fft** (`include/util/Fft.hpp`, `src/util/Fft.cpp`) -- an in-house iterative
+  radix-2 Cooley-Tukey FFT, 1024-point, with precomputed twiddle factors and
+  bit-reversal table so `transform()` allocates nothing. The frame pipeline is
+  Hann window -> FFT -> per-bin magnitude -> fold into ~64 log-frequency display
+  bins, dB-scaled against a fixed floor.
+- **SpectroWaterfall** (`src/ui/SpectroWaterfall.cpp`) -- a persistent RGBA buffer
+  that scrolls left one column per frame; the newest FFT column maps magnitude to a
+  fixed gradient. Emitted under a single fixed Kitty image id, re-transmitted in
+  place per frame via the /dev/shm path transport (no id churn, no terminal-side
+  data growth); `hide()` deletes the image and frees its pixels. Sixel/iTerm2
+  re-emit full frames; terminals without graphics fall back to block-character bars.
+  The waterfall stalls on pause and clears on track change.
+
+## Queue: Two Stacks Model
+
+The play queue is three parts -- `history` (played, oldest first), `current`
+(optional now-playing index) and `future` (upcoming, next at front) -- all indices
+into `LibraryState::tracks`. Enqueue pushes to `future`; Next pushes `current` to
+`history` and pops `future` (CSPRNG pick when shuffle is on, FIFO otherwise);
+Previous is deterministic, popping `history` back to `current`. Repeat-all recycles
+`history` into `future` when the queue drains.
+
+**JumpToQueueIndex** -- the interactive queue's `Enter` jumps playback to the track
+under the cursor. The handler flattens the queue to display order
+(history + current + future), then re-partitions around the target index: everything
+before becomes `history`, the target becomes `current`, everything after becomes
+`future`. Previous therefore walks back through the tracks that were skipped over.
+All queue mutations (enqueue, next, prev, jump, clear) serialize through
+`SnapshotPublisher::update()`'s mutex, so the re-partition is never torn against the
+playback collector's track-advance.
 
 ## Unicode Support
 
@@ -1121,12 +1163,12 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 | Operation | Complexity | Real-World Performance | Notes |
 |-----------|------------|----------------------|-------|
 | **Library Scan (10K tracks)** | O(n) | <500ms | Direct `getdents64` syscalls (2-3x faster than `std::filesystem`), 256KB batching |
-| **Cache TIER 0 Validation** | O(1) | <100ms | Single SHA-256 tree hash comparison |
+| **Cache TIER 0 Validation** | O(files) | <100ms | Path membership + count check, no hashing |
 | **Cache TIER 1 (dir scan)** | O(directories) | ~200ms | `getdents64` on directories only, `d_type` filtering |
 | **Cache TIER 2 (incremental)** | O(changed_files) | 500ms for 50 changes | Parallel metadata extraction (4-16 threads) |
 | **Snapshot Read** | O(1) | <1us | Lock-free atomic pointer load with acquire semantics |
 | **UI Render (30 FPS)** | O(widgets) | ~33ms/frame | Only redraws on state change, canvas diffing |
-| **PowerSort** | O(n) -- O(n log n) | ~10ms for 10K tracks | O(n) for pre-sorted data, galloping for unequal runs |
+| **sublimation sort** | flow-model | ~30ms for 46K tracks | Composite-key byte-order sort; ~2x the previous parallel TimSort |
 | **Boyer-Moore Search** | O(n/m) avg, O(nm) worst | ~1ms for 10K tracks | Sublinear: scans ~3,300 chars instead of 1M |
 | **SHA-256 Hash** | O(data_size) | ~1ms for 5MB JPEG | 512-bit chunks, 64 rounds per chunk |
 | **Artwork Cache Lookup** | O(1) | <1us | `unordered_map` with SHA-256 keys |
@@ -1201,7 +1243,7 @@ While shuffle randomness doesn't require cryptographic strength, using CSPRNG is
 ### Performance Discipline
 
 - **Profile-Guided**: Optimizations justified by real-world measurements
-- **Algorithm Choice**: Uses theoretically optimal algorithms (PowerSort for adaptive sort)
+- **Algorithm Choice**: Uses theoretically strong algorithms (sublimation flow-model sort/search)
 - **System-Level**: Drops to syscalls when standard library insufficient
 - **Cache Locality**: Hot paths use contiguous memory (vector over list)
 - **Zero-Copy**: Move semantics, shared_ptr, avoid unnecessary clones
@@ -1229,12 +1271,10 @@ ouroboros/
 │   ├── events/               # EventBus (publish-subscribe), Scheduler
 │   ├── model/                # Snapshot, Track, PlayerState data models
 │   ├── ui/                   # Terminal, Canvas, Renderer, widgets, FlexLayout, ArtworkWindow
-│   └── util/                 # PowerSort, BoyerMoore, DirectoryScanner, Logger, ImageDecoderPool
-├── include/                  # 51 header files (~3,798 lines) mirroring src/
-├── tests/                    # C++ test framework
-│   ├── framework/            # SimpleTest.hpp (custom test runner)
-│   ├── unit/                 # PowerSort, BoyerMoore, ArtworkHasher tests
-│   └── integration/          # Metadata pipeline tests
+│   └── util/                 # SortDispatch/SortKeys, Fft, ArtworkHasher, DirectoryScanner, Logger, ImageDecoderPool
+├── include/                  # header files mirroring src/
+├── tests/                    # C++ test framework (debug builds only, run via ctest)
+│   └── unit/                 # cache, queue, concurrency, genre, fft, sort suites
 ├── config/                   # Example configuration files
 │   └── ouroboros.toml.example
 ├── vendor/                   # Third-party libraries (stb_image, etc.)
@@ -1244,10 +1284,10 @@ ouroboros/
 
 ### Code Statistics
 
-- **Total Lines**: ~14,676 (10,878 implementation + 3,798 headers)
-- **Source Files**: 45 `.cpp` files
-- **Header Files**: 51 `.hpp` files
-- **Audio Decoders**: 4 (MP3, FLAC/WAV via libsndfile, OGG, M4A/AAC via FFmpeg)
+- **Total Lines**: ~16,500 C++ (excludes the in-tree sublimation C sources)
+- **Source Files**: 51 `.cpp` files
+- **Header Files**: 57 `.hpp` files
+- **Audio Decoders**: 5 (MP3, FLAC/WAV via libsndfile, OGG, M4A/AAC via FFmpeg, DSD/DSF custom decimation)
 - **Image Protocols**: 4 (Kitty, Sixel, iTerm2, Unicode blocks)
 - **UI Widgets**: 6 (Browser, Queue, NowPlaying, SearchBox, AlbumBrowser, HelpOverlay)
 - **Background Threads**: 4+ (Main, LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers)

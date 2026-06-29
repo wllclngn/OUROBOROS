@@ -6,11 +6,9 @@
 
 namespace audio {
 
-// ============================================================================
 // FIR filter coefficients for DSD-to-352.8kHz decimation
 // Equiripple (Remez) design, >96dB stopband, 0-50kHz passband, 176.4kHz+ stopband
 // Padded to multiples of 8 for byte-group processing
-// ============================================================================
 
 // DSD64 (2.8224 MHz -> 352.8 kHz, decimate by 8, advance 1 byte/sample)
 static constexpr int DSD64_GROUPS = 14;
@@ -430,9 +428,7 @@ static constexpr float DSD512_COEFFS[840] = {
      0.0000000000e+00f,  0.0000000000e+00f,  0.0000000000e+00f,  0.0000000000e+00f,
 };
 
-// ============================================================================
 // Implementation
-// ============================================================================
 
 DSDDecoder::DSDDecoder() = default;
 
@@ -543,9 +539,7 @@ void DSDDecoder::close() {
     residual_offset_ = 0;
 }
 
-// ============================================================================
 // DSF Header Parser
-// ============================================================================
 
 static uint32_t read_le32(FILE* f) {
     uint8_t buf[4];
@@ -650,9 +644,7 @@ bool DSDDecoder::parse_dsf_header() {
     return true;
 }
 
-// ============================================================================
 // Byte Lookup Table Construction
-// ============================================================================
 
 bool DSDDecoder::build_lut(const float* coeffs, int num_groups) {
     lut_.resize(num_groups);
@@ -677,9 +669,7 @@ bool DSDDecoder::build_lut(const float* coeffs, int num_groups) {
     return true;
 }
 
-// ============================================================================
 // Block I/O
-// ============================================================================
 
 bool DSDDecoder::read_next_block() {
     // DSF interleaves: [block_size bytes ch0][block_size bytes ch1][...]
@@ -711,9 +701,7 @@ bool DSDDecoder::read_next_block() {
     return block_output_frames_ > 0;
 }
 
-// ============================================================================
 // Sample Computation via LUT
-// ============================================================================
 
 float DSDDecoder::compute_sample(const uint8_t* data, int pos) {
     // data points to the concatenated [overlap | block_data] for one channel
@@ -725,9 +713,7 @@ float DSDDecoder::compute_sample(const uint8_t* data, int pos) {
     return sample;
 }
 
-// ============================================================================
 // Process one block into PCM output
-// ============================================================================
 
 int DSDDecoder::process_block(float* output, int max_frames) {
     int frames_available = block_output_frames_ - block_frames_consumed_;
@@ -786,9 +772,7 @@ int DSDDecoder::process_block(float* output, int max_frames) {
     return frames_to_produce;
 }
 
-// ============================================================================
 // Public Interface
-// ============================================================================
 
 int DSDDecoder::read_pcm(float* buffer, int max_frames) {
     if (!file_ || !buffer || max_frames <= 0) return 0;

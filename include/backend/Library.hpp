@@ -41,6 +41,22 @@ public:
     };
 
     [[nodiscard]] CacheValidationResult validate_cache_tier0(const std::filesystem::path& cache_path);
+
+    // Pure TIER 0 decision, factored out so it can be unit-tested without a real
+    // directory scan. Given what the scan found (audio file paths, their mtimes,
+    // and the set of directories that were walked) and the cached tracks, decide:
+    //   CountMismatch    -- an on-disk file is not in the cache (addition)
+    //   MetadataMismatch -- a cached file's on-disk mtime is newer (in-place edit),
+    //                       or a cached file under a scanned directory is gone (removal)
+    //   Valid            -- otherwise
+    // MetadataMismatch and CountMismatch both route to the incremental reparse;
+    // a removal is only flagged when its directory was actually scanned, so an
+    // unmounted drive (directory absent from the scan) is never mistaken for a deletion.
+    [[nodiscard]] static CacheValidationResult classify_tier0(
+        const std::vector<std::string>& scanned_files,
+        const std::unordered_map<std::string, std::time_t>& scanned_file_mtimes,
+        const std::unordered_map<std::string, std::time_t>& scanned_dirs,
+        const std::unordered_map<std::string, model::Track>& cached_tracks);
     [[nodiscard]] std::vector<std::string> find_dirty_directories(
         const std::unordered_map<std::string, std::time_t>& current_dir_mtimes,
         const std::unordered_map<std::string, std::time_t>& cached_dir_mtimes
