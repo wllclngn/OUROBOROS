@@ -88,9 +88,9 @@ TEST_CASE(test_sort_parity_with_icu_comparator) {
 
 // Scale check at a realistic library size: the composite-key sublimation sort
 // produces a fully-ordered result, timed for reference. (The head-to-head against
-// the retired parallel TimSort measured ~2x in sublimation's favor at this N --
-// single-threaded sublimation beating the multi-threaded TimSort, whose
-// thread-spawn overhead dominated; see COMMIT_MESSAGE / ROADMAP.)
+// the parallel TimSort retired in v4.0.0 measured ~2x in sublimation's favor at
+// this N -- single-threaded sublimation beating the multi-threaded TimSort, whose
+// thread-spawn overhead dominated; see COMMIT_MESSAGE.)
 TEST_CASE(test_sort_scale_46k_ordered) {
     constexpr size_t N = 46000;
     std::mt19937 rng(12345);

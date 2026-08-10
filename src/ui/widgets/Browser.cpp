@@ -4,10 +4,10 @@
 #include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
 #include "util/Logger.hpp"
-#include "sublimation_text.hpp"
 #include "util/Platform.hpp"
 #include <algorithm>
 #include <sstream>
+#include "sublimation.h"  // sublimation_parallel_for: the shared work-stealing pool
 #include <iomanip>
 #include <ctime>
 
@@ -17,13 +17,49 @@ namespace ouroboros::ui::widgets {
 // This prevents dangling pointer issues when snap reference goes out of scope
 static std::shared_ptr<const model::Snapshot> g_current_snapshot = nullptr;
 
+// Where the filter stops being worth a serial scan. sublimation gates its own
+// search fan-out at 2 MiB of haystack (SEARCH_PAR_MIN_BYTES); a track
+// contributes its artist, album and title, conservatively ~64 bytes, so 2 MiB
+// lands near 32K tracks. Below it the pool costs more than the scan.
+constexpr size_t FILTER_PAR_MIN_TRACKS = 32768;
+
+// One track against the compiled query. Shared by the serial and parallel
+// paths so the two can never drift apart on which fields are searched.
+static inline bool track_matches(const sublimation_search& m, const model::Track& t) {
+    return sublimation_search_find(&m, t.artist.data(), t.artist.size(), nullptr) != -1 ||
+           sublimation_search_find(&m, t.album.data(),  t.album.size(),  nullptr) != -1 ||
+           sublimation_search_find(&m, t.title.data(),  t.title.size(),  nullptr) != -1;
+}
+
+void Browser::set_filter(const std::string& query) {
+    if (filter_query_ == query) return;
+    filter_query_ = query;
+    filter_dirty_ = true;
+    selected_index_ = 0;
+    scroll_offset_ = 0;
+
+    // Compile once per query rather than once per track. The literal face with
+    // ASCII case folding replaces the hand-folded lowercase copy the old search
+    // needed: the matcher folds case into its byte sets at COMPILE time, so no
+    // per-track lowered string is allocated on the keystroke path.
+    matcher_.reset();
+    if (!filter_query_.empty()) {
+        matcher_.emplace();
+        sublimation_search_compile(&*matcher_, filter_query_.data(), filter_query_.size(),
+                                   SUBLIMATION_SEARCH_FIXED | SUBLIMATION_SEARCH_ICASE, 0);
+        if (!sublimation_search_valid(&*matcher_)) matcher_.reset();
+    }
+}
+
 void Browser::update_filtered_indices(const model::Snapshot& snap) {
     const auto& tracks = snap.library->tracks;
     filtered_indices_.clear();
     filtered_indices_.reserve(tracks.size());
 
-    // Case 1: No filter -> All tracks
-    if (filter_query_.empty()) {
+    // Case 1: No filter -> All tracks. An empty query has no compiled matcher
+    // (the engine rejects an empty literal pattern rather than matching at 0),
+    // so the absent matcher IS the no-filter case.
+    if (!matcher_) {
         for (size_t i = 0; i < tracks.size(); ++i) {
             filtered_indices_.push_back(i);
         }
@@ -32,20 +68,54 @@ void Browser::update_filtered_indices(const model::Snapshot& snap) {
         return;
     }
 
-    // Case 2: Filter active -> Search (case-insensitive substring via sublimation BMH)
-    sublimation::BMH searcher(filter_query_);
-    
-    for (size_t i = 0; i < tracks.size(); ++i) {
-        const auto& t = tracks[i];
-        bool match = false;
-        
-        // Search in Artist, Album, Title
-        if (searcher.search(t.artist) != -1) match = true;
-        else if (searcher.search(t.album) != -1) match = true;
-        else if (searcher.search(t.title) != -1) match = true;
-        
-        if (match) {
-            filtered_indices_.push_back(i);
+    // Case 2: Filter active -> match artist, album, title.
+    const sublimation_search& m = *matcher_;
+
+    if (tracks.size() < FILTER_PAR_MIN_TRACKS) {
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            if (track_matches(m, tracks[i])) filtered_indices_.push_back(static_cast<int>(i));
+        }
+    } else {
+        // Above the gate the scan fans out over sublimation's work-stealing
+        // pool, the same composition its own CLI uses: split the haystack into
+        // one chunk per worker, scan them concurrently, then merge IN CHUNK
+        // ORDER. The merge order is what keeps filtered_indices_ ascending and
+        // the result identical to the serial path -- workers never share a sink.
+        const size_t nchunks = sublimation_default_workers();
+        const size_t chunk = (tracks.size() + nchunks - 1) / nchunks;
+
+        filter_chunks_.resize(nchunks);
+        for (auto& c : filter_chunks_) c.clear();
+
+        struct FilterWork {
+            const std::vector<model::Track>* tracks;
+            const sublimation_search* m;
+            std::vector<std::vector<int>>* out;
+            size_t chunk;
+        };
+        FilterWork work{&tracks, &m, &filter_chunks_, chunk};
+
+        auto scan_chunk = [](size_t ci, void* user) {
+            auto* w = static_cast<FilterWork*>(user);
+            const auto& ts = *w->tracks;
+            const size_t begin = ci * w->chunk;
+            if (begin >= ts.size()) return;
+            const size_t end = std::min(begin + w->chunk, ts.size());
+            auto& sink = (*w->out)[ci];
+            for (size_t i = begin; i < end; ++i) {
+                if (track_matches(*w->m, ts[i])) sink.push_back(static_cast<int>(i));
+            }
+        };
+
+        // The fan-out decision above is this caller's -- FILTER_PAR_MIN_TRACKS
+        // is a record COUNT, a question sublimation's byte gate cannot answer --
+        // but the OOM fallback belongs to the library, so the byte weight passed
+        // here simply clears its gate.
+        sublimation_scan(nchunks, sublimation_scan_min_bytes(),
+                         scan_chunk, &work, 0, nullptr);
+
+        for (const auto& c : filter_chunks_) {
+            filtered_indices_.insert(filtered_indices_.end(), c.begin(), c.end());
         }
     }
 

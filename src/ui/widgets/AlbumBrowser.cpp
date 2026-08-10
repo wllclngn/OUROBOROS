@@ -7,10 +7,10 @@
 #include "backend/Config.hpp"
 #include "config/UIConfig.hpp"
 #include "events/EventBus.hpp"
-#include "sublimation_text.hpp"
 #include "util/Logger.hpp"
 #include "util/UnicodeUtils.hpp"
 #include "util/Platform.hpp"
+#include "util/SortDispatch.hpp"
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
@@ -109,28 +109,44 @@ void AlbumBrowser::set_filter(const std::string& query) {
         filter_query_ = query;
         filter_dirty_ = true;
         prefetch_completed_ = false; // Reset prefetch on filter change
+
+        // Normalize once, compile once (bjork matches Björk). The albums carry
+        // pre-normalized title/artist, so neither side allocates per album.
+        matcher_.reset();
+        if (!filter_query_.empty()) {
+            const std::string needle = util::normalize_for_search(filter_query_);
+            if (!needle.empty()) {
+                matcher_.emplace();
+                sublimation_search_compile(&*matcher_, needle.data(), needle.size(),
+                                           SUBLIMATION_SEARCH_FIXED, 0);
+                if (!sublimation_search_valid(&*matcher_)) matcher_.reset();
+            }
+        }
     }
 }
 
 void AlbumBrowser::update_filtered_albums() {
     filtered_album_indices_.clear();
 
-    if (filter_query_.empty()) {
+    // No compiled matcher IS the no-filter case: an empty query never compiles
+    // one, and the engine rejects an empty literal pattern rather than matching
+    // at offset 0 the way the old search did.
+    if (!matcher_) {
         filtered_album_indices_.resize(albums_.size());
         std::iota(filtered_album_indices_.begin(), filtered_album_indices_.end(), 0);
         return;
     }
 
-    // Normalize query once for Unicode-aware search (bjork matches Björk)
-    std::string normalized_query = util::normalize_for_search(filter_query_);
-    sublimation::BMH searcher(normalized_query);
-
+    // Match the pre-computed normalized strings (no allocation per album).
+    // Serial by design: a few thousand albums is far under the byte scale where
+    // sublimation's own search fans out, unlike the track filter in Browser.
+    const sublimation_search& m = *matcher_;
     for (size_t i = 0; i < albums_.size(); ++i) {
         const auto& album = albums_[i];
-
-        // Search in pre-computed normalized strings (no allocation per album)
-        if (searcher.search(album.normalized_title) != -1 ||
-            searcher.search(album.normalized_artist) != -1) {
+        if (sublimation_search_find(&m, album.normalized_title.data(),
+                                    album.normalized_title.size(), nullptr) != -1 ||
+            sublimation_search_find(&m, album.normalized_artist.data(),
+                                    album.normalized_artist.size(), nullptr) != -1) {
             filtered_album_indices_.push_back(i);
         }
     }
@@ -767,12 +783,26 @@ void AlbumBrowser::render_images_if_needed(const LayoutRect& rect, bool force_re
         }
     }
 
-    // Sort by distance (radial order from selection)
-    std::sort(render_items.begin(), render_items.end(),
-              [](const RenderItem& a, const RenderItem& b) { return a.distance < b.distance; });
+    // Sort by distance (radial order from selection) through sublimation's pack
+    // sort. Index permutation rather than a struct-by-key gather: the render
+    // loop walks the permutation, so no RenderItem is ever relocated. The key
+    // and index buffers are thread_local and only ever grow, which keeps this
+    // allocation-free on the render path after the first frame -- the reason
+    // this does not use sublimation_order.hpp, whose gather allocates per call.
+    thread_local std::vector<int32_t> radial_keys;
+    thread_local std::vector<uint32_t> radial_idx;
+    const size_t nitems = render_items.size();
+    radial_keys.resize(nitems);
+    radial_idx.resize(nitems);
+    for (size_t i = 0; i < nitems; ++i) {
+        radial_keys[i] = render_items[i].distance;
+        radial_idx[i] = static_cast<uint32_t>(i);
+    }
+    util::sort_by_key_i32(radial_keys, radial_idx, false);
 
     // Render in radial order
-    for (const auto& item : render_items) {
+    for (uint32_t ri : radial_idx) {
+        const RenderItem& item = render_items[ri];
         if (item.slot_idx >= MAX_VISIBLE_SLOTS) continue;
 
         auto& slot = slots_[item.slot_idx];

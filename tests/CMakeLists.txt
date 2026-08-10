@@ -36,13 +36,13 @@ target_compile_features(test_concurrency PRIVATE cxx_std_23)
 target_link_libraries(test_concurrency Threads::Threads)
 add_test(NAME concurrency COMMAND test_concurrency)
 
-# Sort parity + bench: composite-key sublimation sort vs the old ICU comparator
-# under parallel_timsort. Links sublimation, the dispatch adapter and ICU.
+# Sort parity + bench: the composite-key sublimation sort against the ICU
+# comparator as the order oracle. Links sublimation, the dispatch adapter and ICU.
 add_executable(test_sort unit/test_sort.cpp
     ${CMAKE_SOURCE_DIR}/src/util/SortDispatch.cpp)
 target_compile_features(test_sort PRIVATE cxx_std_23)
-# Optimize this target even in Debug so the bench is fair: sublimation is built
-# -O2, so the TimSort template and harness must be too (not the Debug -O0 default).
+# Optimize this target even in Debug so the bench is fair: sublimation carries its
+# own flags and is not built at the Debug -O0 default, so the harness must not be.
 target_compile_options(test_sort PRIVATE -O2 -march=native)
 target_include_directories(test_sort PRIVATE ${ICU_UC_INCLUDE_DIRS} ${ICU_I18N_INCLUDE_DIRS})
 target_link_libraries(test_sort sublimation ${ICU_UC_LIBRARIES} ${ICU_I18N_LIBRARIES} Threads::Threads)

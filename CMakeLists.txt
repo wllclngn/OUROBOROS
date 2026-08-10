@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(ouroboros VERSION 4.0.0 LANGUAGES CXX C)
+project(ouroboros VERSION 4.1.0 LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -162,42 +162,24 @@ endif()
 if(OUROBOROS_DEBUG_LOG)
     target_compile_definitions(ouroboros PRIVATE OUROBOROS_ENABLE_LOGGING)
 endif()
-# sublimation: OUROBOROS's sort core, built in-tree from its permanent home in the
-# montauk checkout (sibling tree). NOT copied or vendored here -- compiled straight
-# from there. See montauk/sublimation's README: https://github.com/wllclngn/montauk
+# sublimation: OUROBOROS's sort, search and order core, built in-tree from its
+# permanent home in the montauk checkout (sibling tree). NOT copied or vendored
+# here -- compiled straight from there, with its own C23 flags rather than
+# OUROBOROS's, so a new toolchain's fresh warnings degrade loudly instead of
+# breaking the build. See montauk/sublimation's README:
+# https://github.com/wllclngn/montauk
 set(MONTAUK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../montauk" CACHE PATH
     "Path to the montauk checkout (sublimation is built from MONTAUK_DIR/sublimation)")
 set(SUBLIMATION_DIR "${MONTAUK_DIR}/sublimation")
 if(NOT EXISTS "${SUBLIMATION_DIR}/src/include/sublimation.h")
     message(FATAL_ERROR "sublimation not found at ${SUBLIMATION_DIR} -- set -DMONTAUK_DIR=<path to montauk checkout>")
 endif()
-add_library(sublimation STATIC
-    ${SUBLIMATION_DIR}/src/classify.c
-    ${SUBLIMATION_DIR}/src/merge.c
-    ${SUBLIMATION_DIR}/src/pack.c
-    ${SUBLIMATION_DIR}/src/randomness.c
-    ${SUBLIMATION_DIR}/src/search.c
-    ${SUBLIMATION_DIR}/src/select.c
-    ${SUBLIMATION_DIR}/src/small.c
-    ${SUBLIMATION_DIR}/src/sort.c
-    ${SUBLIMATION_DIR}/src/spectral.c
-    ${SUBLIMATION_DIR}/src/text/bmh.c
-    ${SUBLIMATION_DIR}/src/text/nfa.c
-    ${SUBLIMATION_DIR}/src/parallel/pool.c
-    ${SUBLIMATION_DIR}/src/strings/msd_radix.c
-    ${SUBLIMATION_DIR}/src/strings/sort_strings.c
-)
-set_target_properties(sublimation PROPERTIES
-    C_STANDARD 23
-    C_STANDARD_REQUIRED ON
-    POSITION_INDEPENDENT_CODE ON)
-target_include_directories(sublimation
-    PUBLIC  ${SUBLIMATION_DIR}/src/include
-    PRIVATE ${SUBLIMATION_DIR}/src)
-target_compile_options(sublimation PRIVATE
-    -O2 -march=native -fvisibility=hidden
-    -fstack-protector-strong -fstack-clash-protection -fcf-protection)
-target_link_libraries(sublimation PUBLIC pthread m)
+# sublimation defines its own target; consume it rather than restating it.
+# Every line this replaces was a copy of montauk's build, and both build
+# defects found here on 2026-08-10 were that copy drifting -- a source list
+# frozen at 16 of 21 files, and an -O2-after--O3 ordering bug montauk had
+# already fixed upstream. A copy cannot receive a fix.
+add_subdirectory(${SUBLIMATION_DIR} ${CMAKE_BINARY_DIR}/sublimation-lib)
 message(STATUS "sublimation: in-tree build from ${SUBLIMATION_DIR}")
 
 target_link_libraries(ouroboros PRIVATE

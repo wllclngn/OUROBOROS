@@ -1,4 +1,4 @@
-.TH OUROBOROS 1 "June 2026" "v4.0.0" "User Commands"
+.TH OUROBOROS 1 "August 2026" "v4.1.0" "User Commands"
 .SH NAME
 ouroboros \- offline, metadata-driven music player for modern Linux terminals
 .SH SYNOPSIS
@@ -266,9 +266,9 @@ Real-world benchmarks (Ryzen 7 5800X, 721-track library):
 <500ms with direct getdents64 syscalls
 .TP
 .B sublimation sort (46K tracks)
-~30ms (about 2x the previous parallel TimSort)
+~30ms (about 2x the parallel TimSort retired in v4.0.0)
 .TP
-.B Boyer-Moore search (10K tracks)
+.B sublimation search (10K tracks)
 ~1ms (sublinear: scans ~3,300 chars instead of 1M)
 
 .SH ARCHITECTURE
@@ -326,18 +326,25 @@ This handles true compilations where every track has a different artist.
 Dual-sort strategy: sublimation by artist/year, then stable_sort to group scattered albums by title.
 
 .SH ALGORITHMS
-.SS sublimation (flow-model sort)
-The library and album orderings run through sublimation, a flow-model sort that
-routes by disorder, built in-tree from the montauk checkout. Multi-key orderings
-(artist, then date/year, then directory/title) are expressed as precomputed
-composite keys and sorted in one byte-order pass; the case-folded artist key
-reproduces the ICU case-insensitive order. At a 46K-track library it measured ~2x
-the throughput of the previous parallel TimSort. See the montauk repository.
+.SS sublimation (sort, search and order core)
+Both the orderings and the search filter run through sublimation, built in-tree from
+the montauk checkout. There is no second sort or matcher in the tree.
 
-.SS Boyer-Moore-Horspool (sublimation)
-The global search filter runs on sublimation's Boyer-Moore-Horspool substring engine
-(the same in-tree core as the sort). Sublinear O(n/m) average case via a 256-byte
-bad-character table, ASCII case-insensitive, literal substring matching.
+.SS sublimation sort
+A flow-model sort that routes by disorder. Multi-key orderings (artist, then
+date/year, then directory/title) are expressed as precomputed composite keys and
+sorted in one byte-order pass; the case-folded artist key reproduces the ICU
+case-insensitive order. At a 46K-track library it measured ~2x the throughput of the
+parallel TimSort retired in v4.0.0. Struct-by-one-key orderings go through
+sublimation_order; nothing in shipped code calls std::sort.
+
+.SS sublimation search
+The global search filter runs on sublimation's tri-face text matcher: one compiled
+program covering a literal/anchor face, a Glushkov bit-parallel regex face and a
+fuzzy k-mismatch face. OUROBOROS compiles the literal face, ASCII case folded into
+the matcher's byte sets at compile time. The query compiles once and matches every
+field; above 32K tracks the scan fans out over sublimation's work-stealing pool and
+merges in chunk order.
 
 .SS SHA-256
 NIST FIPS 180-4 compliant implementation for content-addressed artwork storage.
@@ -498,9 +505,9 @@ Written with C++23 for Linux terminal enthusiasts.
 See project LICENSE file for copyright and licensing information.
 
 .SH VERSION
-v4.0.0
+v4.1.0
 .br
-June 2026
+August 2026
 
 .SH TECHNICAL DETAILS
 .SS Code Statistics

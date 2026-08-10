@@ -25,7 +25,7 @@ if [[ $BUILDDIR -ef "$startdir" && "$startdir" == *" "* ]]; then
     BUILDDIR=/tmp/makepkg-$pkgname
 fi
 
-pkgver=4.0.0
+pkgver=4.1.0
 pkgrel=1
 pkgdesc='Offline, metadata-driven terminal music player for modern Linux (C++23, PipeWire, waterfall spectrogram)'
 arch=('x86_64')

@@ -477,28 +477,63 @@ the sort keys once is also O(n) ICU work versus the comparator's O(n log n) re-f
 
 **Library Sorting Order**: Artist -> Date -> (directory) -> Track
 
-The per-album track-number sort (tiny N) uses `std::stable_sort`; the per-frame album
-distance sort uses `std::sort`. sublimation owns the library-scale orderings.
+There is no `std::sort` left in shipped code. Struct-by-one-key orderings go through
+`sublimation_order.hpp` (`sublimation_order_u64` / `_f64` / `_strings`), the same
+header-only helpers montauk uses; the per-frame album distance sort goes through
+`SortDispatch::sort_by_key_i32` as an index permutation, so no render item is
+relocated. The per-album track-number sort no longer needs a separate stable pass:
+the pack sort tiebreaks on the packed index, which is initialized from input order.
 
-### Boyer-Moore-Horspool String Search (sublimation)
+`SortDispatch` uses the `sublimation_pack_sort_*_with_scratch` entry points behind a
+`thread_local` buffer. The plain variants malloc an n-slot scratch per call, which
+the render path cannot afford.
 
-The global search filter runs on sublimation's Boyer-Moore-Horspool substring
-engine (`sublimation_text.h`, wrapped by `sublimation::BMH`), the same in-tree core
-as the sort -- OUROBOROS's own hand-rolled BMH was retired in v4.0.0 in favor of it.
-The SearchBox compiles the query once and tests it against each track's artist,
-album and title (and each album's normalized title/artist) on every keystroke.
+### The tri-face text matcher (sublimation)
 
-#### Characteristics
+The global search filter runs on sublimation's text matcher (`sublimation_text.h`),
+the same in-tree core as the sort. One compiled program covers three faces, selected
+at compile time:
 
-- **Average case**: O(n/m) -- sublinear (a fixed 256-byte bad-character table)
-- **Worst case**: O(n*m) -- rare in practice
-- **Space**: O(1) -- no heap allocation; compile-once, search-many
-- **ASCII case-insensitive** match; literal substring (not regex)
+- **literal/anchor** (`SUBLIMATION_SEARCH_FIXED`), a data-relative anchor scan whose
+  byte rarity is read from the input rather than a fixed table
+- **regex**, a Glushkov bit-parallel position-NFA with a reach-closure memo and a
+  literal prefilter -- linear time, no catastrophic backtracking, capped at 64
+  positions
+- **fuzzy k-mismatch** (`k > 0`), pigeonhole-prefiltered
 
-sublimation also ships a Thompson NFA / RE2-lineage regex beside the substring
-engine; OUROBOROS uses the substring path (a music-library filter wants literal
-matching, and plain queries carry punctuation that regex metacharacters would
-misread).
+OUROBOROS compiles the literal face with `k = 0`. Each widget holds its compiled
+program as a member and matches every field against it; the program is a value object
+that never heap-allocates, so the compile happens once per query rather than once per
+keystroke-times-track.
+
+The fuzzy face is deliberately unused. It is **Hamming** k-mismatch, not edit
+distance: fixed-length windows with at most k substitutions. It catches
+`beatles`->`beetles` but not `beatles`->`beatls`, because a deletion shifts every
+following byte out of alignment. Typed queries drop and double letters at least as
+often as they transpose them, so the face would broaden matches on a per-keystroke
+path while still missing the most common typo class. Every library consumer of
+sublimation makes the same choice; the fuzzy face is a CLI feature (`sublimation
+search -k N`).
+
+`Browser` compiles with `FIXED | ICASE`, folding ASCII case into the matcher's byte
+sets at compile time -- more correct than folding at match time, and it allocates no
+lowered copy per track. `AlbumBrowser` compiles `FIXED` alone: both its query and its
+stored album fields already pass through ICU's `normalize_for_search`, whose fold is
+Unicode-wide and also strips diacritics (so `bjork` matches `Björk`), which subsumes
+what `ICASE` would add.
+
+#### Fan-out
+
+Above 32K tracks the track filter scans on `sublimation_parallel_for`, the same
+Chase-Lev work-stealing pool that backs sublimation's parallel sort and radix. The
+composition mirrors sublimation's own CLI: split the haystack into one chunk per
+worker, scan concurrently into per-chunk sinks that are never shared, then merge in
+chunk order -- which is what keeps the result ascending and byte-identical to the
+serial scan. The threshold comes from sublimation's own search gate
+(`SEARCH_PAR_MIN_BYTES`, 2 MiB) over a conservative ~64 bytes of artist, album and
+title per track.
+
+The album filter stays serial: a few thousand albums is far below that gate.
 
 ### SHA-256 Content Addressing
 
@@ -1101,6 +1136,12 @@ A live frequency-over-time waterfall, fed without touching the audio RT path:
   bit-reversal table so `transform()` allocates nothing. The frame pipeline is
   Hann window -> FFT -> per-bin magnitude -> fold into ~64 log-frequency display
   bins, dB-scaled against a fixed floor.
+  This is the one kernel that deliberately does NOT route through sublimation,
+  and the reason is the frame rate. `sublimation_fft` is `double`, in-place and
+  general complex, built as substrate for Spectral Residual and the matrix
+  profile; this one is `float`, real-input and specialized, with its working
+  buffers member-owned. Swapping would double the memory traffic and add an
+  allocation to a 30 FPS render-path kernel to gain nothing the spectrogram uses.
 - **SpectroWaterfall** (`src/ui/SpectroWaterfall.cpp`) -- a persistent RGBA buffer
   that scrolls left one column per frame; the newest FFT column maps magnitude to a
   fixed gradient. Emitted under a single fixed Kitty image id, re-transmitted in
@@ -1168,8 +1209,8 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 | **Cache TIER 2 (incremental)** | O(changed_files) | 500ms for 50 changes | Parallel metadata extraction (4-16 threads) |
 | **Snapshot Read** | O(1) | <1us | Lock-free atomic pointer load with acquire semantics |
 | **UI Render (30 FPS)** | O(widgets) | ~33ms/frame | Only redraws on state change, canvas diffing |
-| **sublimation sort** | flow-model | ~30ms for 46K tracks | Composite-key byte-order sort; ~2x the previous parallel TimSort |
-| **Boyer-Moore Search** | O(n/m) avg, O(nm) worst | ~1ms for 10K tracks | Sublinear: scans ~3,300 chars instead of 1M |
+| **sublimation sort** | flow-model | ~30ms for 46K tracks | Composite-key byte-order sort; ~2x the parallel TimSort retired in v4.0.0 |
+| **sublimation search** | O(n/m) avg, O(nm) worst | ~1ms for 10K tracks | Literal face, rare-byte anchor scan; fans out over the work-stealing pool above 32K tracks |
 | **SHA-256 Hash** | O(data_size) | ~1ms for 5MB JPEG | 512-bit chunks, 64 rounds per chunk |
 | **Artwork Cache Lookup** | O(1) | <1us | `unordered_map` with SHA-256 keys |
 | **Image Decode (JPEG)** | Async | 150-250ms for 32 images | Parallel pool (4-16 threads), stb_image + stb_resize |

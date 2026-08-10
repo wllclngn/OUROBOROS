@@ -7,16 +7,17 @@
 #include "util/UnicodeUtils.hpp"
 #include "util/SortDispatch.hpp"
 #include "util/SortKeys.hpp"
-#include <thread>
 #include <fstream>
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
 #include <filesystem>
 #include <algorithm>
-#include <atomic>
 #include <functional>
 #include <cstdint>
+
+#include "sublimation.h"          // sublimation_parallel_for: the shared work-stealing pool
+#include "sublimation_order.hpp"
 
 namespace ouroboros::collectors {
 
@@ -222,40 +223,45 @@ static void compute_album_groups(model::LibraryState& lib_state, const backend::
 
     // STEP 2: Sort tracks + detect scattered albums IN PARALLEL
     // Each album is independent - perfect for parallel processing
-    // Uses atomic work-stealing pattern for load balancing across cores
-    const size_t num_threads = std::thread::hardware_concurrency();
+    // Runs on sublimation's Chase-Lev work-stealing engine, the same pool that
+    // backs the parallel sort and radix -- one work-stealing engine in the
+    // process rather than a second hand-rolled one. sublimation_default_workers
+    // is cpuset-aware, so a taskset-confined run gets the cores it actually has
+    // instead of hardware_concurrency's whole-machine count.
     const size_t num_albums = albums.size();
-    std::atomic<size_t> work_index{0};
+    const size_t num_threads = sublimation_default_workers();
 
     util::Logger::info("Processing " + std::to_string(num_albums) + " albums with " +
                       std::to_string(num_threads) + " threads");
 
-    std::vector<std::thread> workers;
-    for (size_t t = 0; t < num_threads; ++t) {
-        workers.emplace_back([&]() {
-            while (true) {
-                size_t idx = work_index.fetch_add(1, std::memory_order_relaxed);
-                if (idx >= num_albums) break;
+    struct AlbumWork {
+        std::vector<model::AlbumGroup>* albums;
+        model::LibraryState* lib_state;
+    };
+    AlbumWork work{&albums, &lib_state};
 
-                auto& album = albums[idx];
+    auto process_album = [](size_t idx, void* user) {
+        auto* w = static_cast<AlbumWork*>(user);
+        auto& album = (*w->albums)[idx];
+        const auto& tracks = w->lib_state->tracks;
 
-                // Sort tracks within this album by track number. Tiny N (a handful
-                // to a few dozen per album); std::stable_sort keeps equal track
-                // numbers in their prior order, matching the old stable sort.
-                std::stable_sort(album.track_indices.begin(), album.track_indices.end(),
-                    [&lib_state](int a, int b) {
-                        return lib_state.tracks[a].track_number < lib_state.tracks[b].track_number;
-                    });
+        // Sort tracks within this album by track number. Tiny N (a handful
+        // to a few dozen per album). The pack sort tiebreaks on the packed
+        // index, which is initialized from input order, so equal track
+        // numbers keep their prior order without a separate stable pass.
+        sublimation_order_u64(album.track_indices, false,
+            [&tracks](int i) { return tracks[i].track_number; });
 
-                // Detect if this album is scattered (compilation)
-                album.is_scattered = detect_scattered(album, lib_state.tracks);
-            }
-        });
-    }
+        // Detect if this album is scattered (compilation)
+        album.is_scattered = detect_scattered(album, tracks);
+    };
 
-    for (auto& w : workers) {
-        w.join();
-    }
+    // sublimation_scan owns the OOM fallback that used to be hand-written here,
+    // copied from the CLI's call site. Album grouping is CPU-bound rather than
+    // byte-weighted, so the byte gate is bypassed with a weight that always
+    // clears it -- the fan-out decision is this caller's, the fallback is not.
+    sublimation_scan(num_albums, sublimation_scan_min_bytes(),
+                     process_album, &work, 0, nullptr);
 
     size_t scattered_count = std::count_if(albums.begin(), albums.end(),
         [](const model::AlbumGroup& a) { return a.is_scattered; });

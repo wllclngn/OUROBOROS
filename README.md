@@ -45,8 +45,9 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
 
 ### Production-Grade Algorithms
-- **sublimation**: the library and album orderings run through sublimation, a flow-model sort that routes by disorder, built in-tree from the [montauk](https://github.com/wllclngn/montauk) checkout. Multi-key orderings are precomputed composite keys sorted in one byte-order pass; ~2x the throughput of the previous parallel TimSort at a 46K-track library
-- **Boyer-Moore-Horspool** (via sublimation): Sublinear O(n/m) substring search with bad-character skip table (<5ms keystroke latency); the same in-tree core as the sort
+- **sublimation**: the sort, search and order core, built in-tree from the [montauk](https://github.com/wllclngn/montauk) checkout. There is no second sort or matcher in the tree and no `std::sort` in shipped code
+- **sublimation sort**: a flow-model sort that routes by disorder. Multi-key orderings are precomputed composite keys sorted in one byte-order pass; ~2x the throughput of the parallel TimSort retired in v4.0.0 at a 46K-track library
+- **sublimation search**: the literal face of sublimation's tri-face matcher (literal, Glushkov bit-parallel regex, fuzzy k-mismatch), compiled once per query with ASCII case folded in at compile time (<5ms keystroke latency); above 32K tracks the scan fans out over sublimation's work-stealing pool
 - **Dual-Hash System**: Custom SHA-256 (NIST FIPS 180-4) + FNV-1a with adaptive sampling (>65KB files sampled for speed)
 
 ### Lock-Free Concurrency
@@ -60,7 +61,7 @@ An offline, metadata-driven music player built in C++23 for modern Linux Termina
 - **Full ICU Integration**: Support for 150+ languages, 1.4M+ characters
 - **Diacritic Normalization**: "Björk" → "bjork" for ASCII search on international names
 - **Proper Case-Folding**: Handles Turkish İ/i, German ß, etc.
-- **Real-Time Filtering**: Boyer-Moore search updates on every keystroke
+- **Real-Time Filtering**: the compiled sublimation matcher re-scans on every keystroke
 
 ### Engineering Optimizations
 - **Approximately 16,500 Lines of C++23**: RAII everywhere, move semantics, smart pointers; raw allocation confined to the audio ring buffer and decoder scratch paths (excludes the in-tree sublimation C core)
@@ -328,7 +329,7 @@ Built with:
 - **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
 - **Lock-free concurrency** with atomic snapshots (zero deadlocks)
 - **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
-- **Production algorithms** (sublimation flow-model sort/search, Boyer-Moore-Horspool, SHA-256, radix-2 FFT)
+- **Production algorithms** (sublimation sort, search and order core, SHA-256, radix-2 FFT)
 - **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
 - **Multi-tier caching** (O(1) → O(dirs) → O(files))
 - **Hardware-aware parallelism** (thread pools, async decoding)
@@ -340,7 +341,7 @@ Built with:
 For detailed technical documentation, see **[ARCHITECTURE.md](ARCHITECTURE.md)**:
 
 - **Concurrency Architecture**: Lock-free snapshot system, threading model, atomic operations
-- **Algorithm Implementations**: sublimation sort/search, Boyer-Moore-Horspool, SHA-256 deep-dives
+- **Algorithm Implementations**: the sublimation sort and tri-face matcher, SHA-256 deep-dives
 - **Kernel-Level Optimizations**: Direct syscalls, performance analysis, benchmarks
 - **Audio Pipeline**: Format detection, decoders, PipeWire integration
 - **Artwork System**: Content addressing, multi-tier caching, async decoding

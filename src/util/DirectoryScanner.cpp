@@ -10,6 +10,8 @@
 #include <cstring>
 #include <algorithm>
 
+#include "sublimation_order.hpp"
+
 namespace ouroboros::util {
 
 // Linux dirent64 structure for getdents64 syscall
@@ -226,7 +228,8 @@ void DirectoryScanner::scan_directories_recursive(
 uint64_t DirectoryScanner::compute_tree_hash(const std::vector<std::string>& paths) {
     // Sort paths for deterministic hashing
     std::vector<std::string> sorted_paths = paths;
-    std::sort(sorted_paths.begin(), sorted_paths.end());
+    sublimation_order_strings(sorted_paths, false,
+                              [](const std::string& s) { return s.c_str(); });
 
     // Concatenate all paths with newlines
     std::string concatenated;

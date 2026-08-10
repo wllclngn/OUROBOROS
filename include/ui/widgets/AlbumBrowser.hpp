@@ -12,6 +12,9 @@
 #include <unordered_map>
 #include <chrono>
 #include <atomic>
+#include <optional>
+
+#include "sublimation_text.h"
 
 namespace ouroboros::ui::widgets {
 
@@ -113,6 +116,11 @@ private:
     static constexpr auto BIG_JUMP_TIME_LIMIT = std::chrono::milliseconds(2000);
 
     std::string filter_query_;
+    // The normalized query, compiled once in set_filter. Literal face without
+    // ICASE: both the query and the album fields already pass through ICU's
+    // normalize_for_search, whose fold is Unicode-wide and also strips
+    // diacritics, so the matcher's ASCII fold would be redundant work.
+    std::optional<sublimation_search> matcher_;
     bool filter_dirty_ = false;
     bool content_changed_ = false; // Flag to force clear images on filter change
     bool prefetch_completed_ = false; // Skip redundant prefetch when viewport hasn't changed

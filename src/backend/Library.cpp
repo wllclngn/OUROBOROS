@@ -13,6 +13,8 @@
 #include <atomic>
 #include <vector>
 
+#include "sublimation_order.hpp"
+
 namespace ouroboros::backend {
 
 // Binary format version magic
@@ -63,10 +65,8 @@ void Library::set_music_directories(const std::vector<std::filesystem::path>& di
     }
 
     // Sort by length (parents before children)
-    std::sort(valid_dirs.begin(), valid_dirs.end(),
-              [](const auto& a, const auto& b) {
-                  return a.string().length() < b.string().length();
-              });
+    sublimation_order_u64(valid_dirs, false,
+                          [](const auto& d) { return d.string().length(); });
 
     // Filter: skip directories already covered by a parent
     for (const auto& dir : valid_dirs) {

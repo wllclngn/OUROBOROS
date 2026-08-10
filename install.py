@@ -126,23 +126,43 @@ REQUIRED_DEPS = [
 # =============================================================================
 #
 # OUROBOROS's sort/search core is sublimation, which lives in the montauk repo
-# (montauk/sublimation). Rather than hard-link to a sibling checkout in the
-# developer's tree, the installer fetches it into /tmp and points the build at
-# it via -DMONTAUK_DIR. A sparse, shallow clone pulls only the sublimation/
+# (montauk/sublimation). A sibling montauk checkout is the primary source and
+# CMakeLists' own default; the fetched clone is the fallback for an install on a
+# box that has no checkout. A sparse, shallow clone pulls only the sublimation/
 # subtree. See montauk/sublimation's README: https://github.com/wllclngn/montauk
 
 MONTAUK_REPO = "https://github.com/wllclngn/montauk.git"
-SUBLIMATION_MONTAUK_DIR = Path("/tmp/ouroboros-montauk")
+
+# NOT /tmp. The path is recorded in the build directory's CMake cache, so a
+# location that evaporates leaves every later `cmake --build build` failing at
+# the FATAL_ERROR in CMakeLists rather than rebuilding -- recoverable only by
+# re-running this installer. A tmpfs clear did exactly that. The XDG cache dir
+# survives reboots, which is the property this needs.
+SUBLIMATION_MONTAUK_DIR = (
+    Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    / "ouroboros" / "montauk"
+)
 
 
-def ensure_sublimation() -> Path | None:
-    """Fetch sublimation (vendored in montauk) into /tmp; return the montauk dir.
+def _marker(montauk_dir: Path) -> Path:
+    return montauk_dir / "sublimation" / "src" / "include" / "sublimation.h"
 
-    Build-time source dependency, not a system package. Sparse-checks out only
-    montauk/sublimation so the clone stays small. Re-uses an existing /tmp clone
-    (refreshing it) when present.
+
+def ensure_sublimation(source_dir: Path) -> Path | None:
+    """Resolve the montauk dir sublimation is compiled from.
+
+    A sibling checkout WINS when present: it is the tree the developer is
+    actually editing, and building the published HEAD instead would silently
+    drop local sublimation changes. It is read-only here -- never pulled, never
+    modified -- per the standing constraint in ROADMAP.md. Only when there is no
+    sibling does this fall back to a sparse shallow clone.
     """
-    marker = SUBLIMATION_MONTAUK_DIR / "sublimation" / "src" / "include" / "sublimation.h"
+    sibling = (source_dir / ".." / "montauk").resolve()
+    if _marker(sibling).exists():
+        log_info(f"sublimation source: sibling montauk checkout at {sibling}")
+        return sibling
+
+    marker = _marker(SUBLIMATION_MONTAUK_DIR)
 
     if marker.exists():
         log_info(f"sublimation source present, refreshing: {SUBLIMATION_MONTAUK_DIR}")
@@ -150,6 +170,8 @@ def ensure_sublimation() -> Path | None:
             return SUBLIMATION_MONTAUK_DIR
         # Refresh failed (e.g. shallow/sparse state); fall through to a clean clone.
         shutil.rmtree(SUBLIMATION_MONTAUK_DIR, ignore_errors=True)
+
+    SUBLIMATION_MONTAUK_DIR.parent.mkdir(parents=True, exist_ok=True)
 
     log_info(f"Fetching sublimation (montauk) into {SUBLIMATION_MONTAUK_DIR}")
     if SUBLIMATION_MONTAUK_DIR.exists():
@@ -186,9 +208,9 @@ def cmd_build(args, source_dir: Path) -> bool:
 
     log_info("CONFIGURING BUILD")
 
-    # Fetch sublimation (the sort/search core) into /tmp so the build is not tied
-    # to a sibling montauk checkout in the developer's tree.
-    montauk_dir = ensure_sublimation()
+    # Resolve sublimation (the sort/search core): the sibling montauk checkout
+    # when there is one, otherwise a fetched clone in the XDG cache.
+    montauk_dir = ensure_sublimation(source_dir)
     if montauk_dir is None:
         return False
 

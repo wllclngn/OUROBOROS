@@ -190,8 +190,9 @@ void HelpOverlay::build_content() {
     blank();
 
     subheading("Algorithms");
-    kv("sublimation",       "Flow-model sort core (montauk in-tree). Library/album ordering.");
-    kv("Boyer-Moore",       "Sublinear search O(n/m). <5ms per keystroke.");
+    kv("sublimation",       "Sort, search and order core (montauk in-tree).");
+    kv("  sort",            "Flow-model, entropy-routed. Library and album ordering.");
+    kv("  search",          "Literal face of the tri-face matcher. <5ms per keystroke.");
     kv("SHA-256",           "FIPS 180-4. Content-addressed artwork storage.");
     kv("FNV-1a",            "Fast hash for lookups. Adaptive sampling >65KB.");
     kv("Radix-2 FFT",       "In-house Cooley-Tukey, 1024-pt. Drives the spectrogram.");
