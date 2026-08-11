@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" role="img" aria-label="OUROBOROS">
+<title>OUROBOROS</title>
+<!--
+  Three regions partition one annulus. Each owns 120 degrees of the outer rim,
+  then winds inward through 165 degrees to its apex on the inner rim. They tile
+  the annulus exactly, so both circles are unbroken.
+
+  THE PALETTE IS THE SIX STOPS BELOW AND NOTHING ELSE. To recolour a release,
+  change these and only these; the geometry never moves.
+
+  The three colours are the terminal's own, taken from the kitty config:
+    #FFFD00  color11, bright yellow   hue 59.5
+    #FFB000  "Amber CRT"              hue 41.4
+    #FF5A00  bell_border_color        hue 21.2
+  All three sit at 100% saturation AND at 50% lightness, so the ring is a pure
+  hue rotation with no lightness sag; the hues are spaced about 19 degrees
+  apart. That is what makes it read as saturated rather than washed. Any
+  replacement palette should hold the same rule: equal lightness, equal
+  saturation, evenly spaced hue. Mixing in a pale high-lightness tint is what
+  makes a ring like this go drab.
+
+  The stops chain end to start and the last returns to the first, so colour is
+  continuous the whole way round and closes where it began.
+-->
+<defs>
+  <linearGradient id="ouro-light" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#FFFD00"/>
+    <stop offset="100%" stop-color="#FFB000"/>
+  </linearGradient>
+  <linearGradient id="ouro-mid" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#FFB000"/>
+    <stop offset="100%" stop-color="#FF5A00"/>
+  </linearGradient>
+  <linearGradient id="ouro-dark" x1="0%" y1="0%" x2="100%" y2="100%">
+    <stop offset="0%" stop-color="#FF5A00"/>
+    <stop offset="100%" stop-color="#FFFD00"/>
+  </linearGradient>
+</defs>
+<path d="M460.00,256.00A204.00,204.00 0 0,1 154.00,432.67C116.44,399.82 94.63,355.13 90.29,312.25C85.94,269.38 98.77,228.80 121.11,200.13C143.45,171.46 174.79,154.81 204.25,151.07C233.71,147.32 260.88,156.20 278.78,171.00A88.00,88.00 0 0,0 171.00,278.78C167.13,301.68 173.02,329.65 191.00,353.28C208.97,376.92 239.06,395.74 275.06,400.75C311.06,405.76 352.61,396.59 387.57,371.39C422.53,346.18 450.33,304.96 460.00,256.00Z" fill="url(#ouro-light)"/>
+<path d="M154.00,432.67A204.00,204.00 0 0,1 154.00,79.33C201.23,63.22 250.84,66.69 290.14,84.36C329.44,102.04 358.17,133.44 371.83,167.12C385.49,200.80 384.23,236.27 372.75,263.65C361.27,291.04 339.99,310.13 318.23,318.23A88.00,88.00 0 0,0 278.78,171.00C260.88,156.20 233.71,147.32 204.25,151.07C174.79,154.81 143.45,171.46 121.11,200.13C98.77,228.80 85.94,269.38 90.29,312.25C94.63,355.13 116.44,399.82 154.00,432.67Z" fill="url(#ouro-mid)"/>
+<path d="M154.00,79.33A204.00,204.00 0 0,1 460.00,256.00C450.33,304.96 422.53,346.18 387.57,371.39C352.61,396.59 311.06,405.76 275.06,400.75C239.06,395.74 208.97,376.92 191.00,353.28C173.02,329.65 167.13,301.68 171.00,278.78A88.00,88.00 0 0,0 318.23,318.23C339.99,310.13 361.27,291.04 372.75,263.65C384.23,236.27 385.49,200.80 371.83,167.12C358.17,133.44 329.44,102.04 290.14,84.36C250.84,66.69 201.23,63.22 154.00,79.33Z" fill="url(#ouro-dark)"/>
+</svg>

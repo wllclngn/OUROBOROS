@@ -3,6 +3,10 @@
 #include <sstream>
 #include <fstream>
 #include <cstring>
+#include <ctime>
+#include <mutex>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <chrono>
 #include <vector>
 #include <unistd.h>
@@ -478,10 +482,48 @@ std::string ImageRenderer::render_sixel(const unsigned char* data, int w, int h,
     return rgb_to_sixel(rgb_data, target_w, target_h);
 }
 
+namespace {
+// Frames handed to the terminal and not yet unlinked. File-scope rather than
+// function-local so shutdown can drain it; a function-local static was only ever
+// swept by the next call, which never comes at exit.
+std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> g_pending_files;
+std::mutex g_pending_mutex;
+constexpr const char* SHM_PREFIX = "ouroboros-art-";
+}  // namespace
+
+void ImageRenderer::cleanup_temp_files() {
+    std::lock_guard<std::mutex> lock(g_pending_mutex);
+    for (const auto& [path, when] : g_pending_files) {
+        (void)when;
+        unlink(path.c_str());
+    }
+    g_pending_files.clear();
+}
+
+void ImageRenderer::reap_orphaned_temp_files() {
+    DIR* dir = opendir("/dev/shm");
+    if (!dir) return;
+    const auto cutoff = std::time(nullptr) - 60;   // seconds
+    size_t reaped = 0;
+    while (dirent* ent = readdir(dir)) {
+        if (std::strncmp(ent->d_name, SHM_PREFIX, std::strlen(SHM_PREFIX)) != 0) continue;
+        std::string path = std::string("/dev/shm/") + ent->d_name;
+        struct stat st{};
+        if (stat(path.c_str(), &st) != 0) continue;
+        if (st.st_mtime > cutoff) continue;        // a live instance may own it
+        if (unlink(path.c_str()) == 0) ++reaped;
+    }
+    closedir(dir);
+    if (reaped > 0) {
+        ouroboros::util::Logger::info("ImageRenderer: Reaped " + std::to_string(reaped) +
+                                      " orphaned /dev/shm frame(s) from a previous run");
+    }
+}
+
 std::string ImageRenderer::write_to_temp_file(const unsigned char* data, size_t len) {
-    // Track temp files with creation time for delayed cleanup
-    // Kitty should delete t=t files, but we clean up any stragglers older than 500ms
-    static std::vector<std::pair<std::string, std::chrono::steady_clock::time_point>> pending_files;
+    // Kitty should delete t=t files; anything it did not take is swept after 500ms.
+    std::lock_guard<std::mutex> lock(g_pending_mutex);
+    auto& pending_files = g_pending_files;
 
     auto now = std::chrono::steady_clock::now();
     auto cutoff = now - std::chrono::milliseconds(500);

@@ -7,9 +7,27 @@
 #include "util/Logger.hpp"
 #include "util/Platform.hpp"
 #include <algorithm>
+#include <numeric>
 #include <sstream>
 
 namespace ouroboros::ui::widgets {
+
+void Queue::set_filter(const std::string& query) {
+    if (filter_query_ == query) return;
+    filter_query_ = query;
+    cursor_index_ = 0;
+    scroll_offset_ = 0;
+
+    // Compiled once per query, matched against every queued track. Literal face
+    // with ASCII case folding, the same shape Browser uses.
+    matcher_.reset();
+    if (!filter_query_.empty()) {
+        matcher_.emplace();
+        sublimation_search_compile(&*matcher_, filter_query_.data(), filter_query_.size(),
+                                   SUBLIMATION_SEARCH_FIXED | SUBLIMATION_SEARCH_ICASE, 0);
+        if (!sublimation_search_valid(&*matcher_)) matcher_.reset();
+    }
+}
 
 void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot& snap) {
     render(canvas, rect, snap, false);
@@ -42,19 +60,51 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
         display_tracks.emplace_back(idx, false);
     }
 
-    // Draw border and title (highlight when focused)
-    std::string title = "QUEUE: " + std::to_string(display_tracks.size()) + " TRACKS";
-    auto content_rect = draw_box_border(canvas, rect, title, is_focused);
-
-    // Empty queue
-    if (display_tracks.empty()) {
-        return;  // Keep UI clean - no placeholder text
-    }
-
-    // Defensive: Check library exists
+    // Defensive: Check library exists (needed before filtering, which reads tracks)
     if (!snap.library) {
         ouroboros::util::Logger::error("Queue::render: snap.library is null!");
+        draw_box_border(canvas, rect, "QUEUE: ERROR");
         return;
+    }
+
+    // Filter, keeping the map back to the unfiltered list. JumpToQueueIndex
+    // addresses the unfiltered display order, never these rows.
+    const size_t queued_total = display_tracks.size();
+    row_to_display_.clear();
+    if (matcher_) {
+        const sublimation_search& m = *matcher_;
+        std::vector<std::pair<int, bool>> kept;
+        kept.reserve(display_tracks.size());
+        for (size_t i = 0; i < display_tracks.size(); ++i) {
+            const int ti = display_tracks[i].first;
+            if (ti < 0 || ti >= util::narrow_cast<int>(snap.library->tracks.size())) continue;
+            const auto& t = snap.library->tracks[ti];
+            if (sublimation_search_find(&m, t.artist.data(), t.artist.size(), nullptr) != -1 ||
+                sublimation_search_find(&m, t.album.data(),  t.album.size(),  nullptr) != -1 ||
+                sublimation_search_find(&m, t.title.data(),  t.title.size(),  nullptr) != -1) {
+                kept.push_back(display_tracks[i]);
+                row_to_display_.push_back(util::narrow_cast<int>(i));
+            }
+        }
+        display_tracks.swap(kept);
+    } else {
+        row_to_display_.resize(display_tracks.size());
+        std::iota(row_to_display_.begin(), row_to_display_.end(), 0);
+    }
+
+    // Draw border and title (highlight when focused)
+    std::string title = "QUEUE: ";
+    if (matcher_) {
+        title += "SEARCH \"" + filter_query_ + "\", " + std::to_string(display_tracks.size())
+               + "/" + std::to_string(queued_total) + " TRACKS";
+    } else {
+        title += std::to_string(display_tracks.size()) + " TRACKS";
+    }
+    auto content_rect = draw_box_border(canvas, rect, title, is_focused);
+
+    // Empty queue, or a filter that matched nothing
+    if (display_tracks.empty()) {
+        return;  // Keep UI clean - no placeholder text
     }
 
     // Clamp cursor to the display list and scroll-follow (Browser pattern)
@@ -173,6 +223,11 @@ void Queue::render(Canvas& canvas, const LayoutRect& rect, const model::Snapshot
 }
 
 void Queue::handle_input(const InputEvent& event) {
+    // Escape clears an active filter before anything else looks at the key.
+    if ((event.key_name == "escape" || event.key == 27) && !filter_query_.empty()) {
+        set_filter("");
+        return;
+    }
     // Browser-style cursor movement (from TOML: nav_up, nav_down);
     // scroll follows the cursor in render()
     if (matches_keybind(event, "nav_up")) {
@@ -185,9 +240,10 @@ void Queue::handle_input(const InputEvent& event) {
     // Jump playback to the track under the cursor (from TOML: select)
     else if (matches_keybind(event, "select")) {
         if (total_items_ <= 0) return;
+        if (cursor_index_ < 0 || cursor_index_ >= util::narrow_cast<int>(row_to_display_.size())) return;
         events::Event evt;
         evt.type = events::Event::Type::JumpToQueueIndex;
-        evt.index = cursor_index_;
+        evt.index = row_to_display_[cursor_index_];   // unfiltered display index
         events::EventBus::instance().publish(evt);
     }
 }

@@ -281,6 +281,12 @@ def cmd_install(args, source_dir: Path) -> bool:
         size = install_path.stat().st_size
         log_info(f"Installed {install_path} ({size} bytes)")
 
+    # Refresh man's index. The in-app help view (?) renders ouroboros(1) rather
+    # than restating it, so an unindexed page means an empty help view until the
+    # daily mandb cron catches up. Best-effort: an absent mandb is not an error.
+    if shutil.which("mandb"):
+        run_cmd(["sudo", "mandb", "-q"])
+
     print()
     log_info("SUCCESS. Installation complete.")
     log_info("RUN COMMAND: ouroboros")

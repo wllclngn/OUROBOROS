@@ -105,6 +105,10 @@ int main() {
         // Register atexit handler as safety net (montauk pattern)
         std::atexit(on_atexit_restore);
 
+        // /dev/shm is tmpfs. Frames a previous run abandoned are resident memory
+        // nothing will ever free, so reap them before adding more.
+        ouroboros::ui::ImageRenderer::reap_orphaned_temp_files();
+
         // Install signal handlers for graceful shutdown (AFTER terminal init!)
         struct sigaction sa{};
         sa.sa_handler = signal_handler;
@@ -568,6 +572,10 @@ int main() {
         // Ensure the user gets their terminal back instantly
         terminal.shutdown();
         ouroboros::util::Logger::info("Terminal restored, performing background cleanup...");
+
+        // Drain the last batch of /dev/shm frames. The periodic sweep only runs
+        // on the next write, which never arrives once rendering has stopped.
+        ouroboros::ui::ImageRenderer::cleanup_temp_files();
 
         // Phase 3: Save artwork cache to disk before shutdown
         ouroboros::util::Logger::info("Saving artwork cache...");

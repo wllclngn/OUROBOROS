@@ -1,94 +1,72 @@
-# OUROBOROS Architecture & Technical Documentation
+# OUROBOROS Architecture
 
-This document provides a comprehensive technical deep-dive into OUROBOROS's architecture, algorithms, and implementation details. For user-facing documentation, see [README.md](README.md).
+Everything here follows one rule: The audio callback and the render loop are
+never made to wait. PipeWire pulls frames on its own real-time thread and the
+terminal redraws at 30 FPS from an immutable snapshot, and every other subsystem
+in the program, scanning, decoding, hashing, sorting, is arranged so that neither
+of those two can be blocked by it. Where a design here looks indirect, that is
+usually why.
 
----
+## Subsystems
 
-## Table of Contents
-
-1. [Concurrency Architecture](#concurrency-architecture)
-2. [Audio Pipeline](#audio-pipeline)
-3. [Library Management](#library-management)
-4. [Advanced Algorithms](#advanced-algorithms)
-5. [Kernel-Level Optimizations](#kernel-level-optimizations)
-6. [Artwork System](#artwork-system)
-7. [5-Phase Rendering Pipeline](#5-phase-rendering-pipeline)
-8. [Smart Scroll Optimization](#smart-scroll-optimization)
-9. [Atomic Slot System](#atomic-slot-system)
-10. [ArtworkWindow Coordinator](#artworkwindow-coordinator)
-11. [Scattered Album Detection & Merging](#scattered-album-detection--merging)
-12. [Now Playing View](#now-playing-view)
-13. [Queue: Two Stacks Model](#queue-two-stacks-model)
-14. [Unicode Support](#unicode-support)
-15. [Performance Characteristics](#performance-characteristics)
-16. [Security](#security)
-17. [Code Quality & Engineering Patterns](#code-quality--engineering-patterns)
-18. [Project Structure](#project-structure)
-
----
+| Subsystem | Lives in | Role |
+|---|---|---|
+| **Snapshot publisher** | `backend/SnapshotPublisher` | The only channel between producer threads and the UI. Writers serialize on a mutex and install a fresh immutable snapshot; readers take one atomic load and hold an owning handle. Nothing ever writes into a snapshot a reader can reach. |
+| **Audio pipeline** | `audio/`, `backend/PipeWireClient` | Format detection, five decoders behind one interface, an SPSC ring, and a PipeWire stream that persists across tracks so same-format transitions are gapless. |
+| **Library** | `backend/Library`, `util/DirectoryScanner` | `getdents64` scanning, a three-tier cache that decides what changed before parsing anything, and a binary metadata cache. |
+| **sublimation** | `montauk/sublimation`, `util/SortDispatch` | The sort, search and order core, compiled in-tree from the sibling montauk checkout. Every ordering and every match in the program runs through it. |
+| **Artwork** | `backend/ArtworkCache`, `ui/ArtworkWindow` | SHA-256 content addressing so identical covers are stored once, a decode pool, and an LRU of decoded pixels under a configurable ceiling. |
+| **Terminal graphics** | `ui/ImageRenderer` | Kitty over `/dev/shm`, with Sixel, iTerm2 and Unicode block fallbacks chosen by terminal detection. |
+| **Render pipeline** | `ui/Renderer`, `ui/Canvas`, `ui/widgets/` | A five-phase frame with an atomic slot array, differential canvas updates and generation tokens that reject stale decodes. |
+| **Now Playing** | `ui/widgets/NowPlaying`, `ui/SpectroWaterfall` | Full-panel artwork beside a live queue, with a waterfall spectrogram fed by a lock-free tap off the audio path. |
+| **Queue** | `model/QueueOps`, `ui/widgets/Queue` | Two Stacks, so Previous walks back through what you actually skipped rather than recomputing an order. |
 
 ## Concurrency Architecture
 
-### Lock-Free Snapshot System
+### Snapshot publishing
 
-**File**: `src/backend/SnapshotBuffers.cpp`
+**File**: `src/backend/SnapshotPublisher.cpp`
 
-OUROBOROS achieves **zero deadlocks** through an immutable snapshot architecture using atomic double-buffering.
+Producer threads and the UI share state through exactly one channel, and the
+channel hands out values that never change.
 
-#### Ping-Pong Double-Buffer Pattern
+**Writers serialize, readers never wait.** Every mutation goes through
+`update()`, which takes a mutex, applies the change to a staging copy no reader
+can reach, and installs a fresh `shared_ptr<const Snapshot>`. Queue edits,
+library scans, playback position, view toggles all funnel through it, so two
+writers never interleave. `get_current()` is one atomic load.
 
-Two buffers (`a_` and `b_`) swap roles via an atomic pointer:
+**Published snapshots are immutable, and that is the whole invariant.** An atomic
+pointer swap on its own is not enough; the pointer has to lead somewhere that
+never changes underneath. A design that recycles two buffers behind an atomic
+front pointer still lets a writer rewrite the buffer a reader is mid-copy of, and
+because `Snapshot` holds `shared_ptr` members and a `PlayerState` carrying
+`std::string`, that overlap is a data race on the pointer and on the string's
+heap buffer rather than a merely stale field. Building a new snapshot per publish
+removes the possibility rather than narrowing the window.
 
-- **Front buffer**: Atomically readable by UI thread (lock-free)
-- **Back buffer**: Writeable by collector threads (mutex-protected via `SnapshotPublisher`)
+**The handle owns what it names.** A reader can hold a snapshot across any number
+of publishes and the fields it reads stay exactly as they were, so `seq` is
+monotonic across concurrent reads and a render pass sees one coherent frame of
+state. `tests/unit/test_concurrency.cpp` gates both properties: `seq` never
+regresses under two concurrent readers against 20k publishes, and a held handle
+is unchanged after 5000 later ones.
 
-```cpp
-model::Snapshot a_;
-model::Snapshot b_;
-std::atomic<model::Snapshot*> front_;  // Points to a_ or b_
-model::Snapshot* back_;                // Points to the other
-```
-
-#### Atomic Read Path (Lock-Free)
-
-```cpp
-const model::Snapshot& front() const {
-    return *front_.load(std::memory_order_acquire);  // No mutex!
-}
-```
-
-**Key Insight**: UI thread never blocks on mutex acquisition. Reads are instantaneous (<1us).
-
-#### Write Path (Serialized)
-
-```cpp
-// SnapshotPublisher::update() — mutex-protected
-void update(std::function<void(Snapshot&)> updater) {
-    std::lock_guard lock(mutex_);
-    auto& back = buffers_.back();
-    updater(back);
-    buffers_.publish();  // Atomic pointer swap + re-sync
-}
-```
-
-#### Publish: Swap + Re-Sync
+**The allocation is on the writer.** Reads cost an atomic load and a refcount
+bump; the copy happens at publish time, which runs on playback events and a 30 Hz
+position update rather than on every read from every reader.
 
 ```cpp
-void publish() {
-    back_->seq = front_.load(std::memory_order_acquire)->seq + 1;
-    auto* old_front = front_.load(std::memory_order_relaxed);
-    front_.store(back_, std::memory_order_release);  // Atomic swap
-    back_ = old_front;
-    *back_ = *front_.load(std::memory_order_acquire);  // Re-sync for next update
-}
+// Writer
+std::lock_guard<std::mutex> lock(mutex_);
+updater(staging_);
+++staging_.seq;
+current_.store(std::make_shared<const model::Snapshot>(staging_),
+               std::memory_order_release);
+
+// Reader
+return current_.load(std::memory_order_acquire);
 ```
-
-#### Guarantees
-
-- UI thread **never blocks** on mutex
-- Writes are serialized (only one collector modifies at a time via `SnapshotPublisher` mutex)
-- Sequence counter detects stale reads
-- Post-swap re-sync ensures back buffer starts with latest state
 
 ### Threading Model
 
@@ -124,7 +102,7 @@ OUROBOROS runs 4+ threads concurrently:
 - `QueueState` (Two Stacks: history/current/future for deterministic Previous)
 - `UIState` (focus, search query, viewport)
 
-**Double Buffering**: Front buffer for reads, back buffer for writes, atomic pointer swap to publish
+**Immutable publication**: Each publish installs a new snapshot; none is ever rewritten after readers can see it
 
 **Copy-On-Write**: `shared_ptr` for LibraryState/QueueState (cheap snapshot copies)
 
@@ -156,7 +134,6 @@ if (future.wait_for(0s) == std::future_status::ready) {
 
 **Performance**: Decoding 32 album covers in parallel (~200ms) vs sequentially (~1.2s).
 
----
 
 ## Audio Pipeline
 
@@ -337,7 +314,6 @@ int64_t get_interpolated_position_ms() const {
 - NaN/Inf clamping on producer side (decode thread), keeping RT callback branch-free
 - Clamps to [-1.0, 1.0] range
 
----
 
 ## Library Management
 
@@ -436,7 +412,6 @@ every format path benefits.
 - `library.bin` - Monolithic library cache
 - `artwork.cache` - Content-addressed artwork storage
 
----
 
 ## Advanced Algorithms
 
@@ -466,14 +441,6 @@ montauk/sublimation's README: https://github.com/wllclngn/montauk
   byte order equals Unicode code-point order, which equals the UTF-16 code-unit order
   ICU's compare uses below the surrogate range. A unit test (`test_sort`) asserts the
   composite-key order matches the old ICU comparator exactly.
-
-#### Why it replaced the in-tree PowerSort/TimSort
-
-The previous sort was a parallel PowerSort (`TimSort.hpp`, ~700 LOC, retired in v4.0.0).
-A head-to-head at a real library size (46K tracks) measured sublimation at **~2x** the
-throughput of the multi-threaded parallel TimSort -- single-threaded sublimation winning
-because the parallel TimSort's thread-spawn overhead dominates at this N. Precomputing
-the sort keys once is also O(n) ICU work versus the comparator's O(n log n) re-folding.
 
 **Library Sorting Order**: Artist -> Date -> (directory) -> Track
 
@@ -555,7 +522,6 @@ Custom SHA-256 implementation for artwork deduplication.
 
 100 tracks from same album -> 1 cached JPEG (99% deduplication)
 
----
 
 ## Kernel-Level Optimizations
 
@@ -589,7 +555,6 @@ Shared memory eliminates Base64 encoding overhead and reduces terminal I/O by 33
 5. Send Kitty protocol escape sequence with file path
 6. Delete temp file after transmission
 
----
 
 ## Artwork System
 
@@ -666,7 +631,6 @@ Shared memory eliminates Base64 encoding overhead and reduces terminal I/O by 33
 - Fallback cascade (Kitty -> Sixel -> Unicode)
 - Manual override via `OUROBOROS_IMAGE_PROTOCOL`
 
----
 
 ## 5-Phase Rendering Pipeline
 
@@ -755,7 +719,6 @@ if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
 
 Low-priority prefetch items don't trigger re-renders when complete.
 
----
 
 ## Smart Scroll Optimization
 
@@ -813,7 +776,6 @@ if (time_since_scroll >= PREFETCH_DELAY_MS && !prefetch_completed_) {
 }
 ```
 
----
 
 ## Atomic Slot System
 
@@ -897,7 +859,6 @@ size_t get_slot_index(int visible_row, int col) const {
 }
 ```
 
----
 
 ## ArtworkWindow Coordinator
 
@@ -1034,7 +995,6 @@ const DecodedArtwork* get_decoded(const std::string& path, ...) {
 }
 ```
 
----
 
 ## Scattered Album Detection & Merging
 
@@ -1106,7 +1066,6 @@ keys[i] = util::album_sort_key(primary, year_field, fold_case(g.normalized_title
 
 This groups all "Guardians of the Galaxy" tracks together while keeping regular albums sorted by artist.
 
----
 
 ## Now Playing View
 
@@ -1197,7 +1156,6 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 - Handles 1.4 million+ characters
 - Proper case-folding rules per language
 
----
 
 ## Performance Characteristics
 
@@ -1209,7 +1167,7 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 | **Cache TIER 2 (incremental)** | O(changed_files) | 500ms for 50 changes | Parallel metadata extraction (4-16 threads) |
 | **Snapshot Read** | O(1) | <1us | Lock-free atomic pointer load with acquire semantics |
 | **UI Render (30 FPS)** | O(widgets) | ~33ms/frame | Only redraws on state change, canvas diffing |
-| **sublimation sort** | flow-model | ~30ms for 46K tracks | Composite-key byte-order sort; ~2x the parallel TimSort retired in v4.0.0 |
+| **sublimation sort** | flow-model | ~30ms for 46K tracks | Composite-key byte-order sort over an index permutation |
 | **sublimation search** | O(n/m) avg, O(nm) worst | ~1ms for 10K tracks | Literal face, rare-byte anchor scan; fans out over the work-stealing pool above 32K tracks |
 | **SHA-256 Hash** | O(data_size) | ~1ms for 5MB JPEG | 512-bit chunks, 64 rounds per chunk |
 | **Artwork Cache Lookup** | O(1) | <1us | `unordered_map` with SHA-256 keys |
@@ -1231,7 +1189,6 @@ Full Unicode normalization for case-insensitive search and sorting using ICU (In
 - **Search latency**: <5ms per keystroke (real-time filtering)
 - **Gapless transition**: Zero-silence crossover between same-format tracks
 
----
 
 ## Security
 
@@ -1245,7 +1202,6 @@ OUROBOROS uses the Linux `getrandom()` syscall directly for shuffle randomness, 
 
 While shuffle randomness doesn't require cryptographic strength, using CSPRNG is best practice and demonstrates security-conscious design with zero performance cost.
 
----
 
 ## Code Quality & Engineering Patterns
 
@@ -1297,7 +1253,6 @@ While shuffle randomness doesn't require cryptographic strength, using CSPRNG is
 - **Ownership Documentation**: Who owns what data, lifetime management
 - **Architecture Diagrams**: ASCII art pipeline diagrams in comments
 
----
 
 ## Project Structure
 
@@ -1334,34 +1289,5 @@ ouroboros/
 - **Background Threads**: 4+ (Main, LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers)
 - **Test Suites**: 3 (unit/test_utils, unit/test_core, integration/test_pipeline)
 
----
-
-## Design Patterns
-
-### Singleton Pattern
-- `ImageRenderer` - Global image rendering state
-- `ArtworkLoader` - Global artwork loading coordinator
-- `EventBus` - Global event pub/sub system
-- `Terminal` - Global terminal state
-
-### Factory Pattern
-- Decoder creation based on audio format (MP3/FLAC/OGG/M4A)
-
-### Observer Pattern
-- `EventBus` publish-subscribe for decoupled communication
-
-### Strategy Pattern
-- Polymorphic `AudioDecoder` implementations
-
-### Adapter Pattern
-- Terminal protocol abstraction (Kitty/Sixel/iTerm2/Unicode)
-
-### Facade Pattern
-- `SnapshotPublisher` hides buffer complexity
-
-### RAII Pattern
-- All resource management (files, threads, mutexes, smart pointers)
-
----
 
 *For user-facing documentation, see [README.md](README.md)*

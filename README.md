@@ -1,97 +1,36 @@
-# OUROBOROS, The Eternal Player
+<p align="center">
+  <img src="assets/ouroboros-logo.svg" alt="OUROBOROS Logo" width="30%" />
+</p>
 
-An offline, metadata-driven music player built in C++23 for modern Linux Terminals. OUROBOROS is a love letter to era-defining music players and Linux. Featuring a lock-free snapshot architecture that guarantees deadlock-free operation, approximately 16,500 lines of C++23 deliver 30 FPS rendering, native PipeWire audio, and smart album artwork with shared memory optimization.
+# OUROBOROS
 
-**Key Features:**
+OUROBOROS is an offline, metadata-driven music player for modern Linux terminals. Written in C++23, OUROBOROS supports MP3, FLAC, WAV, OGG/Vorbis, M4A, AAC and DSD playback formats while utilizing native PipeWire. Seeking is millisecond-accurate, same-format transitions are gapless and Repeat/Shuffle work inside a Two Stacks queue that Previous back tracks thru all prior played files. The player offers both a list or album art grid, search functionality, dedicated panel that displays file artwork beside a navigatable queue. A love letter to era-defining music players and Linux, OUROBOROS is The Eternal Player.
 
-### Audio System
-- **Multi-Format Playback**: MP3 (libmpg123), FLAC/WAV (libsndfile), OGG/Vorbis, M4A/AAC (FFmpeg), DSD (DSF files, custom decimation engine) with full metadata extraction
-- **Native PipeWire Integration**: Modern Linux audio with per-track format negotiation (dynamic sample rate/channel reconfiguration)
-- **Precision Audio Control**: Millisecond-accurate seeking, software volume control, real-time position tracking
+OUROBOROS utilizes sublimation — [montauk](https://github.com/wllclngn/montauk)'s sort, search and order core — compiled in-tree from the sibling checkout rather than vendored. Multi-key library ordering collapses into a single composite byte-order pass over an index permutation, so no track is ever moved by a sort and nothing in shipped code calls `std::sort`. Search is the literal face of sublimation's tri-face matcher, compiled once per query rather than once per track and past 32K tracks it fans out across the same work-stealing pool that drives the parallel sort.
 
-### Now Playing View
-- **Dedicated Lean-Back Layout** (`v`): artwork fills the left panel, full-height interactive queue on the right
-- **Live Waterfall Spectrogram**: lock-free tap off the PipeWire RT path → in-house radix-2 FFT (1024-pt, Hann) → log-frequency bins → scrolling RGBA waterfall at 30 FPS (Kitty graphics, block-character fallback)
-- **Full Metadata Column**: title, track, album, artist, year, genre, codec, bitrate, repeat/shuffle, volume + transport
-- **Interactive Queue Everywhere**: Browser-style cursor in the queue panel — `j`/`k` move, `Enter` jumps playback with deterministic Two Stacks re-partition (Previous still walks back through skipped tracks)
-
-### Terminal Graphics & UI
-- **Terminal Support**: Kitty, WezTerm, Konsole, Ghostty, xterm, mlterm, iTerm2. As of December 2025, Kitty is recommended for its performance.
-- **Multi-Protocol Album Artwork**: Kitty, Sixel, iTerm2, Unicode blocks with automatic terminal detection and fallback cascade
-- **Shared Memory Transmission**: `/dev/shm` for Kitty protocol (33% CPU reduction vs Base64 encoding)
-- **6 Specialized Widgets**: Browser, Queue, NowPlaying, SearchBox, AlbumBrowser, HelpOverlay
-- **Flexbox Layout Engine**: CSS-inspired constraint solver for responsive terminal UI (dynamic sizing, alignment, spacing)
-- **Modern Rendering**: Canvas-based with differential updates, 30 FPS target, ANSI escape sequence parsing
-
-### Library Management
-- **Kernel-Level Syscalls**: Direct `getdents64` implementation (2-3x faster than std::filesystem)
-- **Hardware-Aware Parallelism**: Metadata extraction with 4-16 thread pool (hardware_concurrency)
-- **Three-Tier Cache Validation**: O(files) membership, count and mtime (detects retags) → O(dirs) dirty detection → O(changed files) incremental parsing
-- **Real-World Performance**: 10K track library scans in <500ms (warm start: 95ms)
-- **Compilation/Soundtrack Grouping**: Directory-based album boundaries with automatic compilation detection (TCMP flag, "Various Artists", artist diversity thresholds)
-
-### Content-Addressed Artwork
-- **SHA-256 Deduplication**: Custom NIST FIPS 180-4 implementation (100 tracks → 1 cached JPEG, 99% space savings)
-- **Dual-Hash System**: SHA-256 for content addressing + FNV-1a with adaptive sampling for O(1) runtime lookups
-- **Multi-Level Caching**: Disk → memory → decoded pixels (memory-pressure eviction with configurable 3GB limit)
-- **High-Quality Filtering**: Mitchell-Netrevalli image resizing for photographic content (superior to bilinear/bicubic)
-- **Smart Cache Management**: Generation token invalidation, viewport protection, surgical deletion
-
-### Smart Rendering System
-- **5-Phase Rendering Pipeline**: Slot Assignment → Populate → Lock-Free Render → Orphan Cleanup → Prefetch (eliminates flicker during scroll)
-- **Radial Rendering**: Manhattan distance prioritization from cursor (loads visible items first, expands outward)
-- **Scroll Debouncing**: 35ms debounce prevents request spam during fast scroll, 150ms prefetch delay waits for idle
-- **Big Jump Detection**: Velocity-based detection (`dist >= 8 && vel > 10 r/s`) OR distance threshold (`dist > 25` rows) triggers cache reset
-- **Async Decoding Pool**: Parallel image processing with priority queue (100 items prefetch beyond viewport)
-
-### Production-Grade Algorithms
-- **sublimation**: the sort, search and order core, built in-tree from the [montauk](https://github.com/wllclngn/montauk) checkout. There is no second sort or matcher in the tree and no `std::sort` in shipped code
-- **sublimation sort**: a flow-model sort that routes by disorder. Multi-key orderings are precomputed composite keys sorted in one byte-order pass; ~2x the throughput of the parallel TimSort retired in v4.0.0 at a 46K-track library
-- **sublimation search**: the literal face of sublimation's tri-face matcher (literal, Glushkov bit-parallel regex, fuzzy k-mismatch), compiled once per query with ASCII case folded in at compile time (<5ms keystroke latency); above 32K tracks the scan fans out over sublimation's work-stealing pool
-- **Dual-Hash System**: Custom SHA-256 (NIST FIPS 180-4) + FNV-1a with adaptive sampling (>65KB files sampled for speed)
-
-### Lock-Free Concurrency
-- **Zero-Deadlock Architecture**: Atomic double-buffering with immutable snapshots (acquire/release memory ordering)
-- **Atomic Slot System**: 64-slot array with `std::atomic<SlotState>` and generation tokens for stale rejection (lock-free render phase)
-- **UI Never Blocks**: Lock-free reads (<1μs) guarantee smooth 30 FPS rendering on all threads
-- **4+ Background Threads**: LibraryCollector, PlaybackCollector, ArtworkLoader, ImageDecoderPool workers
-- **Thread-Safe Patterns**: Atomic operations with acquire/release semantics, RAII mutex discipline, zero raw locks
-
-### Unicode & Search
-- **Full ICU Integration**: Support for 150+ languages, 1.4M+ characters
-- **Diacritic Normalization**: "Björk" → "bjork" for ASCII search on international names
-- **Proper Case-Folding**: Handles Turkish İ/i, German ß, etc.
-- **Real-Time Filtering**: the compiled sublimation matcher re-scans on every keystroke
-
-### Engineering Optimizations
-- **Approximately 16,500 Lines of C++23**: RAII everywhere, move semantics, smart pointers; raw allocation confined to the audio ring buffer and decoder scratch paths (excludes the in-tree sublimation C core)
-- **Memory-Safe Architecture**: Automatic cleanup via destructors, bounds checking, optional returns
-- **Custom Test Framework**: SimpleTest.hpp with zero dependencies, unit + integration tests
-- **Comprehensive Logging**: Debug/info/warn/error levels, timestamped entries
-
-### Two Stacks Playlist System
-- **Proper Previous/Next Navigation**: Previous always returns to the actual previous track, even in shuffle mode
-- **Three-Part State**: `history` (played tracks) + `current` (now playing) + `future` (upcoming tracks)
-- **Deterministic Back-Navigation**: History stack preserves exact play order for reliable Previous behavior
-- **Shuffle-Aware Next**: CSPRNG random selection from future stack via Linux `getrandom()` syscall
-- **Repeat All Support**: Seamlessly recycles history back to future when queue exhausted
-- **FIFO Queue Order**: Tracks play in the order they were added (first-in, first-out)
+For a comprehensive overview of OUROBOROS' architecture see the documentation here: [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Screenshots
 
 ### Now Playing View: Artwork, Live Spectrogram, Full Queue
-![Now Playing](2026-06-10_19-51.png)
+![Now Playing](assets/2026-06-10_19-51.png)
+
+`v` gives the cover a full panel on the left and the queue the full height on the right. Under the metadata column the waterfall scrolls one column per frame, each column a 1024-point FFT of the samples PipeWire is about to play. The queue carries its own cursor: `j`/`k` move it, `Enter` jumps playback to it, and `Ctrl+f` narrows it.
 
 ### Main Interface: Album View
-![Main](2026-05-28_20-53.png)
+![Main](assets/2026-05-28_20-53.png)
+
+`Ctrl+a` swaps the track list for a grid of cover art, one tile per album directory. Artwork decodes on background workers and fills in as it lands, so scrolling never waits on a JPEG. Albums whose directory holds several artists are detected as compilations and sort by title rather than by artist.
 
 ### Main Interface: Album View, Large Display
-![Main](2025-12-17_20-38.png)
+![Main](assets/2025-12-17_20-38.png)
+
+The grid reflows to whatever the terminal gives it, and tiles render at the resolution the cells allow rather than at a fixed size. Wider terminals get more columns, not larger padding.
 
 ### Search: Album View
-![Albums](2025-12-17_12-24.png)
+![Albums](assets/2025-12-17_12-24.png)
 
-
+`Ctrl+f` opens FIND and the grid narrows on every keystroke. Queries run against ICU-normalized title and artist, so `bjork` reaches `Björk` and `Ctrl+f` costs the same at forty thousand tracks as at four hundred.
 
 ## Installation
 
@@ -127,8 +66,6 @@ sudo cmake --install build
 **Then run**: `ouroboros`
 
 **Note**: If you get missing library errors, install the dependencies below first.
-
----
 
 ### Dependencies
 
@@ -246,7 +183,7 @@ OUROBOROS_GHOSTTY_USE_SHM=1 ./ouroboros
 - **Navigation**: `j`/`k` (up/down), `Shift+j`/`Shift+k` (multi-select)
 - **Playback**: `Space` (play/pause), `n` (next), `p` (previous), `←`/`→` (seek ±5s)
 - **Queue**: `Enter` (add to queue, or jump to album during search; in the queue panel, jump playback to the cursor), `Ctrl+d` (clear queue), `Tab` (switch focus)
-- **Search**: `Ctrl+f` (toggle search box)
+- **Search**: `Ctrl+f` (toggle the FIND box; narrows the library, or the queue in the Now Playing view)
 - **Volume**: `+`/`-` (adjust ±5%)
 - **Modes**: `r` (cycle repeat), `s` (toggle shuffle)
 - **Views**: `Ctrl+a` (toggle album grid), `v` (toggle Now Playing view)
@@ -269,7 +206,7 @@ All keybindings are customizable via `~/.config/ouroboros/config.toml`
 
 **Quick Fix**: Run `reset` or close/reopen terminal.
 
-**Note**: v1.0 includes signal handlers (SIGINT, SIGTERM) to restore terminal state on crashes.
+**Note**: OUROBOROS installs SIGINT and SIGTERM handlers that restore terminal state on exit, so this should be rare.
 
 ### Build Fails
 
@@ -322,28 +259,3 @@ Built with:
 - **FFmpeg** (`libavformat`, `libavcodec`, `libswresample`) - M4A/AAC decoding, DSF metadata extraction
 - **stb_image** - Image loading (public domain)
 - **stb_image_resize2** - Image resizing (public domain)
-
-## Technical Highlights
-
-- **Approximately 16,500 lines** of production C++23
-- **5-phase rendering pipeline** with atomic slot system (flicker-free scrolling)
-- **Lock-free concurrency** with atomic snapshots (zero deadlocks)
-- **Kernel-level syscalls** (`getdents64`, `fstatat`, `/dev/shm`)
-- **Production algorithms** (sublimation sort, search and order core, SHA-256, radix-2 FFT)
-- **Smart scroll optimization** (35ms debounce, 150ms prefetch delay, velocity-based big jump detection)
-- **Multi-tier caching** (O(1) → O(dirs) → O(files))
-- **Hardware-aware parallelism** (thread pools, async decoding)
-- **Full Unicode support** (ICU normalization, 150+ languages)
-- **30 FPS rendering** with sub-millisecond snapshot reads
-
-## Technical Documentation
-
-For detailed technical documentation, see **[ARCHITECTURE.md](ARCHITECTURE.md)**:
-
-- **Concurrency Architecture**: Lock-free snapshot system, threading model, atomic operations
-- **Algorithm Implementations**: the sublimation sort and tri-face matcher, SHA-256 deep-dives
-- **Kernel-Level Optimizations**: Direct syscalls, performance analysis, benchmarks
-- **Audio Pipeline**: Format detection, decoders, PipeWire integration
-- **Artwork System**: Content addressing, multi-tier caching, async decoding
-- **Performance Characteristics**: Complexity analysis, real-world benchmarks
-- **Code Quality Patterns**: Memory management, concurrency, error handling

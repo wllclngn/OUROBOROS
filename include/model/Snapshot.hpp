@@ -168,7 +168,7 @@ struct Alert {
 ///
 /// THREAD SAFETY:
 /// - All updates serialized by SnapshotPublisher::mutex_
-/// - Double-buffering in SnapshotBuffers provides wait-free reads
+/// - SnapshotPublisher installs each snapshot immutably; reads are one atomic load
 
 struct Snapshot {
     uint64_t seq = 0;

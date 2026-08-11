@@ -62,7 +62,6 @@ add_executable(ouroboros
     src/main.cpp
     src/model/Snapshot.cpp
     src/model/QueueOps.cpp
-    src/backend/SnapshotBuffers.cpp
     src/backend/SnapshotPublisher.cpp
     src/backend/PipeWireClient.cpp
     src/backend/Library.cpp

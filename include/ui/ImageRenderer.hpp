@@ -70,6 +70,17 @@ public:
     // Helper to write data to a temporary file in /dev/shm (RAM)
     [[nodiscard]] std::string write_to_temp_file(const unsigned char* data, size_t len);
 
+    // Unlink every /dev/shm frame this process still has pending. The normal
+    // sweep only runs on the NEXT write, so the last batch before exit is
+    // orphaned unless something calls this. /dev/shm is tmpfs, so an orphan is
+    // resident memory that outlives the process.
+    static void cleanup_temp_files();
+
+    // Unlink /dev/shm frames abandoned by an earlier run. Age-gated so a second
+    // live instance's in-flight frames are never taken; those are consumed
+    // within 500ms, far below the threshold.
+    static void reap_orphaned_temp_files();
+
     // Cell size accessors
     [[nodiscard]] int get_cell_width() const { return cell_width_; }
     [[nodiscard]] int get_cell_height() const { return cell_height_; }

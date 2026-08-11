@@ -188,8 +188,11 @@ void Renderer::render_search_overlay(const LayoutRect& rect, const model::Snapsh
     (void)rect;
     if (focus_ != Focus::Search) return;
 
-    // Draw box at bottom of Browser area
-    LayoutRect search_rect = {browser_rect_.x, browser_rect_.y + browser_rect_.height - 3, browser_rect_.width, 3};
+    // Host the box over the panel actually being filtered: The queue in the
+    // Now Playing view, the browser everywhere else. In the Now Playing view
+    // browser_rect_ is the artwork panel, so anchoring there would cover the art.
+    const LayoutRect& host = now_playing_view_ ? queue_rect_ : browser_rect_;
+    LayoutRect search_rect = {host.x, host.y + host.height - 3, host.width, 3};
 
     // Clear area behind it
     canvas_.fill_rect(search_rect.x, search_rect.y, search_rect.width, search_rect.height, Cell{" ", config::ui_config().muted});
@@ -600,7 +603,6 @@ void Renderer::handle_input_event(const InputEvent& event) {
 
     // Search (from TOML: search)
     if (matches_keybind(event, "search")) {
-        if (now_playing_view_) return;  // no browser to filter in Now Playing view
         focus_ = Focus::Search;
         global_search_box_->set_visible(true);
         return;
@@ -636,20 +638,22 @@ void Renderer::handle_input_event(const InputEvent& event) {
     if (focus_ == Focus::Search) {
         auto result = global_search_box_->handle_search_input(event);
         std::string query = global_search_box_->get_query();
-        
-        // Live update filter
-        ouroboros::util::Logger::debug("GlobalSearch: Query='" + query + "' -> " + (show_album_view_ ? "AlbumBrowser" : "Browser"));
-        if (show_album_view_) {
+
+        // Live update filter. The Now Playing view has no browser panel, so the
+        // queue is what the query narrows there.
+        const char* target = now_playing_view_ ? "Queue" : (show_album_view_ ? "AlbumBrowser" : "Browser");
+        ouroboros::util::Logger::debug("GlobalSearch: Query='" + query + "' -> " + target);
+        if (now_playing_view_) {
+            queue_->set_filter(query);
+        } else if (show_album_view_) {
             album_browser_->set_filter(query);
         } else {
             browser_->set_filter(query);
         }
 
-        if (result == widgets::SearchBox::Result::Submit) {
-            focus_ = Focus::Browser;
-            global_search_box_->set_visible(false);
-        } else if (result == widgets::SearchBox::Result::Cancel) {
-            focus_ = Focus::Browser;
+        if (result == widgets::SearchBox::Result::Submit ||
+            result == widgets::SearchBox::Result::Cancel) {
+            focus_ = now_playing_view_ ? Focus::Queue : Focus::Browser;
             global_search_box_->set_visible(false);
         }
     } else if (focus_ == Focus::Browser) {

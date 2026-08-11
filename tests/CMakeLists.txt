@@ -30,7 +30,7 @@ add_test(NAME genre COMMAND test_genre)
 
 find_package(Threads REQUIRED)
 add_executable(test_concurrency unit/test_concurrency.cpp
-    ${CMAKE_SOURCE_DIR}/src/backend/SnapshotBuffers.cpp
+    ${CMAKE_SOURCE_DIR}/src/backend/SnapshotPublisher.cpp
     ${CMAKE_SOURCE_DIR}/src/model/Snapshot.cpp)
 target_compile_features(test_concurrency PRIVATE cxx_std_23)
 target_link_libraries(test_concurrency Threads::Threads)
